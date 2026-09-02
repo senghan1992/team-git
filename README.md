@@ -8,7 +8,7 @@
 git clone https://github.com/senghan1992/team-git.git
 ```
 
-- **직접 빌드해서 쓰기 (Windows .exe 포함)** → 아래 [설치 · 빌드](#설치--빌드) — 준비물부터 배포 파일 위치까지.
+- **설치하기** → 아래 [설치 · 빌드](#설치--빌드) — 설치 파일 배포 없이 소스를 받아 직접 빌드합니다. 도구 설치부터 실행까지 **명령어를 순서대로 복사해 붙여넣기만** 하면 됩니다 (Windows / Linux / macOS).
 - 전체 흐름과 화면별 사용법 → **[docs/WORKFLOW.md](docs/WORKFLOW.md)**
 - 빌드 없이 **브라우저에서 바로 보면서 작업** → **[docs/PREVIEW.md](docs/PREVIEW.md)** — `pnpm seed:demo && pnpm dev:web` 두 줄이면 됩니다.
 
@@ -75,87 +75,151 @@ python3.11 -m venv .venv && ./.venv/bin/pip install -e ".[dev]"
 
 ## 설치 · 빌드
 
-소스는 GitHub에 있습니다:
+이 앱은 설치 파일을 따로 배포하지 않습니다 — **소스를 받아 내 컴퓨터에서 직접
+빌드**합니다. 아래 명령을 위에서부터 순서대로 복사해 붙여넣기만 하면 됩니다.
+개발 도구가 하나도 없는 컴퓨터 기준으로 도구 설치 30분 + 첫 빌드 10~20분이
+걸리고, 두 번째 빌드부터는 몇 분이면 끝납니다.
 
-```bash
-git clone https://github.com/senghan1992/team-git.git
-cd team-git
-```
-
-Tauri는 크로스 컴파일을 지원하지 않으므로 **배포할 OS에서 빌드합니다** —
+Tauri는 크로스 컴파일을 지원하지 않으므로 **쓸 OS에서 빌드합니다** —
 Windows용 `.exe`는 Windows에서, Linux용은 Linux에서 만듭니다.
 
-### Windows — 배포용 .exe 만들기
+### Windows에서 빌드하기 (.exe)
 
-**준비물 (빌드하는 컴퓨터에 한 번만 설치):**
+#### 1단계 — 도구 설치 (컴퓨터당 한 번만)
 
-| 무엇 | 왜 필요한가 | 어디서 |
-| --- | --- | --- |
-| **Git for Windows** | 앱이 `git` 명령을 호출합니다 — 빌드뿐 아니라 **앱을 쓰는 모든 컴퓨터에 필수** | <https://git-scm.com/download/win> |
-| **Visual Studio Build Tools 2022** — "C++를 사용한 데스크톱 개발" 워크로드 | Rust MSVC 컴파일러·링커 (`lib.exe`, `link.exe`) | <https://visualstudio.microsoft.com/ko/visual-cpp-build-tools/> |
-| **Rust** (rustup) | 앱 코어 컴파일 | <https://rustup.rs> → 설치 후 `rustup default stable` |
-| **Node.js ≥ 20** + pnpm | 프런트엔드 빌드 | <https://nodejs.org> → `npm install -g pnpm` |
-| **Tauri CLI** | 빌드·번들 명령 | `cargo install tauri-cli --version "^2.0"` |
-| WebView2 런타임 | 앱 화면 렌더링 | Windows 10/11에는 대부분 기본 탑재 — 없으면 설치 파일이 알아서 챙깁니다 |
+**PowerShell**을 열고(시작 메뉴에서 "PowerShell" 검색) 아래 네 줄을 한 줄씩
+붙여넣으세요. 중간에 설치 동의 창이 뜨면 진행하면 됩니다.
 
-**빌드 (PowerShell 또는 Git Bash에서):**
+```powershell
+winget install --id Git.Git -e
+winget install --id Rustlang.Rustup -e
+winget install --id OpenJS.NodeJS.LTS -e
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
 
-```bash
+- 마지막 줄(C++ 빌드 도구)은 몇 GB를 내려받아 **가장 오래 걸립니다**. 끝날 때까지 기다리세요.
+- `winget`이 없는 오래된 Windows라면 아래에서 직접 내려받아 설치하세요
+  (빌드 도구는 설치 화면에서 **"C++를 사용한 데스크톱 개발"** 워크로드에 체크):
+  - Git for Windows: <https://git-scm.com/download/win>
+  - Rust: <https://rustup.rs>
+  - Node.js LTS: <https://nodejs.org>
+  - Visual Studio Build Tools 2022: <https://visualstudio.microsoft.com/ko/visual-cpp-build-tools/>
+
+설치가 끝나면 **PowerShell 창을 닫고 새로 여세요** (방금 설치한 도구들이
+인식되려면 새 창이어야 합니다). 그리고 확인:
+
+```powershell
+git --version
+cargo --version
+node --version
+```
+
+세 줄 모두 버전 번호가 나오면 준비 끝입니다.
+
+#### 2단계 — pnpm과 Tauri CLI 설치 (컴퓨터당 한 번만)
+
+```powershell
+npm install -g pnpm
+cargo install tauri-cli --version "^2.0"
+```
+
+두 번째 줄은 Tauri 빌드 도구를 컴파일하느라 5~10분 걸립니다. 한 번만 하면 됩니다.
+
+#### 3단계 — 소스 받고 빌드
+
+```powershell
+git clone https://github.com/senghan1992/team-git.git
+cd team-git
 pnpm install
 cargo tauri build
 ```
 
-**결과물 — `target\release\` 아래에 생깁니다:**
+첫 빌드는 10~20분 걸립니다 (Rust가 의존성 전부를 컴파일합니다). 끝에
+`Finished` 와 번들 경로가 출력되면 성공입니다.
 
-| 파일 | 용도 |
-| --- | --- |
-| `bundle\nsis\Git Companion_0.1.0_x64-setup.exe` | **배포용 설치 파일 — 팀원에게는 이 파일 하나만 주면 됩니다** |
-| `bundle\msi\Git Companion_0.1.0_x64_en-US.msi` | MSI 배포를 선호하는 조직용 |
-| `git-companion.exe` | 설치 없이 그대로 실행하는 단독 파일 |
+#### 4단계 — 실행
 
-NSIS·WiX 번들 도구는 Tauri CLI가 첫 빌드 때 자동으로 내려받으므로 따로
-설치할 것이 없습니다.
+설치해서 쓰려면 (시작 메뉴에 등록됨):
 
-**Windows에서 알아둘 것:**
-
-- 받는 사람의 컴퓨터에도 **Git for Windows가 설치되어 있어야** 합니다 —
-  앱의 모든 git 동작이 `git` 명령을 부릅니다.
-- 팀 push 알림(pre-push hook)은 `git-companion`을 `PATH`에서 찾습니다.
-  설치 폴더를 PATH에 추가하거나, 환경 변수 `GIT_COMPANION_BIN`에 exe 전체
-  경로를 넣으세요 ([docs/HOOKS.md](docs/HOOKS.md)).
-- SSH 저장소는 **키 인증**으로 쓰세요. 비밀번호 인증은 `sshpass`가 필요해서
-  Windows에서는 지원되지 않습니다 (`ssh.exe` 자체는 Windows 10부터 기본 포함).
-
-### Linux
-
-```bash
-# 시스템 의존성 (Debian/Ubuntu)
-sudo apt install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
-  libayatana-appindicator3-dev librsvg2-dev build-essential curl wget file
-
-# Rust + Node ≥ 20 + pnpm + Tauri CLI
-curl https://sh.rustup.rs -sSf | sh -s -- -y && rustup default stable
-npm install -g pnpm
-cargo install tauri-cli --version "^2.0"
-
-# 빌드
-pnpm install
-cargo tauri build            # .deb / .rpm / AppImage → target/release/bundle/
-cargo tauri build --no-bundle  # 단독 바이너리만 → target/release/git-companion
+```powershell
+& ".\target\release\bundle\nsis\Git Companion_0.1.0_x64-setup.exe"
 ```
 
-빌드한 바이너리는 pre-push hook이 찾을 수 있게 `PATH`에 두세요
-([docs/HOOKS.md](docs/HOOKS.md)).
+설치 없이 바로 실행해 보려면:
 
-### macOS
+```powershell
+& ".\target\release\git-companion.exe"
+```
+
+- 처음 실행할 때 파란 **"Windows의 PC 보호"** 창이 뜨면 **추가 정보 → 실행**을
+  누르세요 (서명되지 않은 앱이라 뜨는 정상 경고입니다).
+- 팀 push 알림까지 쓰려면 훅이 앱을 찾을 수 있어야 합니다. 아래 한 줄이면 됩니다
+  (실행 후 새 터미널부터 적용):
+
+```powershell
+setx GIT_COMPANION_BIN "$PWD\target\release\git-companion.exe"
+```
+
+#### 문제가 생기면
+
+| 증상 | 해결 |
+| --- | --- |
+| `'cargo'(또는 git, node, pnpm)은(는) … 인식되지 않습니다` | PowerShell 창을 닫고 새로 여세요. 그래도 안 되면 해당 도구를 1·2단계대로 다시 설치. |
+| `error: linker 'link.exe' not found` / `failed to find tool "lib.exe"` | C++ 빌드 도구가 없다는 뜻 — 1단계의 마지막 `winget` 명령(Build Tools)을 다시 실행하고 끝까지 기다리세요. |
+| `cargo tauri build`에서 `no such command: tauri` | 2단계의 `cargo install tauri-cli --version "^2.0"`이 안 끝났거나 실패한 것 — 다시 실행. |
+| 빌드가 20분 넘게 걸린다 | 첫 빌드는 원래 깁니다. 멈춘 게 아니라 컴파일 중이면 그대로 두세요. |
+| 앱은 뜨는데 저장소 등록·커밋이 전부 실패 | Git for Windows가 없는 컴퓨터입니다 — `git --version`으로 확인하고 설치하세요. |
+| SSH 저장소에 비밀번호 인증이 안 됨 | Windows에서는 SSH **키 인증만** 지원합니다 (`sshpass` 없음). |
+
+### Linux에서 빌드하기 (Debian/Ubuntu)
+
+터미널에 순서대로 붙여넣으세요:
 
 ```bash
-xcode-select --install        # 커맨드라인 도구 (한 번만)
+# 1) 시스템 의존성 (한 번만)
+sudo apt update && sudo apt install -y libwebkit2gtk-4.1-dev libssl-dev \
+  libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
+  build-essential curl wget file git
+
+# 2) Rust + Node 22 + pnpm + Tauri CLI (한 번만)
+curl https://sh.rustup.rs -sSf | sh -s -- -y && . "$HOME/.cargo/env"
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt install -y nodejs
+sudo npm install -g pnpm
+cargo install tauri-cli --version "^2.0"
+
+# 3) 소스 받고 빌드
+git clone https://github.com/senghan1992/team-git.git
+cd team-git
 pnpm install
-cargo tauri build             # .app / .dmg → target/release/bundle/
+cargo tauri build --no-bundle
+
+# 4) 실행 (pre-push 알림 훅이 찾을 수 있게 PATH에 링크)
+sudo ln -sf "$PWD/target/release/git-companion" /usr/local/bin/git-companion
+git-companion
+```
+
+`.deb`/`AppImage` 패키지가 필요하면 `--no-bundle`을 빼고 `cargo tauri build`
+하면 `target/release/bundle/` 아래에 생깁니다.
+
+### macOS에서 빌드하기
+
+```bash
+# 1) 도구 (한 번만) — Homebrew가 없으면 https://brew.sh 에서 먼저 설치
+xcode-select --install
+curl https://sh.rustup.rs -sSf | sh -s -- -y && . "$HOME/.cargo/env"
+brew install node && npm install -g pnpm
+cargo install tauri-cli --version "^2.0"
+
+# 2) 소스 받고 빌드
+git clone https://github.com/senghan1992/team-git.git
+cd team-git
+pnpm install
+cargo tauri build     # .app / .dmg → target/release/bundle/
 ```
 
 ### 개발 모드로 실행
+
+코드를 고치면서 바로 확인하려면:
 
 ```bash
 pnpm install
