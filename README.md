@@ -4,9 +4,13 @@
 병합 관리자가 병합 브랜치로 모으기 → 팀원 동기화**의 한 바퀴를 터미널 없이
 돌릴 수 있게 만든 데스크톱 앱입니다.
 
-전체 흐름과 화면별 사용법은 **[docs/WORKFLOW.md](docs/WORKFLOW.md)** 를 보세요.
-데스크톱 앱을 빌드하지 않고 **브라우저에서 바로 보면서 작업**하려면
-**[docs/PREVIEW.md](docs/PREVIEW.md)** — `pnpm seed:demo && pnpm dev:web` 두 줄이면 됩니다.
+```bash
+git clone https://github.com/senghan1992/team-git.git
+```
+
+- **직접 빌드해서 쓰기 (Windows .exe 포함)** → 아래 [설치 · 빌드](#설치--빌드) — 준비물부터 배포 파일 위치까지.
+- 전체 흐름과 화면별 사용법 → **[docs/WORKFLOW.md](docs/WORKFLOW.md)**
+- 빌드 없이 **브라우저에서 바로 보면서 작업** → **[docs/PREVIEW.md](docs/PREVIEW.md)** — `pnpm seed:demo && pnpm dev:web` 두 줄이면 됩니다.
 
 ## 이 앱이 푸는 문제
 
@@ -69,37 +73,89 @@ python3.11 -m venv .venv && ./.venv/bin/pip install -e ".[dev]"
   저장소 경로에서 바로 띄웁니다. 명령은 앱이 실행 중인 컴퓨터에서 돌아가므로
   SSH로 등록한 저장소에서는 버튼이 나타나지 않습니다.
 
-## Install / build
+## 설치 · 빌드
 
-### System dependencies (Debian/Ubuntu)
+소스는 GitHub에 있습니다:
 
 ```bash
+git clone https://github.com/senghan1992/team-git.git
+cd team-git
+```
+
+Tauri는 크로스 컴파일을 지원하지 않으므로 **배포할 OS에서 빌드합니다** —
+Windows용 `.exe`는 Windows에서, Linux용은 Linux에서 만듭니다.
+
+### Windows — 배포용 .exe 만들기
+
+**준비물 (빌드하는 컴퓨터에 한 번만 설치):**
+
+| 무엇 | 왜 필요한가 | 어디서 |
+| --- | --- | --- |
+| **Git for Windows** | 앱이 `git` 명령을 호출합니다 — 빌드뿐 아니라 **앱을 쓰는 모든 컴퓨터에 필수** | <https://git-scm.com/download/win> |
+| **Visual Studio Build Tools 2022** — "C++를 사용한 데스크톱 개발" 워크로드 | Rust MSVC 컴파일러·링커 (`lib.exe`, `link.exe`) | <https://visualstudio.microsoft.com/ko/visual-cpp-build-tools/> |
+| **Rust** (rustup) | 앱 코어 컴파일 | <https://rustup.rs> → 설치 후 `rustup default stable` |
+| **Node.js ≥ 20** + pnpm | 프런트엔드 빌드 | <https://nodejs.org> → `npm install -g pnpm` |
+| **Tauri CLI** | 빌드·번들 명령 | `cargo install tauri-cli --version "^2.0"` |
+| WebView2 런타임 | 앱 화면 렌더링 | Windows 10/11에는 대부분 기본 탑재 — 없으면 설치 파일이 알아서 챙깁니다 |
+
+**빌드 (PowerShell 또는 Git Bash에서):**
+
+```bash
+pnpm install
+cargo tauri build
+```
+
+**결과물 — `target\release\` 아래에 생깁니다:**
+
+| 파일 | 용도 |
+| --- | --- |
+| `bundle\nsis\Git Companion_0.1.0_x64-setup.exe` | **배포용 설치 파일 — 팀원에게는 이 파일 하나만 주면 됩니다** |
+| `bundle\msi\Git Companion_0.1.0_x64_en-US.msi` | MSI 배포를 선호하는 조직용 |
+| `git-companion.exe` | 설치 없이 그대로 실행하는 단독 파일 |
+
+NSIS·WiX 번들 도구는 Tauri CLI가 첫 빌드 때 자동으로 내려받으므로 따로
+설치할 것이 없습니다.
+
+**Windows에서 알아둘 것:**
+
+- 받는 사람의 컴퓨터에도 **Git for Windows가 설치되어 있어야** 합니다 —
+  앱의 모든 git 동작이 `git` 명령을 부릅니다.
+- 팀 push 알림(pre-push hook)은 `git-companion`을 `PATH`에서 찾습니다.
+  설치 폴더를 PATH에 추가하거나, 환경 변수 `GIT_COMPANION_BIN`에 exe 전체
+  경로를 넣으세요 ([docs/HOOKS.md](docs/HOOKS.md)).
+- SSH 저장소는 **키 인증**으로 쓰세요. 비밀번호 인증은 `sshpass`가 필요해서
+  Windows에서는 지원되지 않습니다 (`ssh.exe` 자체는 Windows 10부터 기본 포함).
+
+### Linux
+
+```bash
+# 시스템 의존성 (Debian/Ubuntu)
 sudo apt install -y libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev \
   libayatana-appindicator3-dev librsvg2-dev build-essential curl wget file
-```
 
-### Rust toolchain
-
-```bash
-curl https://sh.rustup.rs -sSf | sh -s -- -y
-rustup default stable
-```
-
-### Node + pnpm
-
-Node ≥ 20 and `pnpm` are required for the frontend build.
-
-```bash
-npm install -g pnpm     # or: corepack enable pnpm
-```
-
-### Tauri CLI
-
-```bash
+# Rust + Node ≥ 20 + pnpm + Tauri CLI
+curl https://sh.rustup.rs -sSf | sh -s -- -y && rustup default stable
+npm install -g pnpm
 cargo install tauri-cli --version "^2.0"
+
+# 빌드
+pnpm install
+cargo tauri build            # .deb / .rpm / AppImage → target/release/bundle/
+cargo tauri build --no-bundle  # 단독 바이너리만 → target/release/git-companion
 ```
 
-### Build & run (development)
+빌드한 바이너리는 pre-push hook이 찾을 수 있게 `PATH`에 두세요
+([docs/HOOKS.md](docs/HOOKS.md)).
+
+### macOS
+
+```bash
+xcode-select --install        # 커맨드라인 도구 (한 번만)
+pnpm install
+cargo tauri build             # .app / .dmg → target/release/bundle/
+```
+
+### 개발 모드로 실행
 
 ```bash
 pnpm install
@@ -113,16 +169,6 @@ Rust 툴체인이나 WebKitGTK 없이 화면만 보려면 브라우저 미리보
 pnpm seed:demo    # 데모 저장소 + 팀원 브랜치 3개 (한 번만)
 pnpm dev:web      # 접속 주소를 출력합니다
 ```
-
-### Build release binary
-
-```bash
-cargo tauri build --no-bundle
-# binary lands at target/release/git-companion
-```
-
-After installing the binary, ensure it is on your `PATH` so the pre-push hook
-can find it. See `docs/HOOKS.md`.
 
 ## First-run flow
 

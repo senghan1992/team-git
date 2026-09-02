@@ -2,6 +2,7 @@
 use crate::config_store::hooks_dir;
 use crate::error::{AppError, AppResult};
 use crate::git::run;
+#[cfg(unix)]
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::path::Path;
 
@@ -28,9 +29,14 @@ pub fn install(repo_path: &Path) -> AppResult<()> {
     std::fs::create_dir_all(&dir)?;
     let hook_path = dir.join("pre-push");
     std::fs::write(&hook_path, TEMPLATE)?;
+    // Windows에는 실행 비트가 없다 — Git for Windows는 셔뱅(#!)을 보고
+    // 자기 sh로 훅을 실행하므로 chmod 없이도 동작한다.
+    #[cfg(unix)]
     std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))?;
 
-    // Backup symlink under .git/hooks (in case hooksPath is ignored).
+    // Backup under .git/hooks (in case hooksPath is ignored). Unix는 symlink로
+    // (템플릿 갱신이 자동 반영), symlink에 관리자 권한이 필요한 Windows는
+    // 복사본으로 — 앱이 매 실행마다 재설치하므로 어차피 최신으로 유지된다.
     let backup = repo_path.join(".git").join("hooks").join("pre-push");
     if let Some(parent) = backup.parent() {
         std::fs::create_dir_all(parent)?;
@@ -38,7 +44,10 @@ pub fn install(repo_path: &Path) -> AppResult<()> {
     if backup.exists() || std::fs::symlink_metadata(&backup).is_ok() {
         let _ = std::fs::remove_file(&backup);
     }
+    #[cfg(unix)]
     let _ = symlink(&hook_path, &backup);
+    #[cfg(not(unix))]
+    let _ = std::fs::copy(&hook_path, &backup);
 
     run(
         Some(repo_path),

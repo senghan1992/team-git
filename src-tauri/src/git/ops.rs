@@ -322,11 +322,17 @@ fn push_with_askpass(
 }
 
 fn write_askpass_local(path: &std::path::Path, script: &str) -> AppResult<()> {
-    use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, script)?;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o700);
-    std::fs::set_permissions(path, perms)?;
+    // 0700: 비밀번호가 담긴 파일을 다른 사용자가 읽지 못하게. Windows에는
+    // 모드 비트가 없고(사용자별 %TEMP%가 이미 격리) Git for Windows가 셔뱅으로
+    // 실행하므로 실행 비트도 필요 없다.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(path)?.permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(path, perms)?;
+    }
     Ok(())
 }
 
