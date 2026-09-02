@@ -130,7 +130,7 @@ fn ssh_run(
 /// cheap git work-tree check for the current path. Empty `path` starts at the
 /// user's home directory.
 #[tauri::command]
-pub fn browse_ssh_dir(target: SshTarget, path: String) -> AppResult<SshDirListing> {
+pub async fn browse_ssh_dir(target: SshTarget, path: String) -> AppResult<SshDirListing> {
     if target.ssh_host.is_empty() {
         return Err(AppError::SshAuth(
             "SSH 호스트를 먼저 입력하세요.".to_string(),
@@ -247,7 +247,7 @@ pub fn list_repositories() -> AppResult<Vec<Repository>> {
 /// 무엇을 해야 하는지 모르고, 터미널로 나가야 한다는 뜻이기도 하다.
 /// 되돌릴 수 있는 안전한 동작이므로(`.git` 폴더만 생긴다) 앱에서 해 준다.
 #[tauri::command]
-pub fn init_repository(path: String) -> AppResult<Repository> {
+pub async fn init_repository(path: String) -> AppResult<Repository> {
     let expanded = crate::git::expand_tilde(&path);
     let p = std::path::Path::new(&expanded);
     if !p.exists() {
@@ -266,7 +266,8 @@ pub fn init_repository(path: String) -> AppResult<Repository> {
         return register_repository(RegisterProjectArgs {
             project_path: expanded,
             ..Default::default()
-        });
+        })
+        .await;
     }
     let out = crate::git::run(Some(p), ["init", "-b", "main"])?;
     if !out.ok() {
@@ -279,10 +280,11 @@ pub fn init_repository(path: String) -> AppResult<Repository> {
         project_path: expanded,
         ..Default::default()
     })
+    .await
 }
 
 #[tauri::command]
-pub fn register_repository(args: RegisterProjectArgs) -> AppResult<Repository> {
+pub async fn register_repository(args: RegisterProjectArgs) -> AppResult<Repository> {
     // 1. Verify .git exists.
     //
     // 로컬 경로는 `~` 를 펼쳐 **확장된 경로로 저장**한다. 그러지 않으면 등록은

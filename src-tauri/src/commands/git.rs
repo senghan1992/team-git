@@ -28,38 +28,38 @@ pub(crate) fn resolve_target(id: Uuid) -> AppResult<(Target, config_store::Repos
 }
 
 #[tauri::command]
-pub fn list_branches(repo_id: Uuid) -> AppResult<Vec<git::Branch>> {
+pub async fn list_branches(repo_id: Uuid) -> AppResult<Vec<git::Branch>> {
     let (target, _) = resolve_target(repo_id)?;
     git::list_branches_at(&target)
 }
 
 #[tauri::command]
-pub fn list_commits(repo_id: Uuid, branch: String, count: u32) -> AppResult<Vec<git::Commit>> {
+pub async fn list_commits(repo_id: Uuid, branch: String, count: u32) -> AppResult<Vec<git::Commit>> {
     let (target, _) = resolve_target(repo_id)?;
     ops::list_commits(&target, &branch, count)
 }
 
 #[tauri::command]
-pub fn status(repo_id: Uuid) -> AppResult<git::WorkingTreeStatus> {
-    let (target, _) = resolve_target(repo_id)?;
-    ops::list_status(&target)
+pub async fn status(repo_id: Uuid) -> AppResult<git::WorkingTreeStatus> {
+    let (target, repo) = resolve_target(repo_id)?;
+    ops::list_status_with_base(&target, &repo.default_branch)
 }
 
 #[tauri::command]
-pub fn add_files(repo_id: Uuid, paths: Vec<String>) -> AppResult<git::WorkingTreeStatus> {
+pub async fn add_files(repo_id: Uuid, paths: Vec<String>) -> AppResult<git::WorkingTreeStatus> {
     let (target, _) = resolve_target(repo_id)?;
     ops::add(&target, &paths)?;
     ops::list_status(&target)
 }
 
 #[tauri::command]
-pub fn commit(repo_id: Uuid, message: String, stage_all: bool) -> AppResult<ops::CommitResult> {
+pub async fn commit(repo_id: Uuid, message: String, stage_all: bool) -> AppResult<ops::CommitResult> {
     let (target, _) = resolve_target(repo_id)?;
     ops::commit(&target, &message, stage_all)
 }
 
 #[tauri::command]
-pub fn push(
+pub async fn push(
     repo_id: Uuid,
     branch: Option<String>,
     credentials: Option<config_store::PushCredential>,
@@ -76,13 +76,13 @@ pub fn push(
 }
 
 #[tauri::command]
-pub fn pull(repo_id: Uuid) -> AppResult<ops::PullOutcome> {
+pub async fn pull(repo_id: Uuid) -> AppResult<ops::PullOutcome> {
     let (target, _) = resolve_target(repo_id)?;
     ops::pull(&target)
 }
 
 #[tauri::command]
-pub fn diff(
+pub async fn diff(
     repo_id: Uuid,
     pathspec: Option<String>,
     staged: bool,
@@ -100,14 +100,14 @@ pub fn diff(
 }
 
 #[tauri::command]
-pub fn stash(repo_id: Uuid, action: String) -> AppResult<()> {
+pub async fn stash(repo_id: Uuid, action: String) -> AppResult<()> {
     let (target, _) = resolve_target(repo_id)?;
     let action = parse_stash_action(&action)?;
     ops::stash(&target, action)
 }
 
 #[tauri::command]
-pub fn stash_list(repo_id: Uuid) -> AppResult<Vec<ops::StashEntry>> {
+pub async fn stash_list(repo_id: Uuid) -> AppResult<Vec<ops::StashEntry>> {
     let (target, _) = resolve_target(repo_id)?;
     ops::list_stashes(&target)
 }
@@ -137,13 +137,13 @@ fn parse_stash_action(s: &str) -> AppResult<StashAction> {
 }
 
 #[tauri::command]
-pub fn create_branch(repo_id: Uuid, branch: String) -> AppResult<()> {
+pub async fn create_branch(repo_id: Uuid, branch: String) -> AppResult<()> {
     let (target, _) = resolve_target(repo_id)?;
     ops::create_branch(&target, &branch)
 }
 
 #[tauri::command]
-pub fn checkout_branch(repo_id: Uuid, branch: String) -> AppResult<()> {
+pub async fn checkout_branch(repo_id: Uuid, branch: String) -> AppResult<()> {
     let (target, _) = resolve_target(repo_id)?;
     ops::checkout_branch(&target, &branch)
 }
@@ -160,13 +160,13 @@ pub struct MergeState {
 pub const MERGE_REMOTE: &str = "origin";
 
 #[tauri::command]
-pub fn fetch_repo(repo_id: Uuid) -> AppResult<String> {
+pub async fn fetch_repo(repo_id: Uuid) -> AppResult<String> {
     let (target, _) = resolve_target(repo_id)?;
     git::fetch::fetch_target(&target, MERGE_REMOTE)
 }
 
 #[tauri::command]
-pub fn list_pending_branches(
+pub async fn list_pending_branches(
     repo_id: Uuid,
     base: String,
 ) -> AppResult<Vec<git::merge::PendingBranch>> {
@@ -175,7 +175,7 @@ pub fn list_pending_branches(
 }
 
 #[tauri::command]
-pub fn start_merge(
+pub async fn start_merge(
     repo_id: Uuid,
     branch_ref: String,
     base: String,
@@ -184,8 +184,81 @@ pub fn start_merge(
     git::merge::start_merge(&target, &branch_ref, &base, MERGE_REMOTE)
 }
 
+/// 병합 대기 브랜치의 한 파일이 base와 얼마나 다른지 —
+/// `git diff <remote>/<base>...<branch> -- <path>`. 병합 관리자가 파일 이름만
+/// 보고 병합을 결정하지 않도록, 카드의 파일 칩에서 실제 변경을 보여 준다.
 #[tauri::command]
-pub fn merge_state(repo_id: Uuid) -> AppResult<MergeState> {
+pub async fn branch_file_diff(
+    repo_id: Uuid,
+    base: String,
+    branch_ref: String,
+    path: String,
+) -> AppResult<String> {
+    let (target, _) = resolve_target(repo_id)?;
+    let range = format!("{MERGE_REMOTE}/{base}...{branch_ref}");
+    let out = git::run_at_target(&target, ["diff", &range, "--", &path])?;
+    if !out.ok() {
+        return Err(AppError::Git(format!("diff 실패: {}", out.stderr.trim())));
+    }
+    Ok(out.stdout)
+}
+
+/// 병합이 끝나 base에 완전히 포함된 원격 브랜치 목록 — 정리(삭제) 후보.
+#[tauri::command]
+pub async fn list_merged_remote_branches(
+    repo_id: Uuid,
+    base: String,
+) -> AppResult<Vec<git::merge::MergedRemoteBranch>> {
+    let (target, _) = resolve_target(repo_id)?;
+    let mut merged = git::merge::list_merged_remote_branches(&target, MERGE_REMOTE, &base)?;
+    // 병합 대상 브랜치(develop, release/1.0 …)는 다른 base의 조상이어도
+    // 정리 후보가 아니다 — 팀의 합류 지점이지 작업 브랜치가 아니다.
+    let targets = merge_target_branches(&target, &base);
+    merged.retain(|b| !targets.contains(&b.short_name));
+    Ok(merged)
+}
+
+/// 병합이 끝난 원격 브랜치를 origin에서 삭제한다.
+#[tauri::command]
+pub async fn delete_remote_branch(repo_id: Uuid, base: String, branch: String) -> AppResult<()> {
+    let (target, _) = resolve_target(repo_id)?;
+    // .gpconfig의 병합 대상 브랜치는 어떤 경우에도 지우지 않는다.
+    if merge_target_branches(&target, &base).contains(&branch) {
+        return Err(AppError::Git(format!(
+            "{branch}은(는) 병합 대상 브랜치라 삭제할 수 없습니다."
+        )));
+    }
+    git::merge::delete_remote_branch(&target, MERGE_REMOTE, &base, &branch)
+}
+
+/// `.gpconfig`의 병합 대상 브랜치 + 기본 base. 설정을 못 읽어도 base는 지킨다.
+fn merge_target_branches(target: &git::Target, base: &str) -> Vec<String> {
+    let mut out = vec![base.to_string()];
+    if let Ok((cfg, exists)) = crate::gpconfig::read_config_effective(target, base, MERGE_REMOTE) {
+        if exists {
+            for t in &cfg.merge_targets {
+                if !out.contains(t) {
+                    out.push(t.clone());
+                }
+            }
+            if !cfg.default_base_branch.is_empty() && !out.contains(&cfg.default_base_branch) {
+                out.push(cfg.default_base_branch.clone());
+            }
+        }
+    }
+    out
+}
+
+/// 로컬 base가 origin/<base>보다 앞선 커밋 수 — 병합 커밋은 만들어졌는데
+/// push가 실패/취소된 상태를 UI가 재시작 후에도 알아볼 수 있게 한다.
+#[tauri::command]
+pub async fn base_unpushed_count(repo_id: Uuid, base: String) -> AppResult<u32> {
+    let (target, _) = resolve_target(repo_id)?;
+    git::merge::base_unpushed_count(&target, MERGE_REMOTE, &base)
+}
+
+#[tauri::command]
+pub async fn merge_state(repo_id: Uuid) -> AppResult<MergeState> {
     let (target, _) = resolve_target(repo_id)?;
     let in_progress = git::merge::merge_in_progress(&target)?;
     let files = if in_progress {
@@ -200,13 +273,13 @@ pub fn merge_state(repo_id: Uuid) -> AppResult<MergeState> {
 }
 
 #[tauri::command]
-pub fn conflict_detail(repo_id: Uuid, path: String) -> AppResult<git::merge::ConflictDetail> {
+pub async fn conflict_detail(repo_id: Uuid, path: String) -> AppResult<git::merge::ConflictDetail> {
     let (target, _) = resolve_target(repo_id)?;
     git::merge::conflict_detail(&target, &path)
 }
 
 #[tauri::command]
-pub fn resolve_conflict(
+pub async fn resolve_conflict(
     repo_id: Uuid,
     path: String,
     resolution: git::merge::Resolution,
@@ -216,13 +289,13 @@ pub fn resolve_conflict(
 }
 
 #[tauri::command]
-pub fn abort_merge(repo_id: Uuid) -> AppResult<()> {
+pub async fn abort_merge(repo_id: Uuid) -> AppResult<()> {
     let (target, _) = resolve_target(repo_id)?;
     git::merge::abort_merge(&target)
 }
 
 #[tauri::command]
-pub fn complete_merge(
+pub async fn complete_merge(
     repo_id: Uuid,
     message: Option<String>,
 ) -> AppResult<git::merge::MergeOutcome> {
@@ -251,7 +324,6 @@ fn merge_head_branch_name(target: &git::Target) -> AppResult<String> {
             ],
         )?;
         if out.ok() {
-            let mut remote = String::new();
             for line in out.stdout.lines() {
                 let line = line.trim();
                 if line.is_empty() {

@@ -160,12 +160,24 @@ fn session_stores_a_token_and_never_a_password() {
         "토큰은 저장된다 (로그인 유지용)"
     );
     assert!(
-        !raw.contains("password"),
-        "비밀번호 필드가 있어서는 안 된다"
-    );
-    assert!(
         !raw.contains("password_hash"),
         "비밀번호 해시도 앱에 저장하지 않는다 — 서버만 갖는다"
+    );
+    // 세션 블록 자체에는 user + token 만 들어간다 — 로그인 비밀번호는 어떤
+    // 키로도 남지 않는다. (ssh_profile.default_password 는 SSH 접속용으로
+    // 문서화된 별개 설정이므로 파일 전체가 아니라 세션만 본다.)
+    let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let session = parsed
+        .get("session")
+        .and_then(|s| s.as_object())
+        .expect("session 블록이 있어야 한다");
+    let mut keys: Vec<&str> = session.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["token", "user"], "세션에는 user와 token만 남는다");
+    let user_json = serde_json::to_string(session.get("user").unwrap()).unwrap();
+    assert!(
+        !user_json.contains("password"),
+        "세션 사용자에 비밀번호 필드가 있어서는 안 된다"
     );
 }
 

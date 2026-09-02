@@ -20,14 +20,45 @@ pub async fn peer_register_device(backend_url: String, name: String) -> AppResul
     Ok(info)
 }
 
+/// 서버가 이 기기를 알기 전에는 팀 만들기·합류·폴링이 전부 401로 죽는다.
+/// 예전에는 `peer_register_device`를 아무도 호출하지 않아 새 설치에서
+/// "팀 만들기"가 곧바로 실패했다 — 서버를 쓰는 커맨드가 시작하기 전에
+/// 여기서 조용히 한 번 등록한다 (서버 쪽은 같은 토큰 재등록을 멱등 처리).
+async fn ensure_device_registered() -> AppResult<(String, String)> {
+    let cfg = crate::config_store::load()?;
+    let token = peer::load_or_create_token()?;
+    let backend = if cfg.peer.backend_url.is_empty() {
+        "http://127.0.0.1:8000".to_string()
+    } else {
+        cfg.peer.backend_url.clone()
+    };
+    if cfg.peer.device_id.is_empty() {
+        let name = cfg
+            .session
+            .as_ref()
+            .map(|s| s.user.name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .or_else(|| std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty()))
+            .unwrap_or_else(|| "Git Companion".to_string());
+        let info = peer::register_device(&backend, &token, &name).await?;
+        let mut cfg = crate::config_store::load()?;
+        cfg.peer.backend_url = backend.clone();
+        cfg.peer.device_token = token.clone();
+        cfg.peer.device_id = info.id;
+        cfg.peer.device_name = name;
+        crate::config_store::save(&cfg)?;
+    }
+    Ok((backend, token))
+}
+
 #[tauri::command]
 pub async fn peer_create_project(
     name: String,
     repo_id: Option<Uuid>,
 ) -> AppResult<PeerProjectInfo> {
+    let (backend, token) = ensure_device_registered().await?;
     let cfg = crate::config_store::load()?;
-    let token = peer::load_or_create_token()?;
-    let info = peer::create_project(&cfg.peer.backend_url, &token, &name).await?;
+    let info = peer::create_project(&backend, &token, &name).await?;
 
     if let Some(r_id) = repo_id {
         if let Some(repo) = cfg.repositories.iter().find(|r| r.id == r_id) {
@@ -45,9 +76,9 @@ pub async fn peer_create_project(
 
 #[tauri::command]
 pub async fn peer_join_project(code: String, repo_id: Option<Uuid>) -> AppResult<PeerProjectInfo> {
+    let (backend, token) = ensure_device_registered().await?;
     let cfg = crate::config_store::load()?;
-    let token = peer::load_or_create_token()?;
-    let info = peer::join_project(&cfg.peer.backend_url, &token, &code).await?;
+    let info = peer::join_project(&backend, &token, &code).await?;
 
     if let Some(r_id) = repo_id {
         if let Some(repo) = cfg.repositories.iter().find(|r| r.id == r_id) {
@@ -65,9 +96,8 @@ pub async fn peer_join_project(code: String, repo_id: Option<Uuid>) -> AppResult
 
 #[tauri::command]
 pub async fn peer_list_projects() -> AppResult<Vec<PeerProjectInfo>> {
-    let cfg = crate::config_store::load()?;
-    let token = peer::load_or_create_token()?;
-    peer::list_projects(&cfg.peer.backend_url, &token).await
+    let (backend, token) = ensure_device_registered().await?;
+    peer::list_projects(&backend, &token).await
 }
 
 #[tauri::command]
@@ -215,18 +245,18 @@ pub async fn peer_poll_now() -> AppResult<()> {
 
     let store = Store::open()?;
     let cfg = crate::config_store::load()?;
-    if cfg.peer.backend_url.is_empty() || cfg.peer.device_token.is_empty() {
+    // 팀 서버를 설정한 적이 없으면 조용히 넘어간다 (알림은 선택 기능).
+    if cfg.peer.backend_url.is_empty() {
         return Ok(());
     }
+    // 서버가 이 기기를 모르면 폴링은 영원히 401이다 — 필요하면 등록부터.
+    let (backend, token) = ensure_device_registered().await?;
     let client = reqwest::Client::new();
     loop {
-        let url = format!(
-            "{}/events/poll?wait=0",
-            cfg.peer.backend_url.trim_end_matches('/')
-        );
+        let url = format!("{}/events/poll?wait=0", backend.trim_end_matches('/'));
         let resp = client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", cfg.peer.device_token))
+            .header("Authorization", format!("Bearer {}", token))
             .timeout(std::time::Duration::from_secs(35))
             .send()
             .await
@@ -321,6 +351,13 @@ pub fn peer_list_team_events(
 pub fn peer_mark_team_read(id: String) -> AppResult<()> {
     let store = crate::notify::store::Store::open()?;
     store.mark_team_read(&id)
+}
+
+/// Mark every team event as read — the inbox's "모두 읽음".
+#[tauri::command]
+pub fn peer_mark_all_team_read() -> AppResult<u32> {
+    let store = crate::notify::store::Store::open()?;
+    store.mark_all_team_read()
 }
 
 // ── Email invite commands ────────────────────────────────────────────────────────

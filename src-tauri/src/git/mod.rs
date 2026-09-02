@@ -1,7 +1,9 @@
 //! Thin wrapper around the system `git` binary.
 //!
-//! v1 deliberately avoids libgit2. We invoke `git` via `std::process::Command`
-//! with a 30s timeout (enforced by the parent process via tokio::time::timeout).
+//! v1 deliberately avoids libgit2. We invoke `git` via `std::process::Command`.
+//! Every invocation goes through `output_with_timeout` (hard cap, see
+//! `EXEC_TIMEOUT`); SSH sessions additionally carry keepalive options so a
+//! dead connection fails in seconds instead of pinning a worker for minutes.
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -186,7 +188,9 @@ pub fn read_file_at_target(target: &Target, rel_path: &str) -> AppResult<Vec<u8>
             let full = format!("{}/{}", path.to_string_lossy(), rel_path);
             let mut cmd = build_ssh_cmd(user, host, key, *port, password);
             cmd.arg("--").arg(format!("cat {}", shell_quote(&full)));
-            let out = cmd.output().map_err(|e| AppError::Io(e.to_string()))?;
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let out = output_with_timeout(&mut cmd, EXEC_TIMEOUT)
+                .map_err(|e| AppError::Io(e.to_string()))?;
             if !out.status.success() {
                 // Empty file or unreachable host — caller treats empty body as
                 // "no working copy available", which is the safe default for
@@ -239,6 +243,11 @@ pub fn build_ssh_cmd(
         c
     };
     cmd.arg("-o").arg("ConnectTimeout=5");
+    // 연결 후 네트워크가 끊기면 TCP만으로는 몇 분씩 매달린다 — keepalive 로
+    // 죽은 세션을 ~15초(5s×3회) 안에 끊는다. 데이터가 오가는 동안에는
+    // 발동하지 않으므로 오래 걸리는 정상 push/fetch 는 죽이지 않는다.
+    cmd.arg("-o").arg("ServerAliveInterval=5");
+    cmd.arg("-o").arg("ServerAliveCountMax=3");
     if port != 22 {
         cmd.arg("-p").arg(port.to_string());
     }
@@ -271,7 +280,8 @@ pub fn run_ssh_cmd(
             if use_password { password } else { "" },
         );
         cmd.arg(remote_cmd);
-        cmd.output().map_err(|e| map_ssh_spawn_err(e, use_password))
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        output_with_timeout(&mut cmd, EXEC_TIMEOUT).map_err(|e| map_ssh_spawn_err(e, use_password))
     };
     if password_auth && !key.is_empty() {
         let first = attempt(true)?;
@@ -342,8 +352,7 @@ pub fn run_ssh_command(
         );
         cmd.arg("--").arg(remote);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let output = cmd
-            .output()
+        let output = output_with_timeout(&mut cmd, EXEC_TIMEOUT)
             .map_err(|e| map_ssh_spawn_err(e, use_password))?;
         Ok(GitOutput {
             status: output.status.code().unwrap_or(-1),
@@ -360,6 +369,68 @@ pub fn run_ssh_command(
         return run_once(false);
     }
     run_once(pw)
+}
+
+/// 프로세스 실행 하드 캡. keepalive/ConnectTimeout 이 잡지 못하는 나머지
+/// (스크립트가 멈춘 훅, 응답 없는 자격증명 헬퍼 등)를 위한 최후의 보루다.
+/// 큰 저장소의 정상 push/fetch 를 죽이지 않도록 넉넉하게 잡는다.
+const EXEC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// `Command::output()` 대체 — stdout/stderr 를 스레드로 계속 읽으면서
+/// (파이프가 가득 차 자식이 멈추는 교착 방지) 시한을 넘기면 프로세스를
+/// 죽이고 오류를 돌려준다. UI 가 영원히 "…중"에 머무는 일이 없게 한다.
+fn output_with_timeout(
+    cmd: &mut Command,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
+    use std::io::Read;
+    use std::time::Instant;
+
+    cmd.stdin(Stdio::null());
+    let mut child = cmd.spawn()?;
+    let mut out_pipe = child.stdout.take();
+    let mut err_pipe = child.stderr.take();
+    let out_t = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = out_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let err_t = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(st) = child.try_wait()? {
+            break st;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // 읽기 스레드는 파이프가 닫히며 스스로 끝난다.
+            let _ = out_t.join();
+            let _ = err_t.join();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "{}초 안에 끝나지 않아 중단했습니다 — 네트워크/원격 상태를 확인하세요.",
+                    timeout.as_secs()
+                ),
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out_t.join().unwrap_or_default(),
+        stderr: err_t.join().unwrap_or_default(),
+    })
 }
 
 /// Run a git subcommand in `cwd`. Captures stdout+stderr.
@@ -380,9 +451,8 @@ where
     cmd.env("LC_ALL", "C.UTF-8");
     cmd.env("LANG", "C.UTF-8");
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = cmd
-        .output()
-        .map_err(|e| AppError::Git(format!("failed to spawn git: {e}")))?;
+    let output = output_with_timeout(&mut cmd, EXEC_TIMEOUT)
+        .map_err(|e| AppError::Git(format!("git 실행 실패: {e}")))?;
     Ok(GitOutput {
         status: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -416,9 +486,8 @@ where
         cmd.env(k, v);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let output = cmd
-        .output()
-        .map_err(|e| AppError::Git(format!("failed to spawn git: {e}")))?;
+    let output = output_with_timeout(&mut cmd, EXEC_TIMEOUT)
+        .map_err(|e| AppError::Git(format!("git 실행 실패: {e}")))?;
     Ok(GitOutput {
         status: output.status.code().unwrap_or(-1),
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -552,4 +621,86 @@ pub fn resolve_repo_path(input: &str) -> AppResult<std::path::PathBuf> {
         )));
     }
     Ok(p)
+}
+
+// ── 원격 URL 정규화 ─────────────────────────────────────────────────────────
+
+/// 원격 URL을 팀원끼리 비교 가능한 열쇠로 정규화한다: `host/path` 형태.
+///
+/// 알림 이벤트는 이 값으로 "받는 쪽의 어느 등록 저장소 이야기인가"를 찾는다 —
+/// 저장소 폴더 이름은 사람마다 다르지만 origin은 팀이 공유하기 때문이다.
+/// **자격증명(`https://user:token@host/…`)은 반드시 벗겨 낸다** — 이벤트
+/// payload는 팀 전체에 배달되므로 그대로 두면 push 토큰이 유출된다.
+///
+/// 처리: scheme 제거 → userinfo 제거 → scp 형식(`git@host:path`)의 `:`를
+/// `/`로 (포트 번호는 유지) → 끝의 `/`와 `.git` 제거 → 호스트만 소문자.
+pub fn normalize_remote_url(url: &str) -> String {
+    let mut s = url.trim().to_string();
+    if let Some(idx) = s.find("://") {
+        s = s[idx + 3..].to_string();
+    }
+    if let Some(at) = s.rfind('@') {
+        // `user:pass@host/...` 와 scp 형식 `git@host:path` 모두 여기서 벗겨진다.
+        s = s[at + 1..].to_string();
+    }
+    if let Some(colon) = s.find(':') {
+        let after = &s[colon + 1..];
+        let head = after.split('/').next().unwrap_or("");
+        let is_port = !head.is_empty() && head.chars().all(|c| c.is_ascii_digit());
+        if !is_port {
+            s.replace_range(colon..=colon, "/");
+        }
+    }
+    let s = s.trim_end_matches('/');
+    let s = s.strip_suffix(".git").unwrap_or(s);
+    let s = s.trim_end_matches('/');
+    match s.find('/') {
+        Some(i) => format!("{}{}", s[..i].to_lowercase(), &s[i..]),
+        None => s.to_lowercase(),
+    }
+}
+
+#[cfg(test)]
+mod remote_url_tests {
+    use super::normalize_remote_url;
+
+    #[test]
+    fn same_repo_many_spellings_normalize_equal() {
+        let expect = "github.com/team/app";
+        for u in [
+            "https://github.com/team/app.git",
+            "https://github.com/team/app",
+            "http://github.com/team/app.git/",
+            "git@github.com:team/app.git",
+            "ssh://git@github.com/team/app.git",
+            "GITHUB.com/team/app",
+        ] {
+            assert_eq!(normalize_remote_url(u), expect, "input: {u}");
+        }
+    }
+
+    #[test]
+    fn credentials_never_survive() {
+        let n = normalize_remote_url("http://oauth2:glpat-secret@git.corp.com/hub/team/app.git");
+        assert_eq!(n, "git.corp.com/hub/team/app");
+        assert!(!n.contains("secret") && !n.contains("oauth2"));
+    }
+
+    #[test]
+    fn ports_are_kept_and_paths_stay_case_sensitive() {
+        // 포트는 `:` 그대로 유지 — 열쇠는 양쪽이 같은 규칙으로만 만들면 된다.
+        assert_eq!(
+            normalize_remote_url("ssh://git@Host.com:2222/Team/App.git"),
+            "host.com:2222/Team/App"
+        );
+        assert_eq!(
+            normalize_remote_url("https://host.com:8443/team/app.git"),
+            "host.com:8443/team/app"
+        );
+        // scp 형식의 `:`(포트 아님)는 경로 구분자로 바뀐다.
+        assert_eq!(
+            normalize_remote_url("git@host.com:team/app.git"),
+            "host.com/team/app"
+        );
+    }
 }

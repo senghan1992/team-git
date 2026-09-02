@@ -208,7 +208,13 @@ pub async fn fanout_event(
     payload: &str,
 ) -> AppResult<String> {
     let url = format!("{}/events", backend_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
+    // pre-push hook 이 이 함수를 동기 대기한다 — 서버가 응답 없이 매달리면
+    // `git push` 자체가 hook 안에서 영원히 멈추므로, 알림은 push 를 5초
+    // 이상 잡아 두지 않는다 (연결 거부는 즉시 실패해 push 는 정상 진행).
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| AppError::Internal(format!("HTTP 클라이언트 생성 실패: {e}")))?;
     let resp = client
         .post(&url)
         .header("Authorization", auth_header(token))

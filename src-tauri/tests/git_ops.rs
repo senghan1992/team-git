@@ -139,6 +139,130 @@ fn pending_branches_list_ahead_and_changed_files() {
     assert!(paths.contains(&"x.txt"));
 }
 
+/// 병합 커밋은 만들어졌지만 push가 실패/취소된 상태 — 대기 목록이 그 브랜치를
+/// 다시 "병합하라"고 세우면 안 되고(merged_locally 플래그), base가 원격보다
+/// 앞선 커밋 수(base_unpushed_count)로 push 배너를 재구성할 수 있어야 한다.
+#[test]
+fn merged_but_unpushed_branch_is_flagged_not_relisted() {
+    let (bare, work) = make_bare_origin();
+    add_origin_clone(work.path(), bare.path());
+    seed_commit(work.path(), "app.txt", "v1\n", "init");
+    git_run(work.path(), &["push", "-q", "origin", "main"]);
+    git_run(work.path(), &["checkout", "-q", "-b", "feature/m"]);
+    seed_commit(work.path(), "m.txt", "m\n", "feat m");
+    git_run(work.path(), &["push", "-q", "origin", "feature/m"]);
+    git_run(work.path(), &["checkout", "-q", "main"]);
+    // 병합은 했지만 push는 하지 않았다 (push 실패/취소 시나리오).
+    git_run(work.path(), &["merge", "--no-ff", "-q", "feature/m"]);
+
+    let target = Target::Local(work.path().into());
+    let pending = list_pending_branches(&target, "origin", "main").unwrap();
+    let m = pending
+        .iter()
+        .find(|b| b.short_name == "feature/m")
+        .expect("아직 원격 main에 없으므로 목록에는 남는다");
+    assert!(
+        m.merged_locally,
+        "로컬 main에 이미 병합됐음을 표시해야 한다 — UI가 '푸시 대기'로 보여 준다"
+    );
+
+    let unpushed =
+        git_companion::git::merge::base_unpushed_count(&target, "origin", "main").unwrap();
+    assert_eq!(unpushed, 2, "병합 커밋 + feat 커밋이 원격보다 앞서 있다");
+
+    // push하면 둘 다 사라진다.
+    git_run(work.path(), &["push", "-q", "origin", "main"]);
+    git_run(work.path(), &["fetch", "-q", "origin"]);
+    let pending = list_pending_branches(&target, "origin", "main").unwrap();
+    assert!(pending.iter().all(|b| b.short_name != "feature/m"));
+    let unpushed =
+        git_companion::git::merge::base_unpushed_count(&target, "origin", "main").unwrap();
+    assert_eq!(unpushed, 0);
+}
+
+/// 병합이 끝난 원격 브랜치 정리 — 목록에 뜨고, 삭제되며, 아직 병합 안 된
+/// 브랜치는 거부된다 (팀원의 커밋이 지워지면 안 된다).
+#[test]
+fn merged_remote_branches_are_listed_and_deletable() {
+    use git_companion::git::merge::{delete_remote_branch, list_merged_remote_branches};
+
+    let (bare, work) = make_bare_origin();
+    add_origin_clone(work.path(), bare.path());
+    seed_commit(work.path(), "app.txt", "v1\n", "init");
+    git_run(work.path(), &["push", "-q", "origin", "main"]);
+
+    // done: 병합·push까지 끝난 브랜치. wip: 아직 병합 안 된 브랜치.
+    git_run(work.path(), &["checkout", "-q", "-b", "feature/done"]);
+    seed_commit(work.path(), "done.txt", "d\n", "feat done");
+    git_run(work.path(), &["push", "-q", "origin", "feature/done"]);
+    git_run(work.path(), &["checkout", "-q", "main"]);
+    git_run(work.path(), &["merge", "--no-ff", "-q", "feature/done"]);
+    git_run(work.path(), &["push", "-q", "origin", "main"]);
+    git_run(work.path(), &["checkout", "-q", "-b", "feature/wip"]);
+    seed_commit(work.path(), "wip.txt", "w\n", "feat wip");
+    git_run(work.path(), &["push", "-q", "origin", "feature/wip"]);
+    git_run(work.path(), &["checkout", "-q", "main"]);
+    git_run(work.path(), &["fetch", "-q", "origin"]);
+
+    let target = Target::Local(work.path().into());
+    let merged = list_merged_remote_branches(&target, "origin", "main").unwrap();
+    let names: Vec<&str> = merged.iter().map(|b| b.short_name.as_str()).collect();
+    assert!(names.contains(&"feature/done"), "병합 끝난 브랜치는 목록에 (got {names:?})");
+    assert!(!names.contains(&"feature/wip"), "병합 안 된 브랜치는 제외");
+    assert!(!names.contains(&"main"), "base 자신은 제외");
+
+    // 병합 안 된 브랜치 삭제는 거부.
+    let err = delete_remote_branch(&target, "origin", "main", "feature/wip")
+        .expect_err("병합 안 된 브랜치는 지울 수 없어야 한다");
+    assert!(err.to_string().contains("없는 커밋"), "이유를 말한다: {err}");
+    // base 삭제도 거부.
+    assert!(delete_remote_branch(&target, "origin", "main", "main").is_err());
+
+    // 병합 끝난 브랜치는 삭제되고, 원격 ref와 트래킹 ref 모두 사라진다.
+    delete_remote_branch(&target, "origin", "main", "feature/done").unwrap();
+    let ls = git_run(work.path(), &["ls-remote", "--heads", "origin", "feature/done"]);
+    assert!(
+        String::from_utf8_lossy(&ls.stdout).trim().is_empty(),
+        "원격에서 지워져야 한다"
+    );
+    let merged = list_merged_remote_branches(&target, "origin", "main").unwrap();
+    assert!(merged.iter().all(|b| b.short_name != "feature/done"));
+}
+
+/// modify/delete 충돌 — 한쪽이 파일을 지우고 다른 쪽이 수정했다. 충돌 표시가
+/// 없어서 블록 편집기는 빈 화면이 되는 케이스다. 삭제된 쪽을 고르면 파일이
+/// 지워진 채로 스테이징되어야 한다.
+#[test]
+fn modify_delete_conflict_resolves_to_deletion() {
+    let (bare, work) = make_bare_origin();
+    add_origin_clone(work.path(), bare.path());
+    seed_commit(work.path(), "app.txt", "v1\n", "init");
+    seed_commit(work.path(), "doomed.txt", "old\n", "add doomed");
+    git_run(work.path(), &["push", "-q", "origin", "main"]);
+    git_run(work.path(), &["checkout", "-q", "-b", "feature/del"]);
+    git_run(work.path(), &["rm", "-q", "doomed.txt"]);
+    git_run(work.path(), &["commit", "-q", "-m", "delete doomed"]);
+    git_run(work.path(), &["push", "-q", "origin", "feature/del"]);
+    git_run(work.path(), &["checkout", "-q", "main"]);
+    seed_commit(work.path(), "doomed.txt", "modified\n", "modify doomed");
+
+    let target = Target::Local(work.path().into());
+    let outcome = start_merge(&target, "origin/feature/del", "main", "origin").unwrap();
+    assert!(outcome.conflicted, "modify/delete는 충돌이어야 한다");
+    assert!(outcome.conflicted_files.contains(&"doomed.txt".to_string()));
+
+    // theirs(삭제한 쪽)를 고른다 → checkout --theirs 는 스테이지가 없어
+    // 실패하고, 삭제 반영으로 넘어가야 한다.
+    let remaining = resolve_conflict(&target, "doomed.txt", &Resolution::Theirs).unwrap();
+    assert!(remaining.is_empty(), "충돌이 남으면 안 된다: {remaining:?}");
+    assert!(
+        !work.path().join("doomed.txt").exists(),
+        "삭제를 골랐으니 파일이 지워져야 한다"
+    );
+    let done = complete_merge(&target, None).unwrap();
+    assert!(done.ok, "병합 커밋이 만들어져야 한다: {}", done.message);
+}
+
 #[test]
 fn pending_branches_excludes_merged_and_head() {
     let (bare, work) = make_bare_origin();
@@ -755,7 +879,7 @@ fn ssh_password_auth_runs_git_and_files() {
         ssh_password: password.clone(),
         ssh_port: port,
     };
-    let listing = browse_ssh_dir(target, remote_repo.to_string()).unwrap();
+    let listing = tokio_test::block_on(browse_ssh_dir(target, remote_repo.to_string())).unwrap();
     assert!(
         listing.git_repo,
         "browse over password auth must see a work tree"
@@ -817,7 +941,7 @@ fn ssh_password_rejected_falls_back_to_key() {
         ssh_password: wrong_password.clone(),
         ssh_port: port,
     };
-    let listing = browse_ssh_dir(target, "/tmp".to_string()).unwrap();
+    let listing = tokio_test::block_on(browse_ssh_dir(target, "/tmp".to_string())).unwrap();
     assert!(
         !listing.entries.is_empty(),
         "key fallback must list /tmp entries"
@@ -872,12 +996,12 @@ fn browse_ssh_dir_lists_remote_with_git_flag() {
     };
 
     // Home (empty path) resolves to an absolute dir.
-    let home = browse_ssh_dir(target.clone(), String::new()).unwrap();
+    let home = tokio_test::block_on(browse_ssh_dir(target.clone(), String::new())).unwrap();
     assert!(!home.path.is_empty());
     assert!(!home.git_repo);
 
     // The repo root: git flag on, entries include hidden + dirs + files.
-    let listing = browse_ssh_dir(target.clone(), remote_repo.to_string()).unwrap();
+    let listing = tokio_test::block_on(browse_ssh_dir(target.clone(), remote_repo.to_string())).unwrap();
     assert!(listing.git_repo, "path is inside a work tree");
     assert_eq!(listing.path, remote_repo);
     let names: Vec<&str> = listing.entries.iter().map(|e| e.name.as_str()).collect();
@@ -892,13 +1016,15 @@ fn browse_ssh_dir_lists_remote_with_git_flag() {
     assert!(sub.is_dir);
 
     // Subdir inside the work tree still reports git_repo.
-    let sub_listing = browse_ssh_dir(target.clone(), format!("{remote_repo}/sub dir")).unwrap();
+    let sub_listing =
+        tokio_test::block_on(browse_ssh_dir(target.clone(), format!("{remote_repo}/sub dir")))
+            .unwrap();
     assert!(sub_listing.git_repo);
     assert_eq!(sub_listing.entries.len(), 1);
     assert_eq!(sub_listing.entries[0].name, "b.txt");
 
     // Nonexistent path → error, not a crash.
-    assert!(browse_ssh_dir(target, "/no/such/dir".to_string()).is_err());
+    assert!(tokio_test::block_on(browse_ssh_dir(target, "/no/such/dir".to_string())).is_err());
 }
 
 // ── push credentials (.gpconfig-era) ───────────────────────────────────────────
@@ -1073,18 +1199,19 @@ fn gpconfig_save_read_roundtrip_and_commit() {
 }
 
 #[test]
-fn config_store_accounts_and_push_credentials_roundtrip() {
+fn config_store_session_and_push_credentials_roundtrip() {
     // config_store는 실제 홈 config를 쓰므로, 설정 직렬화/역직렬화로 검증한다.
     let mut s = git_companion::config_store::AppSettings::default();
-    s.accounts.push(git_companion::config_store::Account {
-        id: uuid::Uuid::new_v4(),
-        name: "홍길동".into(),
-        email: "hong@example.com".into(),
-        username: None,
-        password_hash: None,
-        created_at: chrono::Utc::now(),
+    s.session = Some(git_companion::config_store::SessionState {
+        user: git_companion::config_store::Account {
+            id: "acc-1".into(),
+            name: "홍길동".into(),
+            email: "hong@example.com".into(),
+            username: "hong".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+        },
+        token: "tok-abc".into(),
     });
-    s.active_account_id = Some(s.accounts[0].id.to_string());
     s.push_credentials.insert(
         "repo-1".into(),
         git_companion::config_store::PushCredential {
@@ -1094,12 +1221,9 @@ fn config_store_accounts_and_push_credentials_roundtrip() {
     );
     let json = serde_json::to_string(&s).unwrap();
     let back: git_companion::config_store::AppSettings = serde_json::from_str(&json).unwrap();
-    assert_eq!(back.accounts.len(), 1);
-    assert_eq!(back.accounts[0].email, "hong@example.com");
-    assert_eq!(
-        back.active_account_id.as_deref(),
-        Some(s.accounts[0].id.to_string().as_str())
-    );
+    let session = back.session.expect("session survives roundtrip");
+    assert_eq!(session.user.email, "hong@example.com");
+    assert_eq!(session.token, "tok-abc");
     assert_eq!(
         back.push_credentials.get("repo-1").unwrap().username,
         "devuser"

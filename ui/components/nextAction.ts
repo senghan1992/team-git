@@ -77,6 +77,20 @@ export function computeNextAction(input: NextActionInput): NextAction {
   }
 
   const ahead = status?.ahead ?? 0;
+  const behind = status?.behind ?? 0;
+
+  // 원격 브랜치가 앞서 있는데 푸시부터 권하면 non-fast-forward 로 거절당한다 —
+  // 받은 뒤 푸시가 순서다.
+  if (ahead > 0 && behind > 0) {
+    return {
+      kind: "sync",
+      label: `받은 뒤 푸시 (↓${behind} ↑${ahead})`,
+      reason: "원격 브랜치에 새 커밋이 있어 지금 푸시하면 거절됩니다. 먼저 동기화하세요.",
+      tab: "work",
+      urgent: true,
+    };
+  }
+
   if (ahead > 0) {
     return {
       kind: "push",
@@ -87,11 +101,23 @@ export function computeNextAction(input: NextActionInput): NextAction {
     };
   }
 
-  const behind = status?.behind ?? 0;
   if (behind > 0) {
     return {
       kind: "sync",
       label: `최신 ${behind}개 가져오기`,
+      reason: `원격에 올라온 내 브랜치의 새 커밋이 있습니다. 받아 오세요.`,
+      tab: "work",
+      urgent: false,
+    };
+  }
+
+  // 병합 브랜치(origin/<base>)가 앞서 있다 — "동기화" 버튼이 실제로 가져올
+  // 커밋 수는 upstream 기준 behind 가 아니라 이 값이다.
+  const behindBase = status?.behind_base ?? 0;
+  if (behindBase > 0) {
+    return {
+      kind: "sync",
+      label: `최신 ${behindBase}개 가져오기`,
       reason: `${baseBranch}에 팀원들의 작업이 반영되어 있습니다. 내 브랜치에 동기화하세요.`,
       tab: "work",
       urgent: false,

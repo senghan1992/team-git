@@ -1,8 +1,10 @@
 import { ipc, ipc_peer, type TeamEventRow } from "../lib/ipc";
+import { repoForEvent } from "../lib/repoMatch";
 import { formatRelative } from "../lib/format";
 import type { Page } from "../components/Sidebar";
 import { icon, type IconName } from "./Icon";
 import { toast } from "./Toast";
+import { setBusy } from "./Busy";
 
 export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLElement> {
   const wrap = document.createElement("div");
@@ -10,14 +12,33 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
 
   let rows: TeamEventRow[] = [];
 
+  /** 카드의 액션이 성공했을 때만 읽음 처리한다 — 실패한 할 일은 배지에 남아야 한다. */
+  async function markRead(r: TeamEventRow) {
+    if (r.read) return;
+    try {
+      await ipc_peer.markTeamRead(r.id);
+      r.read = true;
+      renderMeta();
+      // 사이드바 배지가 즉시 따라오도록 알린다.
+      window.dispatchEvent(new CustomEvent("gc-team-read-changed"));
+    } catch {
+      // 읽음 표시는 부가 기능 — 실패해도 흐름을 막지 않는다.
+    }
+  }
+
+  function renderMeta() {
+    const unread = rows.filter((r) => !r.read).length;
+    meta.textContent = `총 ${rows.length}건 · 읽지 않음 ${unread}건`;
+    markAllBtn.style.display = unread > 0 ? "" : "none";
+  }
+
   async function refresh() {
     try {
       rows = await ipc_peer.listTeamEvents(100, false);
     } catch {
       rows = [];
     }
-    const unread = rows.filter((r) => !r.read).length;
-    meta.textContent = `총 ${rows.length}건 · 읽지 않음 ${unread}건`;
+    renderMeta();
     list.innerHTML = "";
     if (rows.length === 0) {
       const empty = document.createElement("div");
@@ -45,20 +66,38 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
   const meta = document.createElement("div");
   meta.className = "text-display-sm text-[color:var(--color-ink-muted)]";
 
+  // 자리를 비웠다 돌아온 사람은 수신함을 훑고 한 번에 정리한다 —
+  // 카드 하나하나 눌러야만 배지가 줄어드는 구조는 배지를 영영 못 지운다.
+  const markAllBtn = document.createElement("button");
+  markAllBtn.className = "gc-button-secondary text-display-sm";
+  markAllBtn.textContent = "모두 읽음";
+  markAllBtn.addEventListener("click", async () => {
+    setBusy(markAllBtn, true, "처리 중…");
+    try {
+      await ipc_peer.markAllTeamRead();
+      window.dispatchEvent(new CustomEvent("gc-team-read-changed"));
+      await refresh();
+    } catch (e) {
+      toast(`읽음 처리 실패: ${(e as Error).message ?? e}`, "error");
+    } finally {
+      setBusy(markAllBtn, false);
+    }
+  });
+
   const header = document.createElement("div");
-  header.className = "flex items-center justify-end";
+  header.className = "flex items-center justify-end gap-3";
   header.appendChild(meta);
+  header.appendChild(markAllBtn);
   wrap.appendChild(header);
 
   const list = document.createElement("div");
   list.className = "flex flex-col gap-3";
   wrap.appendChild(list);
 
-  async function resolveRepoId(repoName: string): Promise<string | null> {
+  /** 이벤트가 가리키는 내 저장소 — remote URL 우선, 이름은 유일할 때만. */
+  async function resolveRepo(r: TeamEventRow) {
     const repos = await ipc.listRepositories();
-    const matches = repos.filter((r) => r.display_name === repoName);
-    if (matches.length === 1) return matches[0].id;
-    return null;
+    return repoForEvent(repos, r);
   }
 
   function card(r: TeamEventRow): HTMLElement {
@@ -81,13 +120,21 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
     el.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).tagName === "BUTTON") return;
       pre.classList.toggle("hidden");
+      // 내용을 펼쳐 봤다면 읽은 것이다.
+      void markRead(r).then(() => el.classList.add("opacity-60"));
     });
     const viewBtn = el.querySelector<HTMLButtonElement>("[data-view-repo]");
     viewBtn?.addEventListener("click", async (ev) => {
       ev.stopPropagation();
-      const repoId = await resolveRepoId(r.repo_name);
-      if (repoId) {
-        onNav({ kind: "repo", repoId });
+      const repo = await resolveRepo(r);
+      if (repo) {
+        await markRead(r);
+        onNav({ kind: "repo", repoId: repo.id });
+      } else {
+        toast(
+          `'${r.repo_name}' 저장소를 찾을 수 없습니다. 이 컴퓨터에 등록되지 않았거나 원격 주소가 다릅니다.`,
+          "error",
+        );
       }
     });
 
@@ -101,7 +148,14 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
       kindBtn.appendChild(label);
       kindBtn.addEventListener("click", async (ev) => {
         ev.stopPropagation();
-        await action.run();
+        // SSH 저장소의 동기화는 수 초가 걸린다 — 진행 표시가 없으면 두 번
+        // 눌러 병합이 겹친다.
+        setBusy(kindBtn, true, "진행 중…");
+        try {
+          await action.run();
+        } finally {
+          setBusy(kindBtn, false);
+        }
       });
     } else if (kindBtn) {
       kindBtn.style.display = "none";
@@ -118,12 +172,16 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
         label: "병합 센터로",
         icon: "merge",
         run: async () => {
-          const repoId = await resolveRepoId(r.repo_name);
-          if (!repoId) {
-            toast("저장소를 찾을 수 없습니다.", "error");
+          const repo = await resolveRepo(r);
+          if (!repo) {
+            toast(
+              `'${r.repo_name}' 저장소를 찾을 수 없습니다. 이 컴퓨터에 등록되지 않았거나 원격 주소가 다릅니다.`,
+              "error",
+            );
             return;
           }
-          onNav({ kind: "repo", repoId, tab: "merge" });
+          await markRead(r);
+          onNav({ kind: "repo", repoId: repo.id, tab: "merge" });
         },
       };
     }
@@ -132,19 +190,22 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
         label: "내 브랜치에 병합",
         icon: "arrow-right",
         run: async () => {
-          const repos = await ipc.listRepositories();
-          const matches = repos.filter((x) => x.display_name === r.repo_name);
-          if (matches.length !== 1) {
-            toast("저장소를 찾을 수 없습니다.", "error");
+          const repo = await resolveRepo(r);
+          if (!repo) {
+            toast(
+              `'${r.repo_name}' 저장소를 찾을 수 없습니다. 이 컴퓨터에 등록되지 않았거나 원격 주소가 다릅니다.`,
+              "error",
+            );
             return;
           }
-          const repo = matches[0];
           try {
             const res = await ipc.syncBranch(repo.id, repo.default_branch);
             if (res.conflicted) {
+              await markRead(r);
               toast(`충돌 ${res.files.length}개 발생 — 병합 센터에서 해결하세요.`, "info");
               onNav({ kind: "repo", repoId: repo.id, tab: "merge" });
             } else {
+              await markRead(r);
               toast("동기화 완료 — 최신 변경을 병합했습니다.", "success");
               onNav({ kind: "repo", repoId: repo.id });
             }
@@ -154,6 +215,7 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
               toast("이미 진행 중인 병합이 있어 병합 센터로 이동합니다.", "info");
               onNav({ kind: "repo", repoId: repo.id, tab: "merge" });
             } else {
+              // 실패한 동기화는 읽음 처리하지 않는다 — 아직 해야 할 일이다.
               toast(`동기화 실패: ${msg}`, "error");
             }
           }

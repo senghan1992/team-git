@@ -21,7 +21,7 @@ pub struct ProjectConfigSaveResult {
 }
 
 #[tauri::command]
-pub fn project_config_get(repo_id: Uuid) -> AppResult<ProjectConfigResult> {
+pub async fn project_config_get(repo_id: Uuid) -> AppResult<ProjectConfigResult> {
     let (target, repo) = resolve_target(repo_id)?;
     // 작업 브랜치에 .gpconfig 사본이 없어도 팀 규칙(병합 관리자 등)은 보여야
     // 한다 — 없으면 병합 관리자 미지정으로 읽혀 팀원에게 관리자 화면이 뜬다.
@@ -31,7 +31,7 @@ pub fn project_config_get(repo_id: Uuid) -> AppResult<ProjectConfigResult> {
 }
 
 #[tauri::command]
-pub fn project_config_set(
+pub async fn project_config_set(
     repo_id: Uuid,
     config: ProjectConfig,
     auto_commit: bool,
@@ -67,7 +67,7 @@ pub fn project_config_set(
 }
 
 #[tauri::command]
-pub fn project_config_commit(repo_id: Uuid) -> AppResult<CommitOutcome> {
+pub async fn project_config_commit(repo_id: Uuid) -> AppResult<CommitOutcome> {
     let (target, _) = resolve_target(repo_id)?;
     gpconfig::commit_config(&target)
 }

@@ -152,7 +152,12 @@ export function renderRepoCard(
             void load();
           }
         } catch (e) {
-          toast(`동기화 실패: ${(e as Error).message ?? e}`, "error");
+          const msg = (e as Error).message ?? String(e);
+          toast(`동기화 실패: ${msg}`, "error");
+          // 커밋/스태시 또는 진행 중 병합 마무리가 필요한 실패는 그 일을
+          // 할 수 있는 탭으로 바로 데려다 준다.
+          if (msg.includes("커밋하지 않은 변경")) onOpen("work");
+          else if (msg.includes("병합이 있습니다")) onOpen("merge");
         } finally {
           setBusy(btn, false);
         }
@@ -206,6 +211,24 @@ export function renderRepoCard(
   }
 
   void load();
+
+  // 홈 카드가 한 번 그려진 채 얼어 있으면 "다음 할 일"이 거짓말이 된다 —
+  // 팀원의 push, 다른 탭에서 한 커밋이 30초 안에 카드에 반영되도록 가볍게
+  // 다시 읽는다. 카드가 화면에서 떨어지면 스스로 정리한다.
+  let loading = false;
+  const refreshTimer = window.setInterval(async () => {
+    if (!card.isConnected) {
+      window.clearInterval(refreshTimer);
+      return;
+    }
+    if (loading || document.querySelector("dialog[open]")) return;
+    loading = true;
+    try {
+      await load();
+    } finally {
+      loading = false;
+    }
+  }, 30_000);
 
   return card;
 }

@@ -5,6 +5,7 @@ import {
   type AutoResolveReport,
   type BackupEntry,
   type ConflictDetail,
+  type MergedRemoteBranch,
   type MergeOutcome,
   type MergeState,
   type PendingBranch,
@@ -28,14 +29,22 @@ interface BlockEdit {
   body: string;
   /** Stack of previous bodies — top is current, second-from-top is the most recent undo. */
   history: string[];
+  /**
+   * 사용자가 이 블록에 대해 뭔가 결정을 내렸는가 (선택 버튼·AI 제안·직접 편집).
+   * 초기값이 ours 본문이라 "내 것 선택"은 body 비교로는 구분할 수 없다 —
+   * 결정하지 않은 블록이 조용히 ours 로 저장되면 가져온 브랜치의 변경이
+   * 사라지므로, 저장 전에 이 플래그로 경고한다.
+   */
+  decided: boolean;
 }
 
 function pushEdit(state: BlockEdit[], idx: number, body: string) {
   const cur = state[idx];
   if (!cur) {
-    state[idx] = { body, history: [] };
+    state[idx] = { body, history: [], decided: true };
     return;
   }
+  cur.decided = true;
   if (cur.body === body) return;
   cur.history.push(cur.body);
   cur.body = body;
@@ -95,6 +104,8 @@ export async function renderMergeCenter(
   let aiAutoResolve = false;
   // Auto-resolve backups (safety net) for the current merge.
   let backups: BackupEntry[] = [];
+  // 병합이 끝나 정리해도 되는 원격 브랜치들.
+  let mergedRemote: MergedRemoteBranch[] = [];
   // `.gpconfig` — 병합 대상 브랜치 + 브랜치별 병합 관리자.
   let projectCfg: ProjectConfigResult | null = null;
 
@@ -233,7 +244,25 @@ export async function renderMergeCenter(
   backupCard.style.display = "none";
   root.appendChild(backupCard);
 
+  // ── 병합이 끝난 원격 브랜치 정리 ─────────────────────────────────────────
+  const cleanupCard = document.createElement("div");
+  cleanupCard.className = "gc-card flex flex-col gap-2";
+  cleanupCard.style.display = "none";
+  root.appendChild(cleanupCard);
+
   // ── Renderers ───────────────────────────────────────────────────────────
+
+  /** 이 사람이 base로 병합할 수 있는가 — 병합 버튼·브랜치 정리에 같은 규칙. */
+  function viewerCanMerge(): boolean {
+    const managerEmail = projectCfg?.config?.merge_managers?.[base];
+    if (!managerEmail) return true;
+    const me = getSession();
+    if (!me) return false;
+    if (me.email.toLowerCase() === managerEmail.toLowerCase()) return true;
+    return (projectCfg?.config?.members ?? []).some(
+      (x) => x.email.toLowerCase() === me.email.toLowerCase() && x.role === "admin",
+    );
+  }
   function renderBanner() {
     if (!mergeState?.in_progress) {
       banner.style.display = "none";
@@ -311,6 +340,58 @@ export async function renderMergeCenter(
     changeMapHost.innerHTML = "";
     const card = renderChangeMap(branches);
     if (card) changeMapHost.appendChild(card);
+  }
+
+  /** 병합 전 리뷰 — 대기 브랜치의 한 파일이 base와 어떻게 다른지 보여 준다. */
+  function openBranchFileDiff(b: PendingBranch, path: string) {
+    const m = openModal({
+      title: path,
+      description: `origin/${base} ↔ ${b.short_name} 변경 내용`,
+      cancelLabel: "닫기",
+    });
+    const host = document.createElement("div");
+    host.className =
+      "flex flex-col gap-0 rounded-md border border-[color:var(--color-hairline)] overflow-x-auto";
+    host.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)] px-3 py-2">불러오는 중…</div>`;
+    m.body.appendChild(host);
+    ipc
+      .branchFileDiff(repo.id, base, b.name, path)
+      .then((text) => {
+        host.innerHTML = "";
+        if (!text || !text.trim()) {
+          host.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)] px-3 py-2">변경 내용이 없습니다</div>`;
+          return;
+        }
+        const nav = document.createElement("div");
+        nav.className =
+          "flex items-center justify-between px-3 py-1.5 border-b border-[color:var(--color-hairline)] text-display-xs text-[color:var(--color-ink-muted)] font-mono";
+        const add = (text.match(/^\+/gm) ?? []).length;
+        const del = (text.match(/^-/gm) ?? []).length;
+        nav.textContent = `+${add} −${del}`;
+        host.appendChild(nav);
+        const body = document.createElement("pre");
+        body.className = "font-mono text-display-sm leading-5 whitespace-pre px-0 py-0";
+        const out = document.createElement("code");
+        out.className = "block min-w-max px-3 py-2";
+        for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
+          const ln = document.createElement("div");
+          ln.className = line.startsWith("+")
+            ? "bg-[color:var(--color-diff-add)] text-[color:var(--color-success)]"
+            : line.startsWith("-")
+              ? "bg-[color:var(--color-diff-del)] text-[color:var(--color-danger)]"
+              : line.startsWith("@@")
+                ? "text-[color:var(--color-ink-muted)]"
+                : "text-[color:var(--color-ink)]";
+          ln.textContent = line || " ";
+          out.appendChild(ln);
+        }
+        body.appendChild(out);
+        host.appendChild(body);
+      })
+      .catch((e) => {
+        host.innerHTML = `<div class="text-display-sm text-[color:var(--color-danger)] px-3 py-2">diff 불러오기 실패</div>`;
+        toast(`diff 불러오기 실패: ${(e as Error).message ?? e}`, "error");
+      });
   }
 
   function fileKindColor(kind: string): string {
@@ -392,10 +473,14 @@ export async function renderMergeCenter(
       const files = document.createElement("div");
       files.className = "flex flex-wrap gap-2 text-display-sm";
       for (const cf of b.changed_files) {
-        const chip = document.createElement("span");
-        chip.className = "gc-badge gc-badge--muted font-mono";
+        // 관리자는 파일 이름만 보고 병합을 결정하지 않는다 — 칩을 누르면
+        // base와의 실제 diff가 열린다.
+        const chip = document.createElement("button");
+        chip.className = "gc-badge gc-badge--muted font-mono cursor-pointer";
         chip.style.color = fileKindColor(cf.kind);
         chip.textContent = `${cf.kind} ${cf.path}`;
+        chip.title = `클릭하면 ${base}와의 변경 내용을 봅니다`;
+        chip.addEventListener("click", () => openBranchFileDiff(b, cf.path));
         files.appendChild(chip);
       }
       card.appendChild(files);
@@ -434,6 +519,20 @@ export async function renderMergeCenter(
 
       const action = document.createElement("div");
       action.className = "flex flex-col gap-2 items-end";
+
+      // 병합은 됐는데 push가 실패/취소된 브랜치 — 같은 병합을 또 권하지 않는다.
+      // 필요한 다음 걸음은 아래 push 배너 하나뿐이다.
+      if (b.merged_locally) {
+        const doneTag = document.createElement("span");
+        doneTag.className = "gc-badge gc-badge--warning";
+        doneTag.textContent = `로컬 ${base}에 병합됨 — 푸시 대기`;
+        doneTag.title = `이 브랜치는 이미 이 컴퓨터의 ${base}에 병합되었습니다. origin/${base}에 push하면 목록에서 사라집니다.`;
+        action.appendChild(doneTag);
+        card.appendChild(action);
+        list.appendChild(card);
+        continue;
+      }
+
       const btn = document.createElement("button");
       btn.className = "gc-button-primary";
       btn.textContent = `${base}(으)로 병합`;
@@ -452,9 +551,14 @@ export async function renderMergeCenter(
             (x) => x.email.toLowerCase() === me.email.toLowerCase() && x.role === "admin",
           );
           const isManager = !!me && me.email.toLowerCase() === managerEmail.toLowerCase();
-          blocked = !!me && !isManager && !isAdmin;
+          // 로그아웃 상태를 열어 두면 로그인한 팀원보다 익명이 더 많은 권한을
+          // 갖게 된다 — 관리자가 지정된 브랜치는 로그인해서 본인 확인을 해야
+          // 병합 버튼이 열린다.
+          blocked = !isManager && !isAdmin;
           if (blocked) {
-            blockHint = `${name}님이 ${base}의 병합 관리자입니다. 병합은 관리자만 할 수 있습니다.`;
+            blockHint = me
+              ? `${name}님이 ${base}의 병합 관리자입니다. 병합은 관리자만 할 수 있습니다.`
+              : `이 브랜치에는 병합 관리자(${name})가 지정되어 있습니다. 로그인하면 내가 관리자인지 확인해 병합 버튼을 엽니다.`;
           }
         }
       }
@@ -525,7 +629,7 @@ export async function renderMergeCenter(
     }
   }
 
-  function showPushBanner() {
+  function showPushBanner(unpushedCount?: number) {
     pushBanner.style.display = "";
     pushBanner.innerHTML = "";
     const iw = document.createElement("span");
@@ -534,7 +638,9 @@ export async function renderMergeCenter(
     pushBanner.appendChild(iw);
     const span = document.createElement("span");
     span.className = "gc-banner__body flex-1";
-    span.textContent = `origin/${base}에 푸시가 필요합니다`;
+    span.textContent = unpushedCount
+      ? `병합 커밋 ${unpushedCount}개가 아직 origin/${base}에 올라가지 않았습니다 — push해야 팀원에게 전달됩니다`
+      : `origin/${base}에 푸시가 필요합니다`;
     pushBanner.appendChild(span);
     const pushBtn = document.createElement("button");
     pushBtn.className = "gc-button-primary";
@@ -546,6 +652,8 @@ export async function renderMergeCenter(
         if (outcome === "ok") {
           toast(`${base} push 완료 — 팀원에게 알림이 전송됩니다.`, "success");
           pushBanner.style.display = "none";
+          // "푸시 대기" 카드와 대기 목록이 방금 push로 달라졌다.
+          await refresh();
         } else if (outcome !== "cancelled") {
           toast(`push 실패: ${outcome.message || "알 수 없는 오류"}`, "error");
         }
@@ -599,7 +707,11 @@ export async function renderMergeCenter(
       try {
         const detail = await ipc.conflictDetail(repo.id, path);
         const blocks = parseConflictBlocks(detail.working);
-        const edits: BlockEdit[] = blocks.map((b) => ({ body: b.ours, history: [] }));
+        const edits: BlockEdit[] = blocks.map((b) => ({
+          body: b.ours,
+          history: [],
+          decided: false,
+        }));
         conflictCache.set(path, { detail, blocks, edits, loading: false });
       } catch (e) {
         toast(`충돌 파일을 불러오지 못했습니다: ${(e as Error).message ?? e}`, "error");
@@ -735,6 +847,38 @@ export async function renderMergeCenter(
         btnRow.appendChild(b);
       }
       right.appendChild(btnRow);
+    } else if (c.blocks.length === 0) {
+      // 충돌 표시(<<<<<<<)가 없는 충돌 — 한쪽 브랜치가 파일을 삭제하고 다른
+      // 쪽이 수정한 경우다. 빈 편집 화면을 놓아 두면 저장 버튼이 수정본을
+      // 조용히 유지한다 — 무엇이 벌어졌는지 말하고 명시적으로 고르게 한다.
+      const oursDeleted = !c.detail.ours && !!c.detail.theirs;
+      const theirsDeleted = !!c.detail.ours && !c.detail.theirs;
+      const note = document.createElement("div");
+      note.className = "text-display-sm text-[color:var(--color-ink-muted)] whitespace-pre-line";
+      note.textContent = oursDeleted
+        ? `내 쪽(${base})에서 이 파일이 삭제되었고, 가져온 브랜치는 수정했습니다.\n파일을 남길지(수정본 유지) 지울지 골라야 합니다.`
+        : theirsDeleted
+          ? `가져온 브랜치에서 이 파일이 삭제되었고, 내 쪽(${base})은 수정했습니다.\n파일을 남길지(수정본 유지) 지울지 골라야 합니다.`
+          : "이 파일의 충돌은 줄 단위로 비교할 수 없습니다 — 한쪽을 통째로 골라야 합니다.";
+      right.appendChild(note);
+      const btnRow = document.createElement("div");
+      btnRow.className = "flex gap-2";
+      for (const side of ["ours", "theirs"] as const) {
+        const b = document.createElement("button");
+        b.className = "gc-button-secondary";
+        const deleted = side === "ours" ? oursDeleted : theirsDeleted;
+        b.textContent =
+          side === "ours"
+            ? deleted
+              ? `내 것 사용 (${base}) — 파일 삭제`
+              : `내 것 사용 (${base})`
+            : deleted
+              ? "가져온 것 사용 — 파일 삭제"
+              : "가져온 것 사용";
+        b.addEventListener("click", () => applyResolution({ type: side }));
+        btnRow.appendChild(b);
+      }
+      right.appendChild(btnRow);
     } else {
       const blocksContainer = document.createElement("div");
       blocksContainer.className = "flex flex-col gap-3";
@@ -748,10 +892,26 @@ export async function renderMergeCenter(
       const saveBtn = document.createElement("button");
       saveBtn.className = "gc-button-primary";
       saveBtn.textContent = "파일 저장하고 스테이징";
-      saveBtn.addEventListener("click", () => applyResolution({
-        type: "manual",
-        content: reassemble(c.detail.working, c.blocks, c.edits.map((e) => e.body)),
-      }));
+      saveBtn.addEventListener("click", async () => {
+        // 결정하지 않은 블록은 초기값(내 것)으로 저장된다 — 가져온 브랜치의
+        // 변경이 사라질 수 있으므로, 개수를 세어 한 번 확인받는다.
+        const undecided = c.blocks.reduce(
+          (n, _b, i) => n + (c.edits[i]?.decided ? 0 : 1),
+          0,
+        );
+        if (undecided > 0) {
+          const ok = await confirmDialog({
+            title: "미결정 블록이 있습니다",
+            message: `블록 ${undecided}개를 아직 결정하지 않았습니다.\n결정하지 않은 블록은 내 것(${base}) 그대로 저장됩니다 — 가져온 브랜치의 변경이 사라질 수 있습니다.\n계속할까요?`,
+            confirmLabel: "그대로 저장",
+          });
+          if (!ok) return;
+        }
+        await applyResolution({
+          type: "manual",
+          content: reassemble(c.detail.working, c.blocks, c.edits.map((e) => e.body)),
+        });
+      });
       saveRow.appendChild(saveBtn);
       right.appendChild(saveRow);
     }
@@ -763,8 +923,17 @@ export async function renderMergeCenter(
     const block = document.createElement("div");
     block.className = "gc-card flex flex-col gap-2";
     const header = document.createElement("div");
-    header.className = "text-display-sm font-medium";
-    header.textContent = `블록 ${idx + 1} · 줄 ${b.startLine}–${b.endLine}`;
+    header.className = "text-display-sm font-medium flex items-center gap-2";
+    const headerText = document.createElement("span");
+    headerText.textContent = `블록 ${idx + 1} · 줄 ${b.startLine}–${b.endLine}`;
+    header.appendChild(headerText);
+    if (!c.edits[idx]?.decided) {
+      const undecided = document.createElement("span");
+      undecided.className = "gc-badge gc-badge--warning";
+      undecided.textContent = "미결정";
+      undecided.title = "아직 아무 쪽도 고르지 않았습니다. 그대로 저장하면 내 것(현재 브랜치)이 남습니다.";
+      header.appendChild(undecided);
+    }
     block.appendChild(header);
 
     const grid = document.createElement("div");
@@ -810,6 +979,7 @@ export async function renderMergeCenter(
     ta.value = c.edits[idx]?.body ?? "";
     ta.addEventListener("input", () => {
       c.edits[idx]!.body = ta.value;
+      c.edits[idx]!.decided = true;
     });
     edit.appendChild(ta);
     const tools = document.createElement("div");
@@ -967,12 +1137,19 @@ export async function renderMergeCenter(
   }
 
   async function afterAutoResolve(report: AutoResolveReport) {
+    // AI가 파일을 고쳐 커밋까지 만든 경우, push는 관리자가 결과를 확인한
+    // 다음이다 — push되는 순간 팀원 전원에게 동기화 알림이 가므로, 잘못된
+    // AI 결과를 확인 없이 팀에 배포하면 되돌릴 길이 없다. 한쪽 규칙만으로
+    // 풀린 병합(사람이 이미 아는 내용)은 그대로 바로 push한다.
+    const aiTouched = report.resolved.some((r) => r.method === "ai");
     if (report.committed) {
       conflictCache.clear();
       knownConflicts = new Set();
       selectedPath = null;
       mergeState = null;
-      await pushMergedBranch();
+      if (!aiTouched) {
+        await pushMergedBranch();
+      }
     } else if (report.remaining.length > 0) {
       // Partial success — the leftover files are still waiting.
       mergeState = { in_progress: true, conflicted_files: report.remaining };
@@ -981,10 +1158,10 @@ export async function renderMergeCenter(
       renderBanner();
     }
     await refresh();
-    showAutoResolveReport(report);
+    showAutoResolveReport(report, report.committed && aiTouched);
   }
 
-  function showAutoResolveReport(report: AutoResolveReport) {
+  function showAutoResolveReport(report: AutoResolveReport, offerPush = false) {
     const m = openModal({
       title: "자동 병합 결과",
       cancelLabel: "닫기",
@@ -995,6 +1172,28 @@ export async function renderMergeCenter(
     const summary = document.createElement("div");
     summary.textContent = report.message;
     wrap.appendChild(summary);
+
+    if (offerPush) {
+      const holdNote = document.createElement("div");
+      holdNote.className = "text-display-sm text-[color:var(--color-ink-muted)] whitespace-pre-line";
+      holdNote.textContent =
+        "AI가 고친 파일이 있어 push를 잠시 멈췄습니다 — push되는 순간 팀원 전원에게 동기화 알림이 갑니다.\n결과가 이상하면 아래 '원본 백업 복원'으로 되돌린 뒤 다시 시도하세요.";
+      wrap.appendChild(holdNote);
+      const pushNow = document.createElement("button");
+      pushNow.className = "gc-button-primary self-start";
+      pushNow.textContent = `확인했어요 — origin/${base}에 push`;
+      pushNow.addEventListener("click", async () => {
+        setBusy(pushNow, true, "push 중…");
+        try {
+          await pushMergedBranch();
+          m.close();
+          await refresh();
+        } finally {
+          setBusy(pushNow, false);
+        }
+      });
+      wrap.appendChild(pushNow);
+    }
 
     if (report.resolved.length > 0) {
       const lbl = document.createElement("div");
@@ -1070,6 +1269,123 @@ export async function renderMergeCenter(
     m.body.appendChild(wrap);
   }
 
+  // ── 병합이 끝난 원격 브랜치 정리 ─────────────────────────────────────────
+  //
+  // 병합·push가 끝난 브랜치는 대기 목록에서 사라질 뿐 origin에는 그대로
+  // 남는다 — 죽은 feature 브랜치가 쌓이면 모두의 브랜치 선택 상자가
+  // 어지러워진다. 커밋이 전부 base에 들어간 브랜치만 후보로 보여 주고,
+  // 삭제 직전에 백엔드가 조상 여부를 다시 확인한다.
+  let cleanupExpanded = false;
+
+  async function renderCleanupCard() {
+    if (mergeState?.in_progress || !viewerCanMerge() || mergedRemote.length === 0) {
+      cleanupCard.style.display = "none";
+      return;
+    }
+    cleanupCard.style.display = "";
+    cleanupCard.innerHTML = "";
+
+    const head = document.createElement("div");
+    head.className = "flex items-center gap-2";
+    const iw = document.createElement("span");
+    iw.className = "text-[color:var(--color-ink-muted)]";
+    iw.appendChild(icon("branch", 16));
+    head.appendChild(iw);
+    const title = document.createElement("div");
+    title.className = "font-medium flex-1";
+    title.textContent = `병합이 끝난 원격 브랜치 ${mergedRemote.length}개`;
+    head.appendChild(title);
+    const toggle = document.createElement("button");
+    toggle.className = "gc-button-secondary text-display-sm";
+    toggle.textContent = cleanupExpanded ? "접기" : "정리하기";
+    toggle.addEventListener("click", () => {
+      cleanupExpanded = !cleanupExpanded;
+      void renderCleanupCard();
+    });
+    head.appendChild(toggle);
+    cleanupCard.appendChild(head);
+
+    const desc = document.createElement("div");
+    desc.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+    desc.textContent = `이 브랜치들의 커밋은 모두 ${base}에 들어 있어 지워도 잃는 것이 없습니다. 정리하면 모두의 브랜치 목록이 깔끔해집니다.`;
+    cleanupCard.appendChild(desc);
+
+    if (!cleanupExpanded) return;
+
+    for (const b of mergedRemote) {
+      const row = document.createElement("div");
+      row.className = "flex items-center gap-2";
+      const nameEl = document.createElement("span");
+      nameEl.className = "font-mono text-display-sm flex-1 min-w-0 truncate";
+      nameEl.textContent = b.short_name;
+      nameEl.title = b.name;
+      row.appendChild(nameEl);
+      const meta = document.createElement("span");
+      meta.className = "text-display-sm text-[color:var(--color-ink-muted)] shrink-0";
+      meta.textContent = `${b.author} · ${await relativeTime(b.unix_time)}`;
+      row.appendChild(meta);
+      const delBtn = document.createElement("button");
+      delBtn.className = "gc-button-secondary text-display-sm text-[color:var(--color-danger)]";
+      delBtn.textContent = "삭제";
+      delBtn.addEventListener("click", async () => {
+        const ok = await confirmDialog({
+          title: "원격 브랜치 삭제",
+          message: `origin/${b.short_name} 브랜치를 삭제합니다.\n커밋은 모두 ${base}에 병합되어 있어 잃는 것이 없습니다. ${b.author}님이 이 이름으로 계속 작업 중이어도 다시 push하면 브랜치가 새로 생깁니다.`,
+          confirmLabel: "삭제",
+          destructive: true,
+        });
+        if (!ok) return;
+        setBusy(delBtn, true, "삭제 중…");
+        try {
+          await ipc.deleteRemoteBranch(repo.id, base, b.short_name);
+          toast(`origin/${b.short_name} 브랜치를 삭제했습니다.`, "success");
+          mergedRemote = mergedRemote.filter((x) => x.short_name !== b.short_name);
+          await renderCleanupCard();
+        } catch (e) {
+          toast(`삭제 실패: ${(e as Error).message ?? e}`, "error");
+        } finally {
+          setBusy(delBtn, false);
+        }
+      });
+      row.appendChild(delBtn);
+      cleanupCard.appendChild(row);
+    }
+
+    if (mergedRemote.length > 1) {
+      const allBtn = document.createElement("button");
+      allBtn.className = "gc-button-secondary text-display-sm self-start text-[color:var(--color-danger)]";
+      allBtn.textContent = `모두 삭제 (${mergedRemote.length}개)`;
+      allBtn.addEventListener("click", async () => {
+        const names = mergedRemote.map((x) => x.short_name);
+        const ok = await confirmDialog({
+          title: "원격 브랜치 모두 삭제",
+          message: `병합이 끝난 브랜치 ${names.length}개를 origin에서 삭제합니다:\n${names.join(", ")}\n커밋은 모두 ${base}에 병합되어 있어 잃는 것이 없습니다.`,
+          confirmLabel: "모두 삭제",
+          destructive: true,
+        });
+        if (!ok) return;
+        setBusy(allBtn, true, "삭제 중…");
+        let failed = 0;
+        for (const short of names) {
+          try {
+            await ipc.deleteRemoteBranch(repo.id, base, short);
+            mergedRemote = mergedRemote.filter((x) => x.short_name !== short);
+          } catch {
+            failed += 1;
+          }
+        }
+        setBusy(allBtn, false);
+        if (failed > 0) {
+          toast(`브랜치 ${names.length - failed}개를 삭제했습니다. ${failed}개는 실패했습니다 — 새 push가 있었을 수 있으니 목록을 다시 확인하세요.`, "error");
+        } else {
+          toast(`브랜치 ${names.length}개를 삭제했습니다.`, "success");
+        }
+        await renderCleanupCard();
+      });
+      cleanupCard.appendChild(allBtn);
+    }
+  }
+
   // ── Backup restore (safety net) ───────────────────────────────────────────
   async function loadBackups() {
     try {
@@ -1081,7 +1397,17 @@ export async function renderMergeCenter(
   }
 
   function renderBackupCard() {
-    if (!mergeState?.in_progress || backups.length === 0) {
+    // 병합 커밋이 끝난 뒤에야 "AI 결과가 이상하다"는 걸 알아차리는 일이
+    // 많다 — 복원 카드는 커밋 후에도 최근 백업이 있는 한 계속 보인다.
+    // (오래된 백업까지 늘어놓으면 소음이므로 24시간으로 자른다.)
+    const inProgress = !!mergeState?.in_progress;
+    const shown = inProgress
+      ? backups
+      : backups.filter((b) => {
+          const t = Date.parse(b.created_at);
+          return Number.isFinite(t) && Date.now() - t < 24 * 3600 * 1000;
+        });
+    if (shown.length === 0) {
       backupCard.style.display = "none";
       return;
     }
@@ -1093,9 +1419,11 @@ export async function renderMergeCenter(
     backupCard.appendChild(title);
     const desc = document.createElement("div");
     desc.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-    desc.textContent = "자동 병합이 시작되기 전의 충돌 원본입니다. 복원하면 병합 상태는 유지됩니다.";
+    desc.textContent = inProgress
+      ? "자동 병합이 시작되기 전의 충돌 원본입니다. 복원하면 병합 상태는 유지됩니다."
+      : "자동 병합 전의 충돌 원본입니다. 이미 커밋된 뒤라면 복원 후 작업 탭에서 변경을 확인하고 새 커밋으로 정리하세요.";
     backupCard.appendChild(desc);
-    for (const b of backups) {
+    for (const b of shown) {
       const row = document.createElement("div");
       row.className = "flex items-center gap-2";
       const ts = document.createElement("span");
@@ -1196,7 +1524,16 @@ export async function renderMergeCenter(
         conflictCache.clear();
         selectedPath = null;
         branches = await ipc.listPendingBranches(repo.id, base);
-        renderBackupCard();
+        // 병합 커밋은 만들어졌는데 push가 안 된 상태는 화면(그리고 앱)을
+        // 다시 열어도 살아 있어야 한다 — 로컬 base와 origin/base를 비교해
+        // 배너를 매번 다시 세운다.
+        const unpushed = await ipc.baseUnpushedCount(repo.id, base).catch(() => 0);
+        if (unpushed > 0) showPushBanner(unpushed);
+        else pushBanner.style.display = "none";
+        void loadBackups();
+        mergedRemote = await ipc
+          .listMergedRemoteBranches(repo.id, base)
+          .catch(() => [] as MergedRemoteBranch[]);
       }
     } catch (e) {
       toast(`불러오기 실패: ${(e as Error).message ?? e}`, "error");
@@ -1209,9 +1546,12 @@ export async function renderMergeCenter(
     if (!mergeState?.in_progress) {
       await renderBranchList();
     } else {
+      // 병합 중에는 정리 카드도 치운다 — 지금 할 일은 하나뿐이다.
+      mergedRemote = [];
       list.innerHTML = "";
     }
     renderPanel();
+    void renderCleanupCard();
   }
 
   fetchBtn.addEventListener("click", async () => {

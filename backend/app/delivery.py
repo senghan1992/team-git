@@ -84,7 +84,9 @@ async def _deliver_with_retry(event_id: str, device_id: str, db) -> None:
 
     poll_url = device.poll_url
     backoffs = [5, 15, 45]
-    timeout = 0.2
+    # 0.2s was too tight for a real desktop over Wi-Fi/VPN — slow but healthy
+    # devices burned all retries and the event silently stayed pending.
+    timeout = 2.0
 
     for attempt in range(4):
         try:

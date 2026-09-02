@@ -277,6 +277,14 @@ impl Store {
         Ok(())
     }
 
+    /// 수신함의 "모두 읽음" — 지워진 개수를 돌려준다.
+    pub fn mark_all_team_read(&self) -> AppResult<u32> {
+        let n = self
+            .conn
+            .execute("UPDATE team_events SET read = 1 WHERE read = 0", [])?;
+        Ok(n as u32)
+    }
+
     pub fn count_unread_team_events(&self) -> AppResult<u32> {
         let n: i64 =
             self.conn

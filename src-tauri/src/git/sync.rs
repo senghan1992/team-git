@@ -69,6 +69,15 @@ pub fn sync_to_base(target: &Target, base: &str, remote: &str) -> AppResult<Sync
             message: out.stderr.trim().to_string(),
         });
     }
+    // 동기화 버튼은 작업 중에 누르는 일이 가장 흔하다 — git 의 영어 오류
+    // ("Your local changes would be overwritten…")를 그대로 보여 주지 않고
+    // 다음 행동(커밋/스태시)을 알려 준다.
+    if crate::git::ops::dirty_tree_error(&out.stderr) {
+        return Err(AppError::Git(
+            "커밋하지 않은 변경이 있어 동기화할 수 없습니다. 작업 탭에서 먼저 커밋하거나 스태시한 뒤 다시 시도하세요."
+                .into(),
+        ));
+    }
     Err(AppError::Git(format!("병합 실패: {}", out.stderr.trim())))
 }
 

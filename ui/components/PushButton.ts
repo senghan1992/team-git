@@ -22,23 +22,34 @@ export async function openPushCredentialFlow(
   const attempt = (credentials?: { username: string; password: string } | null, saveCredential = false) =>
     ipc.pushWithCredentials(repo.id, branch, credentials ?? null, saveCredential);
 
-  // 1) 저장된 자격증명이 있으면 자동 사용.
+  // 1) 저장된 자격증명이 있으면 자동 사용. 성공/실패를 판정해서 돌려주고,
+  //    인증 거부(만료·회수)면 저장값을 미리 채운 로그인 모달로 이어간다.
   const saved = await ipc.pushCredentialsList().catch(() => ({} as Record<string, { username: string; password: string }>));
   const savedCred = saved[repo.id] ?? null;
+  let savedCredExpired = false;
   if (savedCred && !prefill) {
-    return attempt(savedCred, false);
+    const res = await attempt(savedCred, false);
+    if (res.ok) return "ok";
+    if (!res.auth_required) return res;
+    savedCredExpired = true;
+    prefill = savedCred;
   }
 
   // 2) 먼저 자격증명 없이 시도 (SSH 원격은 이대로 성공, HTTPS는 auth_required).
-  let outcome = await attempt(prefill, false);
-  if (outcome.ok) return "ok";
-  if (!outcome.auth_required) return outcome;
+  //    (저장된 자격증명이 방금 거부된 경우는 건너뛰고 곧장 모달로 간다.)
+  if (!savedCredExpired) {
+    const outcome = await attempt(prefill, false);
+    if (outcome.ok) return "ok";
+    if (!outcome.auth_required) return outcome;
+  }
 
   // 3) HTTPS + 인증 필요 → 아이디/비밀번호 모달.
   return await new Promise<PushFlowResult>((resolve) => {
     const m = openModal({
       title: "Git 호스트 로그인",
-      description: `${repo.display_name} — origin에 푸시하려면 Git 호스트 아이디/비밀번호가 필요합니다.`,
+      description: savedCredExpired
+        ? `${repo.display_name} — 저장된 자격증명이 더 이상 유효하지 않습니다. 다시 입력하세요.`
+        : `${repo.display_name} — origin에 푸시하려면 Git 호스트 아이디/비밀번호가 필요합니다.`,
       submitLabel: "푸시",
       onSubmit: async (close) => {
         const username = (m.body.querySelector<HTMLInputElement>("#push-user")!).value.trim();
@@ -60,9 +71,10 @@ export async function openPushCredentialFlow(
             close();
             resolve("ok");
           } else {
+            // 모달을 열어 둔 채 메시지만 보여 준다 — 사용자가 고쳐서 재시도하거나
+            // 닫으면 "cancelled"로 끝난다.
             m.setError(res.message || "푸시 실패");
             m.setSubmitting(false);
-            if (res.auth_required) resolve(res);
           }
         } catch (e) {
           m.setError((e as Error).message ?? String(e));

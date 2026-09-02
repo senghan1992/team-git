@@ -33,6 +33,10 @@ pub struct PendingBranch {
     pub changed_files: Vec<ChangedPath>,
     /// True when the branch only exists locally (never pushed).
     pub local: bool,
+    /// True when the branch is already merged into the *local* base but the
+    /// base itself has not been pushed yet. The UI must not offer "병합"
+    /// again for such a branch — the missing step is the push.
+    pub merged_locally: bool,
 }
 
 /// Outcome of any merge step. When `conflicted == true`, `MERGE_HEAD` is left
@@ -190,6 +194,22 @@ fn build_pending(
         return Ok(None);
     }
 
+    // 원격 base에는 아직 없지만 *로컬* base에는 이미 병합된 브랜치 —
+    // 병합 직후 push가 실패/취소된 상태다. 다시 "병합 대기"로 세우면
+    // 관리자가 같은 병합을 또 하게 되므로, 플래그로 구분해 UI가
+    // "푸시 대기"로 보여 주게 한다.
+    // base_ref = "<remote>/<base>" — base 이름에 '/'가 들어갈 수 있으므로
+    // (release/1.0 등) 접두사만 벗긴다.
+    let base = base_ref
+        .strip_prefix(&format!("{remote}/"))
+        .unwrap_or(base_ref);
+    let merged_locally = {
+        let local_base = format!("refs/heads/{base}");
+        let exists = run_at_target(target, ["rev-parse", "-q", "--verify", &local_base])?;
+        exists.ok()
+            && run_at_target(target, ["merge-base", "--is-ancestor", name, &local_base])?.ok()
+    };
+
     let (ahead, behind) = ahead_behind(target, base_ref, name)?;
 
     let diff = run_at_target(
@@ -238,7 +258,146 @@ fn build_pending(
         behind,
         changed_files,
         local,
+        merged_locally,
     }))
+}
+
+/// 병합이 끝나 base에 완전히 포함된 원격 브랜치 — origin에 쌓인 죽은
+/// feature 브랜치를 정리할 후보 목록이다.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergedRemoteBranch {
+    /// 원격 트래킹 이름 (예: "origin/feature/login").
+    pub name: String,
+    /// 브랜치 이름 (예: "feature/login") — 삭제 시 이 이름을 쓴다.
+    pub short_name: String,
+    pub author: String,
+    pub unix_time: i64,
+}
+
+/// `<remote>/<base>`의 조상이 된(=병합이 끝난) 원격 브랜치를 나열한다.
+/// base 자체와 HEAD 포인터는 제외. 커밋이 전혀 없는 브랜치(base와 동일
+/// 커밋을 가리키는 방금 만든 브랜치)도 조상이므로 함께 나온다 — 그것도
+/// "정리해도 잃는 것이 없는" 브랜치라는 뜻이라 의도된 동작이다.
+pub fn list_merged_remote_branches(
+    target: &Target,
+    remote: &str,
+    base: &str,
+) -> AppResult<Vec<MergedRemoteBranch>> {
+    let base_ref = format!("{remote}/{base}");
+    let fmt = "%(refname:short)%09%(objectname)%09%(authorname)%09%(committerdate:unix)";
+    let list = run_at_target(
+        target,
+        [
+            "for-each-ref",
+            &format!("refs/remotes/{remote}"),
+            "--format",
+            fmt,
+        ],
+    )?;
+    if !list.ok() {
+        return Err(AppError::Git(format!(
+            "for-each-ref failed: {}",
+            list.stderr.trim()
+        )));
+    }
+    let mut out = Vec::new();
+    for line in list.stdout.lines() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut parts = line.splitn(4, '\t');
+        let name = parts.next().unwrap_or("").to_string();
+        let sha = parts.next().unwrap_or("");
+        let author = parts.next().unwrap_or("").to_string();
+        let unix_time = parts.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
+        if name.is_empty() || sha.is_empty() || name == base_ref {
+            continue;
+        }
+        if name.rsplit('/').next().map(|s| s == "HEAD").unwrap_or(false) {
+            continue;
+        }
+        let ancestor = run_at_target(target, ["merge-base", "--is-ancestor", &name, &base_ref])?;
+        if !ancestor.ok() {
+            continue;
+        }
+        let short_name = name
+            .strip_prefix(&format!("{remote}/"))
+            .unwrap_or(&name)
+            .to_string();
+        out.push(MergedRemoteBranch {
+            name,
+            short_name,
+            author,
+            unix_time,
+        });
+    }
+    // 오래된 것부터 — 제일 먼저 정리해도 되는 것.
+    out.sort_by(|a, b| a.unix_time.cmp(&b.unix_time));
+    Ok(out)
+}
+
+/// 병합이 끝난 원격 브랜치를 origin에서 삭제한다 (`push <remote> --delete`).
+///
+/// 안전장치: base 자신은 거부하고, 브랜치가 `<remote>/<base>`의 조상인지
+/// (=커밋이 전부 base에 들어갔는지) 삭제 직전에 다시 확인한다 — 목록을 본
+/// 뒤 팀원이 새 커밋을 push했다면 여기서 멈춘다. 성공하면 `fetch --prune`으로
+/// 로컬 트래킹 ref도 정리한다.
+pub fn delete_remote_branch(
+    target: &Target,
+    remote: &str,
+    base: &str,
+    branch: &str,
+) -> AppResult<()> {
+    if branch == base {
+        return Err(AppError::Git(format!(
+            "병합 브랜치({base})는 삭제할 수 없습니다."
+        )));
+    }
+    let branch_ref = format!("{remote}/{branch}");
+    let base_ref = format!("{remote}/{base}");
+    let ancestor = run_at_target(
+        target,
+        ["merge-base", "--is-ancestor", &branch_ref, &base_ref],
+    )?;
+    if !ancestor.ok() {
+        return Err(AppError::Git(format!(
+            "{branch} 브랜치에 아직 {base}에 없는 커밋이 있습니다 — 방금 새 push가 있었을 수 있습니다. 삭제하지 않았습니다."
+        )));
+    }
+    let out = run_at_target(target, ["push", remote, "--delete", branch])?;
+    if !out.ok() {
+        return Err(AppError::Git(format!(
+            "원격 브랜치 삭제 실패: {}",
+            crate::git::ops::friendly_git_error(&out.stderr)
+        )));
+    }
+    let _ = run_at_target(target, ["fetch", "--prune", remote]);
+    Ok(())
+}
+
+/// How many commits the *local* base carries that `<remote>/<base>` doesn't —
+/// i.e. a merge that was committed but whose push failed or was cancelled.
+/// 0 when the local base doesn't exist or is fully pushed.
+pub fn base_unpushed_count(target: &Target, remote: &str, base: &str) -> AppResult<u32> {
+    let local_base = format!("refs/heads/{base}");
+    let exists = run_at_target(target, ["rev-parse", "-q", "--verify", &local_base])?;
+    if !exists.ok() {
+        return Ok(0);
+    }
+    let remote_base = format!("refs/remotes/{remote}/{base}");
+    let remote_exists = run_at_target(target, ["rev-parse", "-q", "--verify", &remote_base])?;
+    if !remote_exists.ok() {
+        return Ok(0);
+    }
+    let out = run_at_target(
+        target,
+        [
+            "rev-list",
+            "--count",
+            &format!("{remote_base}..{local_base}"),
+        ],
+    )?;
+    Ok(out.stdout.trim().parse::<u32>().unwrap_or(0))
 }
 
 fn ahead_behind(target: &Target, base: &str, other: &str) -> AppResult<(u32, u32)> {
@@ -353,8 +512,12 @@ pub fn conflict_detail(target: &Target, path: &str) -> AppResult<ConflictDetail>
     let ours_bytes = ours_raw.stdout.as_bytes();
     let theirs_bytes = theirs_raw.stdout.as_bytes();
 
-    let is_binary =
-        std::str::from_utf8(ours_bytes).is_err() || std::str::from_utf8(theirs_bytes).is_err();
+    // GitOutput.stdout 은 lossy UTF-8 변환을 거친 String 이라 from_utf8 검사는
+    // 항상 통과한다 — 그걸로는 바이너리를 절대 못 잡는다. git 자신의 휴리스틱
+    // (앞부분에 NUL 바이트가 있으면 바이너리)을 쓴다. NUL 은 유효한 UTF-8 이라
+    // lossy 변환에서도 살아남으므로 신뢰할 수 있다.
+    let has_nul = |b: &[u8]| b.iter().take(8000).any(|&c| c == 0);
+    let is_binary = has_nul(ours_bytes) || has_nul(theirs_bytes);
     let too_large = ours_bytes.len() > MAX_TEXT_BYTES || theirs_bytes.len() > MAX_TEXT_BYTES;
 
     let (ours, theirs) = if is_binary || too_large {
@@ -401,6 +564,11 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
         Resolution::Ours => {
             let out = run_at_target(target, ["checkout", "--ours", "--", path])?;
             if !out.ok() {
+                // modify/delete 충돌: 고른 쪽 스테이지가 없다 = 그 쪽에서는
+                // 파일이 삭제된 상태다. "그쪽을 쓴다"의 뜻은 삭제 반영이다.
+                if stage_missing(&out.stderr) {
+                    return remove_and_report(target, path);
+                }
                 return Err(AppError::Git(format!(
                     "ours 해결 실패: {}",
                     out.stderr.trim()
@@ -410,6 +578,9 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
         Resolution::Theirs => {
             let out = run_at_target(target, ["checkout", "--theirs", "--", path])?;
             if !out.ok() {
+                if stage_missing(&out.stderr) {
+                    return remove_and_report(target, path);
+                }
                 return Err(AppError::Git(format!(
                     "theirs 해결 실패: {}",
                     out.stderr.trim()
@@ -425,6 +596,24 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
         return Err(AppError::Git(format!(
             "staging 실패: {}",
             add.stderr.trim()
+        )));
+    }
+    remaining_conflicts(target)
+}
+
+/// `git checkout --ours/--theirs` 가 "does not have our/their version" 으로
+/// 실패했는가 — modify/delete 충돌에서 삭제된 쪽을 고른 경우다.
+fn stage_missing(stderr: &str) -> bool {
+    let e = stderr.to_lowercase();
+    e.contains("does not have our version") || e.contains("does not have their version")
+}
+
+fn remove_and_report(target: &Target, path: &str) -> AppResult<Vec<String>> {
+    let rm = run_at_target(target, ["rm", "-f", "--", path])?;
+    if !rm.ok() {
+        return Err(AppError::Git(format!(
+            "파일 삭제 실패: {}",
+            rm.stderr.trim()
         )));
     }
     remaining_conflicts(target)

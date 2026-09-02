@@ -297,8 +297,13 @@ export async function renderRepoView(
   // Lightweight polling — teammates' commits/pushes surface without
   // a manual refresh. Skipped while a modal is open or an input is focused.
   let polling = false;
-  window.setInterval(async () => {
-    if (polling || !main.isConnected) return;
+  const pollTimer = window.setInterval(async () => {
+    // 화면에서 떨어진 뒤에도 인터벌이 앱 수명 내내 쌓이지 않게 스스로 정리한다.
+    if (!main.isConnected) {
+      window.clearInterval(pollTimer);
+      return;
+    }
+    if (polling) return;
     if (document.querySelector("dialog[open]")) return;
     const active = document.activeElement;
     if (active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT")) return;
@@ -598,12 +603,15 @@ export async function renderRepoView(
     const isManager = me && me.email.toLowerCase() === managerEmail.toLowerCase();
     managerBadge.style.display = "";
     managerBadge.textContent = `병합 관리자: ${name}${isManager ? " (나)" : ""}`;
-    // 명시된 관리자가 있고, 로그인 계정이 그 관리자(또는 admin)가 아니면 푸시 잠금.
-    const blocked = !!me && !isManager && !isAdmin;
+    // 명시된 관리자가 있으면 관리자(또는 admin)만 푸시할 수 있다. 로그아웃
+    // 상태도 잠근다 — 익명이 로그인한 팀원보다 많은 권한을 가지면 안 된다.
+    const blocked = !isManager && !isAdmin;
     const btn = pushBtnRef();
     btn.disabled = blocked || noRemote;
     btn.title = blocked
-      ? `이 브랜치의 병합 관리자는 ${name}님입니다. 푸시는 관리자만 할 수 있습니다.`
+      ? me
+        ? `이 브랜치의 병합 관리자는 ${name}님입니다. 푸시는 관리자만 할 수 있습니다.`
+        : `이 브랜치에는 병합 관리자(${name})가 지정되어 있습니다. 로그인하면 내가 관리자인지 확인해 푸시를 엽니다.`
       : noRemote
         ? noRemoteWhy
         : "";
@@ -649,6 +657,10 @@ export async function renderRepoView(
       refreshManagerBadge();
     } catch (e) {
       toast(`브랜치 전환 실패: ${(e as Error).message ?? e}`, "error");
+      // 전환에 실패했는데 선택 상자가 새 브랜치를 가리키고 있으면, 다음
+      // 푸시·동기화가 엉뚱한 브랜치를 대상으로 잡는다 — 실제 HEAD로 되돌린다.
+      const actual = currentStatus?.branch || repo.working_branch;
+      if (actual) branchSel.value = actual;
     } finally {
       branchSel.disabled = false;
       setBusy(statusPill, false);
@@ -673,7 +685,13 @@ export async function renderRepoView(
             await ipc.addFiles(repoId, paths);
           }
           // When stageAll is true and no paths given, git commit -a handles staging implicitly.
-          await ipc.commit(repoId, msg, stageAll);
+          const r = await ipc.commit(repoId, msg, stageAll);
+          if (!r.ok) {
+            // 백엔드가 실패 사유(사용자 정보 없음, index.lock 등)를 한국어로
+            // 담아 보낸다 — 모달을 열어 둔 채 그대로 보여 준다.
+            m.setError(`커밋 실패: ${r.message || "알 수 없는 오류"}`);
+            return;
+          }
           toast("커밋 완료", "success");
           applyStatus(await ipc.status(repoId).catch(() => null));
           close();
@@ -690,10 +708,19 @@ export async function renderRepoView(
         <textarea id="commit-msg" class="gc-input min-h-[80px] resize-y" placeholder="커밋 메시지 입력..."></textarea>
       </div>
       <label class="flex items-center gap-2 text-display-sm cursor-pointer">
-        <input type="checkbox" id="stage-all" checked />
-        <span>바뀐 파일 전부 커밋 (끄면 위 목록에서 체크한 파일만)</span>
+        <input type="checkbox" id="stage-all" />
+        <span id="stage-all-label"></span>
       </label>
     `;
+    // 목록에서 파일을 체크했다면 "전부 커밋"이 그 선택을 덮어쓰면 안 된다 —
+    // 체크한 파일만 커밋이 기본이 되고, 전부 커밋은 직접 켜는 선택지로 남는다.
+    const stageAllBox = m.body.querySelector<HTMLInputElement>("#stage-all")!;
+    const stageAllLabel = m.body.querySelector<HTMLElement>("#stage-all-label")!;
+    stageAllBox.checked = selected.size === 0;
+    stageAllLabel.textContent =
+      selected.size > 0
+        ? `바뀐 파일 전부 커밋 (끄면 체크한 파일 ${selected.size}개만)`
+        : "바뀐 파일 전부 커밋 (끄면 위 목록에서 체크한 파일만)";
   });
 
   // ── Push ─────────────────────────────────────────────────────────────────
@@ -702,7 +729,10 @@ export async function renderRepoView(
     if (pushBtn.disabled) return;
     setBusy(pushBtn, true, "푸시 중…");
     try {
-      const currentBranch = branchSel.value.replace(/^origin\//, "") || null;
+      // 푸시 대상은 화면의 선택 상자가 아니라 실제 체크아웃된 브랜치(HEAD)를
+      // 따른다 — 전환 실패 직후에도 다른 팀원의 원격 브랜치로 밀리지 않는다.
+      const currentBranch =
+        currentStatus?.branch || branchSel.value.replace(/^origin\//, "") || null;
       const outcome = await openPushCredentialFlow(repo, currentBranch);
       if (outcome === "ok") {
         toast("푸시 완료", "success");

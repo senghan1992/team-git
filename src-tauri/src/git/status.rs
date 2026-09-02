@@ -31,6 +31,12 @@ pub struct WorkingTreeStatus {
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// `origin/<병합 브랜치>`가 현재 브랜치보다 앞선 커밋 수. `behind`가
+    /// 내 원격 브랜치 기준인 것과 달리, 이 값이 "동기화" 버튼이 실제로
+    /// 가져올 커밋 수다. 네트워크를 타지 않고 마지막 fetch 시점의 원격
+    /// 트래킹 ref 로 계산한다.
+    #[serde(default)]
+    pub behind_base: u32,
     pub files: Vec<FileChange>,
 }
 

@@ -16,6 +16,7 @@ function status(
     upstream: "origin/feature/login",
     ahead: over.ahead ?? 0,
     behind: over.behind ?? 0,
+    behind_base: over.behind_base ?? 0,
     files: kinds.map((kind, i) => ({ kind, path: `f${i}.ts` }) as FileChange),
   };
 }
@@ -83,6 +84,30 @@ function input(over: Partial<NextActionInput> = {}): NextActionInput {
   const a = computeNextAction(input({ status: status({ behind: 4 }) }));
   assert(a.kind === "sync", `뒤처지면 동기화 (got ${a.kind})`);
   assert(!a.urgent, "동기화는 급하지 않다");
+}
+
+{
+  // ahead + behind 가 동시에 있으면 푸시가 아니라 동기화 먼저 —
+  // 지금 푸시하면 non-fast-forward 로 거절당한다.
+  const a = computeNextAction(input({ status: status({ ahead: 2, behind: 3 }) }));
+  assert(a.kind === "sync", `갈라진 상태는 받은 뒤 푸시 (got ${a.kind})`);
+  assert(a.urgent, "갈라진 상태는 긴급 — 푸시가 막혀 있다");
+}
+
+{
+  // 병합 브랜치(origin/main)가 앞서 있으면 upstream behind 가 0 이어도
+  // 동기화를 제안한다 — 관리자의 병합이 push 된 직후의 상태다.
+  const a = computeNextAction(input({ status: status({ behind_base: 5 }) }));
+  assert(a.kind === "sync", `병합 브랜치가 앞서면 동기화 (got ${a.kind})`);
+  assert(a.label.includes("5개"), `가져올 커밋 수가 문구에 들어간다 (got ${a.label})`);
+}
+
+{
+  // upstream 이 없어도 (한 번도 push 안 한 브랜치) behind_base 는 동작한다.
+  const a = computeNextAction(
+    input({ status: { ...status({ behind_base: 2 }), upstream: null } }),
+  );
+  assert(a.kind === "sync", `upstream 없이도 병합 브랜치 동기화 제안 (got ${a.kind})`);
 }
 
 {

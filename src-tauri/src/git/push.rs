@@ -14,7 +14,7 @@ pub struct PushResult {
 pub fn push_branch(repo_path: &std::path::Path, branch: &str) -> AppResult<PushResult> {
     let out = run(
         Some(repo_path),
-        ["push", "origin", &format!("HEAD:{branch}")],
+        ["push", "-u", "origin", &format!("HEAD:{branch}")],
     )?;
     Ok(PushResult {
         status: out.status,

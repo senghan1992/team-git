@@ -106,6 +106,7 @@ const mockData: Record<string, any> = {
     upstream: "origin/main",
     ahead: 0,
     behind: 2,
+    behind_base: 2,
     files: [
       { kind: "modified", path: "src/lib/session.ts", staged: true, unstaged: false },
       { kind: "added", path: "src/lib/peer.ts", staged: false, unstaged: true },
@@ -192,6 +193,8 @@ const mockData: Record<string, any> = {
   peer_invite_by_email: undefined,
   peer_remove_email_invite: undefined,
   peer_unread_count: 0,
+  peer_mark_team_read: undefined,
+  peer_mark_all_team_read: 0,
   peer_repos_for_project: [],
   peer_list_team_events: [
     {
@@ -280,6 +283,11 @@ const mockData: Record<string, any> = {
     },
   ],
   merge_state: { in_progress: false, conflicted_files: [] },
+  base_unpushed_count: 0,
+  list_merged_remote_branches: [],
+  delete_remote_branch: undefined,
+  branch_file_diff:
+    "@@ -1,4 +1,6 @@\n import { api } from \"./client\";\n+import { refreshToken } from \"../auth/token\";\n \n export async function getUser(id: string) {\n+  await refreshToken();\n   return api.get(`/users/${id}`);\n }",
 };
 interface TauriInternals {
   invoke: (cmd: string, args: unknown) => Promise<unknown>;

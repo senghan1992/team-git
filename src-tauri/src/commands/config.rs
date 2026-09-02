@@ -169,7 +169,7 @@ fn build_test_cmd(args: &TestSshArgs, use_password: bool) -> std::process::Comma
 }
 
 #[tauri::command]
-pub fn test_ssh_connection(args: TestSshArgs) -> AppResult<SshTestReport> {
+pub async fn test_ssh_connection(args: TestSshArgs) -> AppResult<SshTestReport> {
     use std::time::Instant;
 
     // -- probe --

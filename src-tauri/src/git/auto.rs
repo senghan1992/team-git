@@ -430,7 +430,6 @@ fn merge_head_branch(target: &Target) -> AppResult<String> {
             ],
         )?;
         if out.ok() {
-            let mut remote = String::new();
             for line in out.stdout.lines() {
                 let line = line.trim();
                 if line.is_empty() {

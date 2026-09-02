@@ -1,5 +1,6 @@
 import { ipc, ipc_peer, type ProjectConfigResult, type Repo, type TeamEventRow } from "./ipc";
 import { isMergeManagerFor } from "../components/nextAction";
+import { repoForEvent } from "./repoMatch";
 import { renderSidebar, type Page } from "../components/Sidebar";
 import { renderHomeView } from "../views/HomeView";
 import { renderRepoView } from "../views/RepoView";
@@ -28,6 +29,11 @@ export async function createApp(root: HTMLElement) {
 
   // 로그인 상태가 바뀌면 (로그인/로그아웃/계정 삭제) 앱 전체를 다시 그린다.
   window.addEventListener(ACCOUNT_EVENT, () => { rerender(); });
+
+  // 수신함에서 읽음 처리하면 사이드바 배지가 곧바로 따라온다.
+  window.addEventListener("gc-team-read-changed", () => {
+    void reloadTeamUnread().then(updateTeamBadge);
+  });
 
   // 알림 개수는 로그인한 뒤에만 의미가 있다. 예전에는 로그아웃 상태에서도
   // 조회해서 사이드바에 "알림 2" 가 떴다 — 로그인도 안 했는데 읽지 않은
@@ -58,9 +64,10 @@ export async function createApp(root: HTMLElement) {
   // 액션을 가진 알림을 띄운다. 이미 본 이벤트는 다시 띄우지 않는다.
   const seenEvents = new Set<string>();
 
-  function repoByDisplayName(name: string): Repo | null {
-    const matches = (repos ?? []).filter((r) => r.display_name === name);
-    return matches.length === 1 ? matches[0]! : null;
+  // 매칭 열쇠는 payload의 remote URL — 폴더 이름은 사람마다 달라서
+  // 이름만으로 찾으면 못 찾거나(다르게 clone) 엉뚱하게 찾는다(동명 저장소).
+  function repoOfEvent(r: TeamEventRow): Repo | null {
+    return repoForEvent(repos ?? [], r);
   }
 
   // 저장소별 .gpconfig 캐시 — 알림 판정마다 IPC(원격이면 SSH 왕복)를 때리지
@@ -107,11 +114,17 @@ export async function createApp(root: HTMLElement) {
       }
     } catch (e) {
       const msg = (e as Error).message ?? String(e);
-      markRead();
       if (msg.includes("병합이 있습니다")) {
+        markRead();
         toast("이미 진행 중인 병합이 있어 병합 센터로 이동합니다.", "info");
         page = { kind: "repo", repoId: repo.id, tab: "merge" };
+      } else if (msg.includes("커밋하지 않은 변경")) {
+        // 커밋/스태시 버튼이 있는 곳으로 데려다 준다 — 읽음 처리는 하지 않는다
+        // (아직 동기화가 남은 할 일이므로 배지에 남긴다).
+        toast(`동기화 실패: ${msg}`, "error");
+        page = { kind: "repo", repoId: repo.id };
       } else {
+        // 실패한 동기화는 읽음 처리하지 않는다 — 수신함에서 다시 시도할 수 있다.
         toast(`동기화 실패: ${msg}`, "error");
       }
     }
@@ -131,9 +144,22 @@ export async function createApp(root: HTMLElement) {
 
   async function pollTeamEvents() {
     if (!getSession()) return;
+    // 모달(커밋 메시지 등)을 쓰는 중에는 액션 토스트를 띄우지 않는다 —
+    // 모달의 top-layer 가 토스트를 덮어 버튼을 누를 수 없고, 12초 뒤 조용히
+    // 사라진다. 이벤트를 소비하지 않고 통째로 미루면 다음 폴링(5초)이
+    // 모달이 닫힌 뒤 그대로 이어받는다. 배지는 계속 갱신한다.
+    if (document.querySelector("dialog[open]")) {
+      await reloadTeamUnread();
+      updateTeamBadge();
+      return;
+    }
     try {
+      // 서버에 쌓인 이벤트를 로컬 수신함으로 끌어온다 — sidecar(푸시 배달)가
+      // 없거나 포트 등록이 깨져 있어도 알림이 5초 안에 도착하는 폴백 경로.
+      await ipc_peer.pollNow().catch(() => undefined);
       const rows = await ipc_peer.listTeamEvents(50, true);
-      teamUnread = rows.length;
+      // 배지는 목록 길이(50에서 포화)가 아니라 실제 미읽음 총계를 쓴다.
+      await reloadTeamUnread();
       for (const r of rows) {
         if (seenEvents.has(r.id)) continue;
         seenEvents.add(r.id);
@@ -149,7 +175,7 @@ export async function createApp(root: HTMLElement) {
         if (!isMainPush && !isBranchPush) continue;
         if (isMyOwnEvent(r)) continue;
 
-        const repo = repoByDisplayName(r.repo_name);
+        const repo = repoOfEvent(r);
 
         // ── 시나리오 6: 병합 브랜치에 푸시됨 → 팀원은 내 브랜치에 동기화한다.
         if (isMainPush) {

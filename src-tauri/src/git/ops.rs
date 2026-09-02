@@ -191,7 +191,12 @@ pub fn push(
                 auth_required: true,
             });
         }
-        _ => run_at_target(target, ["push", "origin", &format!("HEAD:{branch_ref}")])?,
+        // `-u`: 업스트림을 함께 설정한다 — 이후 status의 `# branch.ab`(↑/↓)와
+        // 홈 카드의 "다음 할 일"(푸시/동기화 제안)이 이 트래킹 정보를 먹고 산다.
+        _ => run_at_target(
+            target,
+            ["push", "-u", "origin", &format!("HEAD:{branch_ref}")],
+        )?,
     };
     if out.ok() {
         let pushed_sha = out
@@ -270,7 +275,7 @@ fn push_with_askpass(
             write_askpass_local(&path, &script)?;
             let result = crate::git::run_with_env(
                 Some(target.path()),
-                ["push", "origin", &format!("HEAD:{branch}")],
+                ["push", "-u", "origin", &format!("HEAD:{branch}")],
                 &[
                     ("GIT_ASKPASS", path.to_string_lossy().as_ref()),
                     ("GIT_TERMINAL_PROMPT", "0"),
@@ -283,7 +288,7 @@ fn push_with_askpass(
             let rel = format!("../.gc-askpass-{}.sh", Uuid::new_v4());
             write_file_at_target(target, &rel, script.as_bytes())?;
             let remote = format!(
-                "GIT_ASKPASS='{}' GIT_TERMINAL_PROMPT='0' git -C {} push origin 'HEAD:{}'",
+                "GIT_ASKPASS='{}' GIT_TERMINAL_PROMPT='0' git -C {} push -u origin 'HEAD:{}'",
                 rel.replace('\'', "'\\''"),
                 shell_quote(&target.path().to_string_lossy()),
                 branch.replace('\'', "'\\''")
@@ -412,6 +417,32 @@ pub fn list_status(target: &Target) -> AppResult<WorkingTreeStatus> {
         ],
     )?;
     status::parse_status(&out.stdout)
+}
+
+/// `list_status` + 병합 브랜치 대비 뒤처짐(`behind_base`) 계산.
+///
+/// porcelain 의 `# branch.ab` 는 **내 원격 브랜치** 기준이라, 관리자가
+/// 병합 브랜치에 push해도 0 그대로다 — "동기화하세요" 를 제안할 근거가
+/// 되지 못한다. `origin/<base>` 트래킹 ref 와 비교해 채운다 (fetch 없음,
+/// 마지막 fetch 시점 기준).
+pub fn list_status_with_base(target: &Target, base: &str) -> AppResult<WorkingTreeStatus> {
+    let mut st = list_status(target)?;
+    if base.is_empty() {
+        return Ok(st);
+    }
+    let base_ref = format!("refs/remotes/origin/{base}");
+    let exists = run_at_target(target, ["rev-parse", "-q", "--verify", &base_ref])?;
+    if exists.ok() {
+        if let Ok(out) = run_at_target(
+            target,
+            ["rev-list", "--count", &format!("HEAD..{base_ref}")],
+        ) {
+            if out.ok() {
+                st.behind_base = out.stdout.trim().parse::<u32>().unwrap_or(0);
+            }
+        }
+    }
+    Ok(st)
 }
 
 // ── changed files ───────────────────────────────────────────────────────────────
@@ -552,7 +583,7 @@ pub fn checkout_branch(target: &Target, branch: &str) -> AppResult<()> {
 const DIRTY_TREE_MSG: &str =
     "작업 트리에 커밋되지 않은 변경사항이 있어 브랜치를 전환할 수 없습니다. 변경사항을 커밋하거나 스태시한 뒤 다시 시도하세요.";
 
-fn dirty_tree_error(stderr: &str) -> bool {
+pub(crate) fn dirty_tree_error(stderr: &str) -> bool {
     let e = stderr.to_lowercase();
     [
         "would be overwritten",

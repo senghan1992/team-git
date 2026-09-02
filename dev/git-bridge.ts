@@ -342,7 +342,7 @@ function pushWithAskpass(t: GitTarget, branch: string, cred: PushCredentialRecor
   if (t.ssh) {
     const rel = `../.gc-askpass-${randomUUID()}.sh`;
     writeWorkingTree(t, rel, script);
-    const remote = `GIT_ASKPASS='${rel.replace(/'/g, `'\\''`)}' GIT_TERMINAL_PROMPT='0' git -C ${shellQuoteArg(t.path)} -c core.quotepath=off push origin 'HEAD:${branch.replace(/'/g, `'\\''`)}'`;
+    const remote = `GIT_ASKPASS='${rel.replace(/'/g, `'\\''`)}' GIT_TERMINAL_PROMPT='0' git -C ${shellQuoteArg(t.path)} -c core.quotepath=off push -u origin 'HEAD:${branch.replace(/'/g, `'\\''`)}'`;
     const res = sshRun(t.ssh, remote);
     sshRun(t.ssh, `rm -f '${rel.replace(/'/g, `'\\''`)}'`);
     return { ok: res.ok, stdout: res.stdout, stderr: res.stderr };
@@ -352,7 +352,7 @@ function pushWithAskpass(t: GitTarget, branch: string, cred: PushCredentialRecor
   try {
     chmodSync(path, 0o700);
   } catch { /* windows only */ }
-  const res = gitWithEnv(t.path, ["push", "origin", `HEAD:${branch}`], {
+  const res = gitWithEnv(t.path, ["push", "-u", "origin", `HEAD:${branch}`], {
     GIT_ASKPASS: path,
     GIT_TERMINAL_PROMPT: "0",
   });
@@ -868,6 +868,69 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         if ("error" in r) return jsonError("repo_not_found", r.error);
         return mergeState(targetOf(r));
       }
+      case "list_merged_remote_branches": {
+        const r = repoById(args.repoId as string);
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        const t = targetOf(r);
+        const base = args.base as string;
+        const baseRef = `origin/${base}`;
+        const fmt = "%(refname:short)%09%(objectname)%09%(authorname)%09%(committerdate:unix)";
+        const list = tgGit(t, ["for-each-ref", "refs/remotes/origin", "--format", fmt]);
+        if (!list.ok) return jsonError("git", list.stderr.trim());
+        const out: Array<{ name: string; short_name: string; author: string; unix_time: number }> = [];
+        for (const line of list.stdout.split("\n")) {
+          if (!line) continue;
+          const [name, sha, author, unix] = line.split("\t");
+          if (!name || !sha || name === baseRef || name.endsWith("/HEAD")) continue;
+          if (!tgGit(t, ["merge-base", "--is-ancestor", name, baseRef]).ok) continue;
+          out.push({
+            name,
+            short_name: name.replace(/^origin\//, ""),
+            author: author ?? "",
+            unix_time: Number(unix ?? 0),
+          });
+        }
+        out.sort((a, b) => a.unix_time - b.unix_time);
+        return out;
+      }
+      case "delete_remote_branch": {
+        const r = repoById(args.repoId as string);
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        const t = targetOf(r);
+        const base = args.base as string;
+        const branch = args.branch as string;
+        if (branch === base) return jsonError("git", `병합 브랜치(${base})는 삭제할 수 없습니다.`);
+        // 삭제 직전 조상 재확인 — Rust와 같은 안전장치.
+        if (!tgGit(t, ["merge-base", "--is-ancestor", `origin/${branch}`, `origin/${base}`]).ok) {
+          return jsonError("git", `${branch} 브랜치에 아직 ${base}에 없는 커밋이 있습니다 — 삭제하지 않았습니다.`);
+        }
+        const out = tgGit(t, ["push", "origin", "--delete", branch]);
+        if (!out.ok) return jsonError("git", out.stderr.trim());
+        tgGit(t, ["fetch", "--prune", "origin"]);
+        return null;
+      }
+      case "base_unpushed_count": {
+        const r = repoById(args.repoId as string);
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        const t = targetOf(r);
+        const base = args.base as string;
+        if (!tgGit(t, ["rev-parse", "-q", "--verify", `refs/heads/${base}`]).ok) return 0;
+        if (!tgGit(t, ["rev-parse", "-q", "--verify", `refs/remotes/origin/${base}`]).ok) return 0;
+        const n = tgGit(t, ["rev-list", "--count", `refs/remotes/origin/${base}..refs/heads/${base}`]).stdout.trim();
+        return Number(n) || 0;
+      }
+      case "branch_file_diff": {
+        const r = repoById(args.repoId as string);
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        const out = tgGit(targetOf(r), [
+          "diff",
+          `origin/${args.base as string}...${args.branchRef as string}`,
+          "--",
+          args.path as string,
+        ]);
+        if (!out.ok) return jsonError("git", out.stderr.trim());
+        return out.stdout;
+      }
       case "conflict_detail": {
         const r = repoById(args.repoId as string);
         if ("error" in r) return jsonError("repo_not_found", r.error);
@@ -994,6 +1057,12 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
       case "peer_unread_count": {
         return 2;
       }
+      case "peer_poll_now":
+        return null;
+      case "peer_mark_team_read":
+        return null;
+      case "peer_mark_all_team_read":
+        return 2;
       case "peer_list_projects": {
         return [{ id: "p1", display_name: "데모 팀", join_code: "TEAM-0001", role: "admin" }];
       }
@@ -1092,7 +1161,7 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
       case "status": {
         const r = repoById(args.repoId as string);
         if ("error" in r) return jsonError("repo_not_found", r.error);
-        return workingTreeStatus(targetOf(r));
+        return workingTreeStatus(targetOf(r), r.default_branch || "main");
       }
       case "add_files": {
         const r = repoById(args.repoId as string);
@@ -1136,7 +1205,7 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         if (https && cred) {
           out = pushWithAskpass(t, branch, cred);
         } else {
-          out = tgGit(t, ["push", "origin", `HEAD:${branch}`]);
+          out = tgGit(t, ["push", "-u", "origin", `HEAD:${branch}`]);
         }
         if (out.ok && args.saveCredential && cred) {
           const s = loadSettings();
@@ -1638,6 +1707,7 @@ interface PendingBranch {
   ahead: number;
   behind: number;
   changed_files: ChangedPath[];
+  merged_locally: boolean;
 }
 interface MergeOutcome {
   ok: boolean;
@@ -1675,6 +1745,10 @@ function pendingBranches(t: GitTarget, remote: string, base: string): PendingBra
     if (name.endsWith("/HEAD")) continue;
     const anc = tgGit(t, ["merge-base", "--is-ancestor", name, baseRef]);
     if (anc.ok) continue;
+    // 로컬 base에는 이미 병합됐지만 push가 안 된 상태 (Rust와 동일한 규칙).
+    const mergedLocally =
+      tgGit(t, ["rev-parse", "-q", "--verify", `refs/heads/${base}`]).ok &&
+      tgGit(t, ["merge-base", "--is-ancestor", name, `refs/heads/${base}`]).ok;
     const aheadBehind = tgGit(t, ["rev-list", "--left-right", "--count", `${baseRef}...${name}`]).stdout;
     let ahead = 0;
     let behind = 0;
@@ -1706,6 +1780,7 @@ function pendingBranches(t: GitTarget, remote: string, base: string): PendingBra
       ahead,
       behind,
       changed_files: changed,
+      merged_locally: mergedLocally,
     });
   }
   out.sort((a, b) => b.unix_time - a.unix_time);
@@ -2075,9 +2150,10 @@ interface WorkingTreeStatus {
   upstream: string | null;
   ahead: number;
   behind: number;
+  behind_base: number;
   files: Array<{ kind: string; path: string; staged: boolean; unstaged: boolean }>;
 }
-function workingTreeStatus(t: GitTarget): WorkingTreeStatus {
+function workingTreeStatus(t: GitTarget, base?: string): WorkingTreeStatus {
   const branch = currentBranch(t);
   const upstream = tgGit(t, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).stdout.trim();
   const ab = upstream
@@ -2106,7 +2182,16 @@ function workingTreeStatus(t: GitTarget): WorkingTreeStatus {
       files.push({ kind: "untracked", path: line.slice(2), staged: false, unstaged: false });
     }
   }
-  return { branch: branch || null, upstream: upstream || null, ahead: ahead ?? 0, behind: behind ?? 0, files };
+  // Rust와 동일: origin/<base> 트래킹 ref 대비 뒤처짐 (fetch 없이 계산).
+  let behindBase = 0;
+  if (base) {
+    const baseRef = `refs/remotes/origin/${base}`;
+    if (tgGit(t, ["rev-parse", "-q", "--verify", baseRef]).ok) {
+      const n = tgGit(t, ["rev-list", "--count", `HEAD..${baseRef}`]).stdout.trim();
+      behindBase = Number(n) || 0;
+    }
+  }
+  return { branch: branch || null, upstream: upstream || null, ahead: ahead ?? 0, behind: behind ?? 0, behind_base: behindBase, files };
 }
 
 // ── plugin ──────────────────────────────────────────────────────────────────

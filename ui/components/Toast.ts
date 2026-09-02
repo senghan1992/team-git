@@ -20,8 +20,9 @@ function emit() {
 
 /** 자동으로 사라지는 일반 토스트. */
 export function toast(text: string, kind: Toast["kind"] = "info") {
-  pushToast({ id: nextId++, text, kind });
-  setTimeout(() => dismiss(nextId - 1), 4200);
+  const id = nextId++;
+  pushToast({ id, text, kind });
+  setTimeout(() => dismiss(id), 4200);
 }
 
 /**

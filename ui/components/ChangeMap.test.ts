@@ -1,5 +1,5 @@
 // 변경 지도 뒤집기 검증 — 파일 → 브랜치. `pnpm test:ui`로 실행.
-import { buildChangeMap } from "./ChangeMap";
+import { buildChangeMap, suggestMergeOrder } from "./ChangeMap";
 import type { PendingBranch } from "../lib/ipc";
 
 function assert(cond: boolean, msg: string) {
@@ -11,13 +11,14 @@ function branch(
   short: string,
   author: string,
   files: [string, string][],
+  unixTime = 1_700_000_000,
 ): PendingBranch {
   return {
     name: `origin/${short}`,
     short_name: short,
     sha: "abc1234",
     author,
-    unix_time: 1_700_000_000,
+    unix_time: unixTime,
     subject: "wip",
     ahead: 1,
     behind: 0,
@@ -83,6 +84,56 @@ function branch(
   ]);
   assert(rows.length === 2, "파일 2개");
   assert(rows.every((r) => r.touches.length === 1), "겹침 없음");
+}
+
+// ── 병합 권장 순서 ──────────────────────────────────────────────────────────
+{
+  // 겹침이 없으면 제안하지 않는다 — 순서가 아무래도 좋기 때문.
+  const none = suggestMergeOrder([
+    branch("a", "가", [["a.ts", "M"]]),
+    branch("b", "나", [["b.ts", "M"]]),
+  ]);
+  assert(none.length === 0, `겹침이 없으면 순서 제안 없음 (got ${none.join(",")})`);
+}
+
+{
+  // 겹치는 파일이 적은 브랜치가 먼저 — 충돌 해결이 마지막 병합에 모인다.
+  const order = suggestMergeOrder([
+    branch("heavy", "가", [
+      ["shared1.ts", "M"],
+      ["shared2.ts", "M"],
+      ["own.ts", "A"],
+    ]),
+    branch("light", "나", [["shared1.ts", "M"]]),
+    branch("mid", "다", [["shared2.ts", "M"], ["mid.ts", "A"]]),
+  ]);
+  assert(
+    order.join(",") === "light,mid,heavy",
+    `겹침 적은 순 (got ${order.join(",")})`,
+  );
+}
+
+{
+  // 겹침 수가 같으면 먼저 push된(오래 기다린) 브랜치부터.
+  const order = suggestMergeOrder([
+    branch("later", "가", [["s.ts", "M"]], 2_000),
+    branch("earlier", "나", [["s.ts", "M"]], 1_000),
+  ]);
+  assert(
+    order.join(",") === "earlier,later",
+    `동률이면 먼저 push된 쪽부터 (got ${order.join(",")})`,
+  );
+}
+
+{
+  // 겹침에 관여하지 않는 브랜치는 순서에 넣지 않는다 — 아무 때나 병합해도 된다.
+  const order = suggestMergeOrder([
+    branch("x", "가", [["s.ts", "M"]]),
+    branch("y", "나", [["s.ts", "M"]]),
+    branch("solo", "다", [["solo.ts", "M"]]),
+  ]);
+  assert(!order.includes("solo"), "겹침 없는 브랜치는 순서에서 제외");
+  assert(order.length === 2, `겹치는 두 개만 (got ${order.join(",")})`);
 }
 
 console.log("\n✓ ChangeMap 전체 통과");

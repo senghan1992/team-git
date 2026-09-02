@@ -34,6 +34,37 @@ export function buildChangeMap(branches: PendingBranch[]): FileTouch[] {
   });
 }
 
+/**
+ * 겹침이 있을 때의 병합 권장 순서 (short_name, 먼저 병합할 것부터).
+ *
+ * 휴리스틱: **겹치는 파일이 적은 브랜치부터.** 겹침이 많은 브랜치를 마지막에
+ * 두면 충돌 해결이 그 한 번의 병합에 모인다 — 반대로 하면 같은 파일의 충돌을
+ * 병합마다 다시 푼다. 동률이면 먼저 push된 쪽부터 (기다린 순서).
+ * 겹치는 브랜치가 2개 미만이면 순서를 제안할 것이 없으므로 빈 배열.
+ */
+export function suggestMergeOrder(branches: PendingBranch[]): string[] {
+  const rows = buildChangeMap(branches);
+  const sharedPaths = new Set(
+    rows.filter((r) => r.touches.length > 1).map((r) => r.path),
+  );
+  if (sharedPaths.size === 0) return [];
+  const involved = branches
+    .map((b) => ({
+      b,
+      overlap: b.changed_files.filter((cf) => sharedPaths.has(cf.path)).length,
+    }))
+    .filter((x) => x.overlap > 0);
+  if (involved.length < 2) return [];
+  return involved
+    .sort(
+      (x, y) =>
+        x.overlap - y.overlap ||
+        x.b.unix_time - y.b.unix_time ||
+        x.b.short_name.localeCompare(y.b.short_name),
+    )
+    .map((x) => x.b.short_name);
+}
+
 /** 변경 종류(A/M/D/R…)를 사람 말로. 배지 색과 함께 쓴다. */
 function kindLabel(kind: string): string {
   if (kind === "A") return "추가";
@@ -105,6 +136,26 @@ export function renderChangeMap(branches: PendingBranch[]): HTMLElement | null {
     d.textContent =
       "먼저 병합한 쪽이 기준이 됩니다. 나중에 병합하는 브랜치에서 충돌이 날 가능성이 높으니, 아래 파일들을 확인하고 순서를 정하세요.";
     body.appendChild(d);
+    // "순서를 정하세요"라고만 하고 순서를 안 주면 관리자가 매번 처음부터
+    // 고민한다 — 휴리스틱이라도 출발점을 제안한다.
+    const order = suggestMergeOrder(branches);
+    if (order.length >= 2) {
+      const o = document.createElement("div");
+      o.className = "font-medium";
+      const label = document.createElement("span");
+      label.textContent = "권장 순서: ";
+      o.appendChild(label);
+      const seq = document.createElement("span");
+      seq.className = "font-mono";
+      seq.textContent = order.join(" → ");
+      o.appendChild(seq);
+      const why = document.createElement("span");
+      why.className = "font-normal text-[color:var(--color-ink-muted)]";
+      why.textContent =
+        " — 겹치는 파일이 적은 브랜치부터 병합하면 충돌 해결이 마지막 병합 한 곳에 모입니다.";
+      o.appendChild(why);
+      body.appendChild(o);
+    }
     warn.appendChild(body);
     card.appendChild(warn);
   }

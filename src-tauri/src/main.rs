@@ -93,7 +93,12 @@ struct HookArgs {
 }
 
 fn run_hook_subcommand(args: &[String]) -> anyhow::Result<()> {
-    let parsed = parse_hook_args(args)?;
+    let mut parsed = parse_hook_args(args)?;
+    // payload는 팀 전체에 배달된다 — ① `https://user:token@host/…`의
+    // 자격증명이 그대로 나가면 push 토큰 유출이고, ② 받는 쪽은 이 URL로
+    // 자기 등록 저장소를 찾으므로 (폴더 이름은 사람마다 다르다) 양쪽이
+    // 같은 규칙으로 정규화되어 있어야 한다.
+    parsed.remote_url = git_companion::git::normalize_remote_url(&parsed.remote_url);
     let repo_path = std::fs::canonicalize(&parsed.repo)?;
     let cfg = config_store::load()?;
     let repo = cfg

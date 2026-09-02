@@ -54,6 +54,11 @@ export interface WorkingTreeStatus {
   upstream: string | null;
   ahead: number;
   behind: number;
+  /**
+   * origin/<병합 브랜치>가 현재 브랜치보다 앞선 커밋 수 — "동기화"가 실제로
+   * 가져올 양. behind(내 원격 브랜치 기준)와 다르다.
+   */
+  behind_base?: number;
   files: FileChange[];
 }
 
@@ -101,6 +106,16 @@ export interface PendingBranch {
   changed_files: ChangedPath[];
   /** True when the branch only exists locally (never pushed). */
   local?: boolean;
+  /** 로컬 base에는 이미 병합됐지만 base가 아직 push되지 않은 브랜치. */
+  merged_locally?: boolean;
+}
+
+/** 병합이 끝나 base에 완전히 포함된 원격 브랜치 — 정리(삭제) 후보. */
+export interface MergedRemoteBranch {
+  name: string;
+  short_name: string;
+  author: string;
+  unix_time: number;
 }
 
 export interface MergeOutcome {
@@ -389,6 +404,14 @@ export const ipc = {
     invoke<MergeOutcome>("start_merge", { repoId, branchRef, base }),
   mergeState: (repoId: Uuid) =>
     invoke<MergeState>("merge_state", { repoId }),
+  baseUnpushedCount: (repoId: Uuid, base: string) =>
+    invoke<number>("base_unpushed_count", { repoId, base }),
+  listMergedRemoteBranches: (repoId: Uuid, base: string) =>
+    invoke<MergedRemoteBranch[]>("list_merged_remote_branches", { repoId, base }),
+  deleteRemoteBranch: (repoId: Uuid, base: string, branch: string) =>
+    invoke<void>("delete_remote_branch", { repoId, base, branch }),
+  branchFileDiff: (repoId: Uuid, base: string, branchRef: string, path: string) =>
+    invoke<string>("branch_file_diff", { repoId, base, branchRef, path }),
   conflictDetail: (repoId: Uuid, path: string) =>
     invoke<ConflictDetail>("conflict_detail", { repoId, path }),
   resolveConflict: (repoId: Uuid, path: string, resolution: Resolution) =>
@@ -571,6 +594,7 @@ export const ipc_peer = {
   listTeamEvents: (limit: number, unreadOnly: boolean) =>
     invoke<TeamEventRow[]>("peer_list_team_events", { limit, unreadOnly }),
   markTeamRead: (id: string) => invoke<void>("peer_mark_team_read", { id }),
+  markAllTeamRead: () => invoke<number>("peer_mark_all_team_read"),
   localUrl: () => invoke<string>("peer_local_url"),
   inviteByEmail: (
     projectId: string,
