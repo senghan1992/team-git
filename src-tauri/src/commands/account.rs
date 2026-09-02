@@ -1,49 +1,69 @@
-//! Tauri commands for login accounts (identity) — the app's people registry.
+//! Tauri commands for login accounts.
 //!
-//! Login is local-first: identities live in the app config, and per-project
-//! membership is carried by the repo's own `.gpconfig` file (matched by email),
-//! so it works offline and travels with the repo.
-use uuid::Uuid;
-
-use crate::config_store::{self, Account};
+//! Identities live in the team server's `users` table; this layer is a thin
+//! pass-through to `crate::accounts`. Only `account_current` is local — it
+//! reads the cached session so startup never waits on the network.
+use crate::accounts;
+use crate::config_store::Account;
 use crate::error::AppResult;
 
 #[tauri::command]
-pub fn account_register(
+pub async fn account_register(
     name: String,
     email: String,
-    username: Option<String>,
-    password: Option<String>,
+    username: String,
+    password: String,
 ) -> AppResult<Account> {
-    config_store::register_account(&name, &email, username.as_deref(), password.as_deref())
+    accounts::register(&name, &email, &username, &password).await
 }
 
 #[tauri::command]
-pub fn account_login_by_password(username: String, password: String) -> AppResult<Account> {
-    config_store::login_by_password(&username, &password)
+pub async fn account_login_by_password(username: String, password: String) -> AppResult<Account> {
+    accounts::login(&username, &password).await
 }
 
 #[tauri::command]
-pub fn account_list() -> AppResult<Vec<Account>> {
-    config_store::list_accounts()
+pub async fn account_logout() -> AppResult<()> {
+    accounts::logout().await
 }
 
-#[tauri::command]
-pub fn account_delete(id: Uuid) -> AppResult<()> {
-    config_store::delete_account(&id)
-}
-
-#[tauri::command]
-pub fn account_login(id: Uuid) -> AppResult<Account> {
-    config_store::login_account(&id)
-}
-
-#[tauri::command]
-pub fn account_logout() -> AppResult<()> {
-    config_store::logout_account()
-}
-
+/// The signed-in user from the local cache — no network call.
 #[tauri::command]
 pub fn account_current() -> AppResult<Option<Account>> {
-    config_store::active_account()
+    crate::config_store::active_account()
+}
+
+/// Re-read the signed-in user from the server. Being offline returns the cached
+/// copy; only a rejected token signs the user out.
+#[tauri::command]
+pub async fn account_refresh() -> AppResult<Option<Account>> {
+    accounts::refresh().await
+}
+
+#[tauri::command]
+pub async fn account_update_profile(
+    name: Option<String>,
+    email: Option<String>,
+) -> AppResult<Account> {
+    accounts::update_profile(name.as_deref(), email.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn account_change_password(
+    current_password: String,
+    new_password: String,
+) -> AppResult<()> {
+    accounts::change_password(&current_password, &new_password).await
+}
+
+/// Delete my own account on the server, then sign out locally.
+#[tauri::command]
+pub async fn account_delete_self() -> AppResult<()> {
+    accounts::delete_self().await
+}
+
+/// Search the team's user directory (name / id / email). Needs 2+ characters.
+#[tauri::command]
+pub async fn account_search(query: String) -> AppResult<Vec<Account>> {
+    accounts::search(&query).await
 }

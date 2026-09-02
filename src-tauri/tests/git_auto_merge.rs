@@ -103,6 +103,15 @@ fn ai_disabled(
     }
 }
 
+/// AI를 끈 상태에서 사용자가 "규칙 기반으로 한쪽 골라라"를 명시적으로 요청한
+/// 설정 — `commands::auto`가 `ai.enabled == false`일 때 만드는 옵션과 같다.
+fn rule_based_opts() -> AutoResolveOptions {
+    AutoResolveOptions {
+        binary_strategy: SideChoice::Theirs,
+        text_fallback: Some(SideChoice::Theirs),
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -117,17 +126,13 @@ fn auto_resolve_commits_merge_via_deterministic_fallback() {
     let result = run_merge(&repo, "feature", None).expect("merge should start");
     assert!(result.conflicted, "fixture should conflict on a.txt");
 
-    let report = auto_resolve_merge(
-        &local_target(&repo),
-        &AutoResolveOptions::default(),
-        ai_disabled(),
-    )
-    .expect("auto resolve should succeed");
+    let report = auto_resolve_merge(&local_target(&repo), &rule_based_opts(), ai_disabled())
+        .expect("auto resolve should succeed");
 
     assert!(!report.resolved.is_empty(), "a.txt should be resolved");
     assert_eq!(
         report.resolved[0].method, "theirs",
-        "feature touched a.txt (base != ours) so fallback picks theirs"
+        "rule-based mode was explicitly requested → pick theirs"
     );
     assert!(report.remaining.is_empty(), "no conflicts may remain");
     assert!(report.committed, "all resolved → merge must be committed");
@@ -194,7 +199,7 @@ fn auto_resolve_uses_ai_result_when_valid() {
 }
 
 #[test]
-fn auto_resolve_rejects_marked_ai_output_and_falls_back() {
+fn auto_resolve_rejects_marked_ai_output_and_falls_back_in_rule_based_mode() {
     let _guard = BACKUP_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
     let repo = setup_conflict(&tmp);
@@ -203,7 +208,7 @@ fn auto_resolve_rejects_marked_ai_output_and_falls_back() {
     assert!(result.conflicted);
 
     // AI returns a body still containing markers → must be rejected (safety).
-    let report = auto_resolve_merge(&local_target(&repo), &AutoResolveOptions::default(), |_| {
+    let report = auto_resolve_merge(&local_target(&repo), &rule_based_opts(), |_| {
         Ok("<<<<<<< HEAD\nmain\n=======\nfeature\n>>>>>>> feature\n".to_string())
     })
     .unwrap();
@@ -215,6 +220,58 @@ fn auto_resolve_rejects_marked_ai_output_and_falls_back() {
             .unwrap()
             .contains("<<<<<<<"),
         "markers must never survive"
+    );
+}
+
+/// 데이터 손실 방지: AI가 쓸 수 없는 결과를 내놓았고 **양쪽이 모두 고친**
+/// 텍스트 파일이라면, 통째로 한쪽을 골라 커밋/푸시해 버리면 팀원의 커밋이
+/// 조용히 사라진다. 그래서 기본값(`text_fallback: None`)에서는 그 파일을
+/// 충돌 상태로 남기고 사람에게 넘긴다.
+#[test]
+fn auto_resolve_leaves_both_sides_changed_file_for_a_human_when_ai_fails() {
+    let _guard = BACKUP_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = setup_conflict(&tmp);
+    std::env::set_var("GC_BACKUP_DIR", tmp.path().join("backups"));
+    let result = run_merge(&repo, "feature", None).unwrap();
+    assert!(result.conflicted);
+
+    let report = auto_resolve_merge(
+        &local_target(&repo),
+        &AutoResolveOptions::default(),
+        ai_disabled(),
+    )
+    .unwrap();
+
+    assert!(
+        report.resolved.is_empty(),
+        "nothing may be auto-resolved, got {:?}",
+        report.resolved
+    );
+    assert_eq!(
+        report.remaining,
+        vec!["a.txt".to_string()],
+        "the file must stay conflicted for manual resolution"
+    );
+    assert!(
+        !report.committed,
+        "a merge that lost a side's work must never be committed"
+    );
+    assert!(
+        report.backup_id.is_some(),
+        "the original is still backed up before anything is attempted"
+    );
+    // 병합은 계속 진행 중이어야 한다 — 병합 센터에서 이어서 끝낼 수 있게.
+    assert!(git_companion::git::merge::merge_in_progress(&local_target(&repo)).unwrap());
+    // 양쪽 내용이 워킹 트리에 그대로 남아 있어야 한다.
+    let content = std::fs::read_to_string(repo.join("a.txt")).unwrap();
+    assert!(
+        content.contains("main version"),
+        "ours must survive: {content}"
+    );
+    assert!(
+        content.contains("feature version"),
+        "theirs must survive: {content}"
     );
 }
 
@@ -294,12 +351,8 @@ fn backup_restore_roundtrip_recovers_pre_resolution_content() {
     let backups_dir = tmp.path().join("backups");
     std::env::set_var("GC_BACKUP_DIR", &backups_dir);
 
-    let report = auto_resolve_merge(
-        &local_target(&repo),
-        &AutoResolveOptions::default(),
-        ai_disabled(),
-    )
-    .unwrap();
+    let report =
+        auto_resolve_merge(&local_target(&repo), &rule_based_opts(), ai_disabled()).unwrap();
     assert!(report.committed);
 
     // The backup holds the conflicted original.

@@ -3,6 +3,8 @@ import { normalizePort, renderSshTestReport, runSshTest } from "../lib/sshTest";
 import { renderRepoCard } from "../components/RepositoryCard";
 import { openModal } from "../components/Modal";
 import { icon } from "../components/Icon";
+import { setBusy } from "../components/Busy";
+import { toast } from "../components/Toast";
 import type { Page } from "../components/Sidebar";
 
 export function renderHomeView(
@@ -13,54 +15,72 @@ export function renderHomeView(
   const main = document.createElement("main");
   main.className = "flex-1 overflow-y-auto p-8 flex flex-col gap-6";
 
-  // ── CTA: 프로젝트 추가 — 코발트 플라크(유약을 바른 한 장) ─────────────
-  const ctaCard = document.createElement("div");
-  ctaCard.className = "gc-cta";
-  const ctaHead = document.createElement("div");
-  ctaHead.className = "flex items-center gap-3";
-  const ctaIconWrap = document.createElement("span");
-  ctaIconWrap.className = "gc-cta__tile";
-  ctaIconWrap.appendChild(icon("plus", 18));
-  ctaHead.appendChild(ctaIconWrap);
-  const ctaTitle = document.createElement("div");
-  ctaTitle.className = "gc-cta__title";
-  ctaTitle.textContent = "프로젝트 추가";
-  ctaHead.appendChild(ctaTitle);
-  ctaCard.appendChild(ctaHead);
-  const ctaDesc = document.createElement("p");
-  ctaDesc.className = "gc-cta__desc";
-  ctaDesc.textContent = "저장소를 등록하면 브랜치 관리, 커밋, 푸시, 풀을 바로 시작할 수 있습니다.";
-  ctaCard.appendChild(ctaDesc);
-  const ctaBtn = document.createElement("button");
-  ctaBtn.id = "btn-add-project";
-  ctaBtn.className = "gc-cta__btn";
-  ctaBtn.textContent = "저장소 추가";
-  ctaCard.appendChild(ctaBtn);
-  main.appendChild(ctaCard);
-
-  ctaBtn.addEventListener("click", () => {
-    openAddProjectModal(onReposChanged, onNav);
-  });
-  // ── Repo grid (shown when repos exist) ──────────────────────────────────
+  // ── 헤더 ────────────────────────────────────────────────────────────────
+  //
+  // 저장소가 하나라도 있으면 사용자가 여기 온 이유는 "내 저장소 상태 보기"다.
+  // 그래서 큰 등록 CTA는 진짜 빈 상태에서만 화면을 차지하고, 그 뒤로는
+  // 헤더 우측의 작은 버튼으로 물러난다.
   if (repos.length > 0) {
     const head = document.createElement("div");
-    head.className = "gc-page-head";
+    head.className = "flex items-end justify-between gap-4";
+    const headText = document.createElement("div");
+    headText.className = "gc-page-head";
     const title = document.createElement("div");
     title.className = "gc-page-head__title";
-    title.textContent = "저장소 목록";
-    head.appendChild(title);
+    title.textContent = "내 저장소";
+    headText.appendChild(title);
     const sub = document.createElement("div");
     sub.className = "gc-page-head__sub";
-    sub.textContent = `${repos.length}개의 저장소가 등록되어 있습니다.`;
-    head.appendChild(sub);
+    sub.textContent = "각 저장소가 지금 무엇을 기다리는지 아래에서 확인하세요.";
+    headText.appendChild(sub);
+    head.appendChild(headText);
+    const addBtn = document.createElement("button");
+    addBtn.id = "btn-add-project";
+    addBtn.className = "gc-button-secondary shrink-0 inline-flex items-center gap-1";
+    addBtn.appendChild(icon("plus", 14));
+    const addLabel = document.createElement("span");
+    addLabel.textContent = "저장소 추가";
+    addBtn.appendChild(addLabel);
+    addBtn.addEventListener("click", () => openAddProjectModal(onReposChanged, onNav));
+    head.appendChild(addBtn);
     main.appendChild(head);
+  } else {
+    const ctaCard = document.createElement("div");
+    ctaCard.className = "gc-cta";
+    const ctaHead = document.createElement("div");
+    ctaHead.className = "flex items-center gap-3";
+    const ctaIconWrap = document.createElement("span");
+    ctaIconWrap.className = "gc-cta__tile";
+    ctaIconWrap.appendChild(icon("plus", 18));
+    ctaHead.appendChild(ctaIconWrap);
+    const ctaTitle = document.createElement("div");
+    ctaTitle.className = "gc-cta__title";
+    ctaTitle.textContent = "저장소를 등록하고 시작하세요";
+    ctaHead.appendChild(ctaTitle);
+    ctaCard.appendChild(ctaHead);
+    const ctaDesc = document.createElement("p");
+    ctaDesc.className = "gc-cta__desc";
+    ctaDesc.textContent =
+      "팀이 함께 쓰는 git 저장소의 경로를 넣으면, 내 작업 브랜치 만들기 · 커밋 · 푸시 · 병합 · 동기화를 이 앱에서 처리할 수 있습니다.";
+    ctaCard.appendChild(ctaDesc);
+    const ctaBtn = document.createElement("button");
+    ctaBtn.id = "btn-add-project";
+    ctaBtn.className = "gc-cta__btn";
+    ctaBtn.textContent = "저장소 추가";
+    ctaBtn.addEventListener("click", () => openAddProjectModal(onReposChanged, onNav));
+    ctaCard.appendChild(ctaBtn);
+    main.appendChild(ctaCard);
+  }
+
+  // ── Repo grid (shown when repos exist) ──────────────────────────────────
+  if (repos.length > 0) {
     const grid = document.createElement("div");
     grid.className = "grid grid-cols-1 md:grid-cols-2 gap-4";
     for (const r of repos) {
       grid.appendChild(renderRepoCard(
         r,
         onReposChanged,
-        () => onNav({ kind: "repo", repoId: r.id }),
+        (tab) => onNav({ kind: "repo", repoId: r.id, tab: tab ?? "work" }),
       ));
     }
     main.appendChild(grid);
@@ -71,7 +91,7 @@ export function renderHomeView(
 
 function openAddProjectModal(onReposChanged: () => void, onNav: (p: Page) => void): void {
   const m = openModal({
-    title: "프로젝트 추가",
+    title: "저장소 추가",
     submitLabel: "등록",
     onSubmit: async (close) => {
       const ssh_host = (m.body.querySelector<HTMLInputElement>("#ssh-host")!).value.trim();
@@ -82,7 +102,7 @@ function openAddProjectModal(onReposChanged: () => void, onNav: (p: Page) => voi
       const ssh_port = normalizePort(m.body.querySelector<HTMLInputElement>("#ssh-port")!.value);
 
       if (!project_path) {
-        m.setError("프로젝트 경로를 입력하세요.");
+        m.setError("저장소 폴더 경로를 입력하세요.");
         return;
       }
 
@@ -94,7 +114,16 @@ function openAddProjectModal(onReposChanged: () => void, onNav: (p: Page) => voi
         repo = await ipc.registerRepository({ ssh_user, ssh_host, ssh_key_path, ssh_password, ssh_port, project_path });
       } catch (e) {
         m.setSubmitting(false);
-        m.setError(`SSH 연결 실패: ${(e as Error).message ?? e}`);
+        const raw = (e as Error).message ?? String(e);
+        // 예전에는 어떤 실패든 "SSH 연결 실패"로 붙였다. 로컬 폴더를 잘못
+        // 고른 사람에게 SSH 를 탓하면 원인을 엉뚱한 곳에서 찾게 된다.
+        m.setError(ssh_host ? `서버에 연결하지 못했습니다: ${raw}` : raw);
+        // git 저장소가 아닌 폴더라면 여기서 만들 수 있게 해 준다 — 처음
+        // git 을 쓰는 사람이 가장 자주 막히는 지점이고, `.git` 폴더만
+        // 생기므로 되돌릴 수 있는 동작이다.
+        if (!ssh_host && raw.includes("git 저장소가 아닙니다")) {
+          offerGitInit(m, project_path, onReposChanged, onNav);
+        }
         return;
       }
 
@@ -167,36 +196,56 @@ function openAddProjectModal(onReposChanged: () => void, onNav: (p: Page) => voi
   });
 
   // Build the initial body for step 1
+  // 필요한 것은 경로 한 칸뿐이다. 예전에는 SSH 호스트·포트·사용자·키·비밀번호
+  // 다섯 칸이 먼저 나오고 정작 필수인 경로가 맨 아래에 있었다. 로컬 저장소를
+  // 등록하려던 사람은 쓸 일 없는 SSH 용어 다섯 개를 먼저 읽어야 했다.
+  // 그래서 경로를 맨 위로 올리고, SSH 는 접어 둔다.
   m.body.innerHTML = `
     <div class="flex flex-col gap-1">
-      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-host">SSH 호스트 (선택)</label>
-      <input id="ssh-host" class="gc-input" type="text" placeholder="예: dev.example.com" />
-    </div>
-    <div class="flex flex-col gap-1">
-      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-port">포트</label>
-      <input id="ssh-port" class="gc-input" type="number" min="1" max="65535" placeholder="예: 22" value="22" />
-    </div>
-    <div class="flex flex-col gap-1">
-      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-user">SSH 사용자 (선택)</label>
-      <input id="ssh-user" class="gc-input" type="text" placeholder="예: ubuntu" />
-    </div>
-    <div class="flex flex-col gap-1">
-      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-key">SSH 키 경로 (선택)</label>
-      <input id="ssh-key" class="gc-input" type="text" placeholder="예: ~/.ssh/id_ed25519" />
-    </div>
-    <div class="flex flex-col gap-1">
-      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-password">SSH 비밀번호 (선택, 사용자/비밀번호 인증)</label>
-      <input id="ssh-password" class="gc-input" type="password" autocomplete="off" placeholder="키 대신 비밀번호 로그인을 쓸 경우 입력" />
-    </div>
-    <div class="flex flex-col gap-1">
-      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="proj-path">프로젝트 경로 <span class="text-[color:var(--color-danger)]">*</span></label>
+      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="proj-path">저장소 폴더 경로 <span class="text-[color:var(--color-danger)]">*</span></label>
       <div class="flex gap-2">
-        <input id="proj-path" class="gc-input flex-1 min-w-0" type="text" placeholder="예: /home/me/projects/foo" />
+        <input id="proj-path" class="gc-input flex-1 min-w-0 font-mono" type="text" placeholder="/home/me/projects/my-app" spellcheck="false" autocapitalize="off" />
         <button id="btn-browse" class="gc-button-secondary shrink-0" type="button">SSH로 찾아보기</button>
       </div>
+      <span class="text-display-xs text-[color:var(--color-ink-muted)]">
+        이미 <code>git clone</code> 해 둔 폴더를 고르세요. 폴더 안에 <code>.git</code>이 있으면 됩니다.
+        <code>~</code>로 시작하는 경로도 됩니다.
+      </span>
     </div>
-    <button id="btn-test-connection" class="gc-button-secondary self-start" type="button">연결 테스트</button>
-    <div id="ssh-test-result"></div>
+
+    <details id="ssh-details" class="text-display-sm">
+      <summary class="cursor-pointer text-[color:var(--color-ink-muted)]">저장소가 다른 서버에 있나요? (SSH)</summary>
+      <div class="flex flex-col gap-3 pt-3">
+        <span class="text-display-xs text-[color:var(--color-ink-muted)]">
+          내 컴퓨터의 폴더라면 이 부분은 비워 두세요. 원격 서버에 있는 저장소를
+          쓸 때만 채웁니다.
+        </span>
+        <div class="grid grid-cols-2 gap-3">
+          <div class="flex flex-col gap-1">
+            <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-host">호스트</label>
+            <input id="ssh-host" class="gc-input" type="text" placeholder="dev.example.com" spellcheck="false" />
+          </div>
+          <div class="flex flex-col gap-1">
+            <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-port">포트</label>
+            <input id="ssh-port" class="gc-input" type="number" min="1" max="65535" placeholder="22" value="22" />
+          </div>
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-user">사용자</label>
+          <input id="ssh-user" class="gc-input" type="text" placeholder="ubuntu" spellcheck="false" />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-key">SSH 키 경로</label>
+          <input id="ssh-key" class="gc-input font-mono" type="text" placeholder="~/.ssh/id_ed25519" spellcheck="false" />
+        </div>
+        <div class="flex flex-col gap-1">
+          <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="ssh-password">비밀번호 (키를 안 쓸 때)</label>
+          <input id="ssh-password" class="gc-input" type="password" autocomplete="off" />
+        </div>
+        <button id="btn-test-connection" class="gc-button-secondary self-start" type="button">연결 테스트</button>
+        <div id="ssh-test-result"></div>
+      </div>
+    </details>
   `;
   const testBtn = m.body.querySelector<HTMLButtonElement>("#btn-test-connection")!;
   testBtn.addEventListener("click", async () => {
@@ -452,4 +501,51 @@ function openSshBrowserModal(target: SshTarget, onPick: (path: string) => void):
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+
+/**
+ * "이 폴더는 git 저장소가 아닙니다" 뒤에 붙는 다음 걸음.
+ *
+ * 터미널로 나가서 `git init` 을 치라고 하면 처음 git 을 쓰는 사람은 거기서
+ * 멈춘다. 무엇이 생기는지 먼저 말해 주고, 누르면 만들어 등록까지 한다.
+ */
+function offerGitInit(
+  m: ReturnType<typeof openModal>,
+  projectPath: string,
+  onReposChanged: () => void,
+  onNav: (p: Page) => void,
+): void {
+  // 이미 붙여 놓은 안내가 있으면 갈아 끼운다 (경로를 고쳐 다시 시도한 경우).
+  m.body.querySelector("#gc-init-offer")?.remove();
+
+  const box = document.createElement("div");
+  box.id = "gc-init-offer";
+  box.className = "gc-banner gc-banner--info flex-col items-start gap-2";
+  const text = document.createElement("div");
+  text.className = "gc-banner__body text-display-sm whitespace-pre-line";
+  text.textContent =
+    "이 폴더를 지금 git 저장소로 만들 수 있습니다.\n" +
+    "폴더 안에 .git 폴더가 생기고, 파일 내용은 바뀌지 않습니다.";
+  box.appendChild(text);
+  const btn = document.createElement("button");
+  btn.className = "gc-button-primary";
+  btn.textContent = "이 폴더를 git 저장소로 만들기";
+  btn.addEventListener("click", async () => {
+    setBusy(btn, true, "만드는 중…");
+    m.setError(null);
+    try {
+      const repo = await ipc.initRepository(projectPath);
+      toast(`${repo.display_name} 저장소를 만들고 등록했습니다.`, "success");
+      onReposChanged();
+      m.close();
+      onNav({ kind: "repo", repoId: repo.id, tab: "work" });
+    } catch (e) {
+      m.setError(`만들지 못했습니다: ${(e as Error).message ?? e}`);
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+  box.appendChild(btn);
+  m.body.appendChild(box);
 }

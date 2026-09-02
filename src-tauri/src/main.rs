@@ -109,19 +109,41 @@ fn run_hook_subcommand(args: &[String]) -> anyhow::Result<()> {
             sha: parsed.sha.clone(),
             repo_name: repo.display_name.clone(),
             url: parsed.remote_url.clone(),
-            branch: parsed.branch.clone().unwrap_or_else(|| "main".into()),
-        },
-        "branch-push" => HookEvent::BranchPush {
-            author: parsed.author.clone(),
-            message: parsed.message.clone(),
-            sha: parsed.sha.clone(),
-            repo_name: repo.display_name.clone(),
-            url: parsed.remote_url.clone(),
             branch: parsed
                 .branch
                 .clone()
-                .ok_or_else(|| anyhow::anyhow!("branch required for branch-push"))?,
+                .unwrap_or_else(|| repo.default_branch.clone()),
         },
+        "branch-push" => {
+            let branch = parsed
+                .branch
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("branch required for branch-push"))?;
+            // 병합 브랜치로의 푸시는 "팀원들이 동기화해야 한다"는 뜻이므로
+            // main_push 로 승격한다. 어떤 브랜치가 병합 브랜치인지는 .gpconfig
+            // 가 정하고 (main 이 아닐 수도 있다) 언제든 바뀔 수 있으므로 매번
+            // 읽는다. hook 은 fail-open 이므로 설정을 못 읽으면 그냥
+            // branch_push 로 둔다.
+            if is_merge_target(&repo_path, &repo.default_branch, &branch) {
+                HookEvent::MainPush {
+                    author: parsed.author.clone(),
+                    message: parsed.message.clone(),
+                    sha: parsed.sha.clone(),
+                    repo_name: repo.display_name.clone(),
+                    url: parsed.remote_url.clone(),
+                    branch,
+                }
+            } else {
+                HookEvent::BranchPush {
+                    author: parsed.author.clone(),
+                    message: parsed.message.clone(),
+                    sha: parsed.sha.clone(),
+                    repo_name: repo.display_name.clone(),
+                    url: parsed.remote_url.clone(),
+                    branch,
+                }
+            }
+        }
         "release" => HookEvent::Release {
             author: parsed.author.clone(),
             repo_name: repo.display_name.clone(),
@@ -165,6 +187,25 @@ fn run_hook_subcommand(args: &[String]) -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// `branch` 가 이 프로젝트의 병합 대상 브랜치인지.
+///
+/// `.gpconfig` 의 `merge_targets` 가 우선이고, 비어 있으면
+/// `default_base_branch`, 그것도 없으면 앱에 등록된 기본 브랜치를 쓴다.
+/// 설정을 읽지 못하면 등록된 기본 브랜치와만 비교한다 (hook 은 절대
+/// push 를 막지 않는다).
+fn is_merge_target(repo_path: &std::path::Path, registered_default: &str, branch: &str) -> bool {
+    let target = git_companion::git::Target::Local(repo_path.to_path_buf());
+    // push 시점의 체크아웃 브랜치에는 .gpconfig 사본이 없을 수 있다 —
+    // 병합 브랜치에 커밋된 팀 규칙까지 찾아 읽는다.
+    let (cfg, exists) =
+        match git_companion::gpconfig::read_config_effective(&target, registered_default, "origin")
+        {
+            Ok(v) => v,
+            Err(_) => (Default::default(), false),
+        };
+    git_companion::gpconfig::is_merge_target(&cfg, exists, registered_default, branch)
 }
 
 fn parse_hook_args(args: &[String]) -> anyhow::Result<HookArgs> {

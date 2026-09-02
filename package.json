@@ -5,9 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:web": "node dev/serve-web.mjs",
+    "seed:demo": "node dev/seed-demo.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:ui": "node dev/run-ui-tests.mjs",
+    "typecheck": "tsc --noEmit && pnpm typecheck:dev",
+    "typecheck:dev": "tsc --noEmit --strict --target ES2022 --module ESNext --moduleResolution Bundler --skipLibCheck --types node dev/git-bridge.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
@@ -20,8 +25,14 @@
     "@tailwindcss/vite": "^4.0.0",
     "@tauri-apps/cli": "^2.0.0",
     "@types/node": "^20.0.0",
+    "esbuild": "^0.21.5",
     "tailwindcss": "^4.0.0",
     "typescript": "^5.4.0",
     "vite": "^5.4.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

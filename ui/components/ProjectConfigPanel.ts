@@ -16,10 +16,7 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   const el = document.createElement("div");
   el.className = "flex flex-col gap-5";
 
-  const [summary, accounts] = await Promise.all([
-    ipc.projectConfigGet(repo.id).catch(() => null),
-    ipc.accountList().catch(() => [] as Account[]),
-  ]);
+  const summary = await ipc.projectConfigGet(repo.id).catch(() => null);
   const me = getSession();
   const config: ProjectConfig = summary?.config ?? {
     gpconfig_version: 2,
@@ -32,20 +29,25 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   };
   const fileExists = summary?.exists ?? false;
 
+  // 로그아웃 상태에서도 이 탭은 쓸 수 있어야 한다. `.gpconfig` 는 저장소에
+  // 커밋되는 파일이고 팀 서버와 아무 상관이 없다 — 예전에는 이 화면 전체를
+  // "로그인이 필요합니다" 한 장으로 덮어서, 혼자 쓰는 사람은 병합 대상 브랜치
+  // 하나를 정하려고 서버를 띄우고 회원가입을 해야 했다. 로그인이 실제로
+  // 필요한 것은 **사람을 이름으로 찾는 일**(팀 서버의 사용자 목록)뿐이다.
   if (!me) {
     const banner = document.createElement("div");
-    banner.className = "gc-banner gc-banner--warning";
+    banner.className = "gc-banner gc-banner--info";
     banner.innerHTML = `<div class="gc-banner__body flex-1 flex flex-col gap-2">
-      <div class="gc-banner__title">로그인이 필요합니다</div>
+      <div class="gc-banner__title">로그인 없이 쓰는 중입니다</div>
       <div class="text-display-sm text-[color:var(--color-ink-muted)]">
-        프로젝트 구성원·병합 관리자 설정은 로그인한 사람만 편집할 수 있습니다.
-        로그인하면 내가 맡은 브랜치의 커밋/푸시 권한과 알림 수신자 지정이 가능해집니다.
+        병합 대상 브랜치와 기본 베이스 브랜치는 지금 그대로 정하고 저장할 수 있습니다
+        (저장소의 <code>.gpconfig</code>에 기록됩니다).
+        이름으로 팀원을 찾아 구성원으로 추가하는 것만 로그인이 필요합니다.
       </div>
-      <div><button class="gc-button-primary text-display-sm" id="gpc-login">로그인</button></div>
+      <div><button class="gc-button-secondary text-display-sm" id="gpc-login">로그인</button></div>
     </div>`;
     banner.querySelector<HTMLButtonElement>("#gpc-login")!.addEventListener("click", () => openAccountModal());
     el.appendChild(banner);
-    return el;
   }
 
   // 새로고침 (계정 변경 시)
@@ -71,6 +73,14 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   pushBtn.className = "gc-button-secondary";
   pushBtn.textContent = "origin에 푸시";
   pushBtn.disabled = true;
+  // 원격이 없는 저장소에서는 푸시가 예외 없이 실패한다 — 저장(커밋)까지만 하면
+  // 되고, 왜 눌릴 수 없는지 툴팁으로 남긴다. (작업 탭의 푸시·풀과 같은 규칙)
+  const noRemote = !repo.remote_url;
+  if (noRemote) {
+    pushBtn.title =
+      "이 저장소에는 원격(origin)이 없어 보낼 곳이 없습니다.\n" +
+      ".gpconfig 는 저장(커밋)까지만 해 두면 됩니다.";
+  }
   const saveBtn = document.createElement("button");
   saveBtn.className = "gc-button-primary";
   saveBtn.textContent = "저장 (.gpconfig 커밋)";
@@ -154,7 +164,9 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
       empty.className = "gc-empty-inline";
       empty.appendChild(icon("users", 16));
       const t = document.createElement("span");
-      t.textContent = "아직 구성원이 없습니다. 아래 검색으로 가입한 사람을 추가할 수 있습니다.";
+      t.textContent = me
+        ? "아직 구성원이 없습니다. 아래 검색으로 가입한 사람을 추가할 수 있습니다."
+        : "아직 구성원이 없습니다. 혼자 쓰는 중이라면 비워 둬도 됩니다 — 병합 대상 브랜치만 정하면 바로 쓸 수 있습니다.";
       empty.appendChild(t);
       memberList.appendChild(empty);
       return;
@@ -186,7 +198,10 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
       const roleSel = document.createElement("select");
       roleSel.className = "gc-input gc-input--sm w-28 text-display-sm";
       roleSel.setAttribute("aria-label", `${member.name} 역할`);
-      roleSel.innerHTML = `<option value="member">member</option><option value="admin">admin</option>`;
+      // 화면 전체가 한국어인데 이 칸만 member/admin 이라 무슨 차이인지 읽히지
+      // 않았다. 값(저장되는 문자열)은 그대로 두고 보이는 말만 바꾼다.
+      roleSel.innerHTML = `<option value="member">구성원</option><option value="admin">관리자</option>`;
+      roleSel.title = "관리자는 병합 관리자가 따로 지정된 브랜치에도 병합할 수 있습니다.";
       roleSel.value = member.role;
       roleSel.addEventListener("change", () => {
         member.role = roleSel.value;
@@ -232,29 +247,69 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   searchWrap.appendChild(searchInput);
   searchField.appendChild(searchLabel);
   searchField.appendChild(searchWrap);
-  memberCard.appendChild(searchField);
 
   const results = document.createElement("div");
   results.className = "gc-list";
-  memberCard.appendChild(results);
 
-  function renderSearch(query: string) {
+  // 검색만 팀 서버를 본다 — 로그아웃이면 검색칸 대신 이유를 적어 둔다.
+  // 빈 검색칸을 놔두고 아무 결과도 안 주면 고장 난 것처럼 보인다.
+  if (me) {
+    memberCard.appendChild(searchField);
+    memberCard.appendChild(results);
+  } else {
+    const note = document.createElement("div");
+    note.className = "gc-empty-inline";
+    note.appendChild(icon("users", 16));
+    const t = document.createElement("span");
+    t.textContent = "구성원 검색은 팀 서버의 계정 목록을 봅니다 — 로그인하면 이름으로 팀원을 찾아 추가할 수 있습니다.";
+    note.appendChild(t);
+    const go = document.createElement("button");
+    go.className = "gc-btn-sm";
+    go.textContent = "로그인";
+    go.addEventListener("click", () => openAccountModal());
+    note.appendChild(go);
+    memberCard.appendChild(note);
+  }
+
+  /** 검색 요청 순서가 뒤바뀌어 옛 결과가 새 결과를 덮는 것을 막는다. */
+  let searchSeq = 0;
+
+  function inlineNote(text: string) {
     results.innerHTML = "";
-    const q = query.trim().toLowerCase();
-    if (!q) return;
+    const box = document.createElement("div");
+    box.className = "gc-empty-inline";
+    box.appendChild(icon("users", 16));
+    const t = document.createElement("span");
+    t.textContent = text;
+    box.appendChild(t);
+    results.appendChild(box);
+  }
+
+  async function renderSearch(query: string) {
+    const q = query.trim();
+    const seq = ++searchSeq;
+    if (q.length < 2) {
+      results.innerHTML = "";
+      return;
+    }
+    // 구성원 검색은 팀 서버의 사용자 디렉터리를 본다. 예전에는 이 컴퓨터의
+    // 로컬 계정 파일을 뒤졌기 때문에, 여기서 로그인한 적 없는 팀원은 아무리
+    // 검색해도 나오지 않았다.
+    let accounts: Account[];
+    try {
+      accounts = await ipc.accountSearch(q);
+    } catch (e) {
+      if (seq !== searchSeq) return;
+      inlineNote(`검색 실패: ${(e as Error).message ?? e}`);
+      return;
+    }
+    if (seq !== searchSeq) return; // 더 최신 검색이 진행 중
     const found = accounts.filter(
-      (a) =>
-        !config.members.some((x) => x.email.toLowerCase() === a.email.toLowerCase()) &&
-        (a.name.toLowerCase().includes(q) || a.email.toLowerCase().includes(q)),
+      (a) => !config.members.some((x) => x.email.toLowerCase() === a.email.toLowerCase()),
     );
+    results.innerHTML = "";
     if (found.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "gc-empty-inline";
-      empty.appendChild(icon("users", 16));
-      const t = document.createElement("span");
-      t.textContent = "검색 결과가 없습니다. 가입된 계정의 이름이나 이메일로 검색해 보세요.";
-      empty.appendChild(t);
-      results.appendChild(empty);
+      inlineNote("검색 결과가 없습니다. 팀원이 먼저 회원가입해야 찾을 수 있습니다.");
       return;
     }
     for (const a of found) {
@@ -278,15 +333,18 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
         config.members.push({ id: a.id, name: a.name, email: a.email, role: "member" });
         renderMembers();
         renderTargets();
-        renderSearch(q);
+        void renderSearch(q);
         markDirty();
       });
       row.appendChild(add);
       results.appendChild(row);
     }
   }
+  // 타이핑마다 서버를 부르지 않도록 잠깐 기다린다.
+  let searchTimer: number | undefined;
   searchInput.addEventListener("input", () => {
-    renderSearch(searchInput.value);
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => void renderSearch(searchInput.value), 250);
   });
 
   // ── 병합 대상 브랜치 섹션 ────────────────────────────────────────────
@@ -437,6 +495,8 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   addTargetBtn.id = "gpc-add-target";
   addTargetBtn.className = "gc-button-secondary shrink-0 self-end";
   addTargetBtn.appendChild(icon("plus", 14));
+  // 라벨은 gc-button 기본 크기(본문 14px)를 그대로 쓴다 — 입력칸 높이(40px)와
+  // 짝이 맞고, 위쪽 목록 행의 작은 액션(gc-btn-sm, 13px)과 위계가 갈린다.
   const addTargetLabel = document.createElement("span");
   addTargetLabel.textContent = "대상 추가";
   addTargetBtn.appendChild(addTargetLabel);
@@ -572,7 +632,7 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
       markClean();
       if (committed) {
         toast("설정을 저장하고 .gpconfig를 커밋했습니다.", "success");
-        pushBtn.disabled = false;
+        pushBtn.disabled = noRemote;
       } else {
         toast(".gpconfig 파일은 저장했지만 커밋에 실패했습니다: " + (result.commit?.message ?? ""), "error");
       }
@@ -589,7 +649,8 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
       const outcome = await openPushCredentialFlow(repo, null);
       if (outcome === "ok") toast(".gpconfig 푸시 완료. 팀원들이 풀하면 동일한 설정을 볼 수 있습니다.", "success");
       else if (outcome === "cancelled") toast("푸시를 취소했습니다.", "info");
-      else toast(`푸시 실패: ${outcome}`, "error");
+      // 예전에는 결과 객체를 그대로 넣어 "푸시 실패: [object Object]" 가 떴다.
+      else toast(`푸시 실패: ${outcome.message || "알 수 없는 오류"}`, "error");
     } finally {
       setBusy(pushBtn, false);
     }

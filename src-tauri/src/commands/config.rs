@@ -95,8 +95,18 @@ pub fn get_ai_config() -> AppResult<crate::config_store::AiConfig> {
 pub fn set_ai_config(cfg: crate::config_store::AiConfig) -> AppResult<()> {
     let mut s = config_store::load()?;
     s.ai = cfg;
+    if s.ai.binary_strategy.trim().is_empty() {
+        s.ai.binary_strategy = "theirs".into();
+    }
     config_store::save(&s)?;
     Ok(())
+}
+
+/// The built-in resolver prompt, so Settings can show it as the placeholder
+/// and offer "기본값으로 되돌리기" without duplicating the text in the UI.
+#[tauri::command]
+pub fn ai_default_prompt() -> String {
+    crate::ai::DEFAULT_SYSTEM_PROMPT.to_string()
 }
 
 fn default_args_ssh_port() -> u16 {

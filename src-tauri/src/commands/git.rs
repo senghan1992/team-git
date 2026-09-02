@@ -157,7 +157,7 @@ pub struct MergeState {
     pub conflicted_files: Vec<String>,
 }
 
-const MERGE_REMOTE: &str = "origin";
+pub const MERGE_REMOTE: &str = "origin";
 
 #[tauri::command]
 pub fn fetch_repo(repo_id: Uuid) -> AppResult<String> {

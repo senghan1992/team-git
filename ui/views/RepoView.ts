@@ -1,6 +1,7 @@
 import { ipc, type StashEntry, type WorkingTreeStatus } from "../lib/ipc";
 import { openModal, confirmDialog } from "../components/Modal";
 import { toast } from "../components/Toast";
+import { kindHint, kindLabel } from "../components/StatusTable";
 import { renderMergeCenter } from "../components/MergeCenter";
 import { renderProjectConfigPanel } from "../components/ProjectConfigPanel";
 import { openPushCredentialFlow } from "../components/PushButton";
@@ -8,10 +9,12 @@ import { getSession } from "../lib/session";
 import { icon } from "../components/Icon";
 import { setBusy } from "../components/Busy";
 import type { RepoTab } from "../components/Sidebar";
+import { renderOpenWithButton } from "../components/OpenWithButton";
 export async function renderRepoView(
   repoId: string,
   tab: RepoTab = "work",
   onTab?: (t: RepoTab) => void,
+  onNavSettings?: () => void,
 ): Promise<HTMLElement> {
   const main = document.createElement("main");
   main.className = "flex-1 overflow-y-auto p-8 flex flex-col gap-6";
@@ -27,8 +30,10 @@ export async function renderRepoView(
   }
 
   // ── Header ────────────────────────────────────────────────────────────────
+  const headRow = document.createElement("div");
+  headRow.className = "flex items-start justify-between gap-4";
   const head = document.createElement("div");
-  head.className = "gc-page-head";
+  head.className = "gc-page-head min-w-0";
   const title = document.createElement("div");
   title.className = "gc-page-head__title";
   title.textContent = repo.display_name;
@@ -37,7 +42,17 @@ export async function renderRepoView(
   sub.className = "gc-page-head__sub truncate max-w-md";
   sub.textContent = repo.path;
   head.appendChild(sub);
-  main.appendChild(head);
+  headRow.appendChild(head);
+  main.appendChild(headRow);
+  // "이 저장소를 에디터/터미널로 열기" — 저장소를 보고 있을 때가 그 동작을
+  // 원하는 순간이다. 도구가 없거나 SSH 저장소면 아무것도 붙지 않는다.
+  // `main` 은 아직 document 에 붙지 않은 상태로 반환되므로 isConnected 로
+  // 가드하면 안 된다 — 만들고 있는 트리에 그대로 붙인다.
+  void renderOpenWithButton(repo, {
+    onEditTools: () => onNavSettings?.(),
+  }).then((btn) => {
+    if (btn) headRow.appendChild(btn);
+  });
   // ── Tabs (work / merge / config) — segmented control ────────────────────
   const tabs = document.createElement("div");
   tabs.className = "gc-tabs";
@@ -68,7 +83,7 @@ export async function renderRepoView(
   main.appendChild(tabs);
 
   if (tab === "merge") {
-    main.appendChild(await renderMergeCenter(repo));
+    main.appendChild(await renderMergeCenter(repo, { onGoToWork: () => onTab?.("work") }));
     return main;
   }
   if (tab === "config") {
@@ -83,6 +98,9 @@ export async function renderRepoView(
 
   const branchSel = document.createElement("select");
   branchSel.className = "gc-input w-auto";
+  // 아이콘도 라벨도 없는 선택 상자였다 — 스크린리더에도, 처음 보는 사람에게도
+  // 이게 브랜치라는 정보가 없었다.
+  branchSel.setAttribute("aria-label", "현재 작업 브랜치");
 
   const statusPill = document.createElement("span");
   statusPill.className = "gc-status-chip";
@@ -204,7 +222,7 @@ export async function renderRepoView(
   commitCard.className = "gc-card flex flex-col gap-3";
   commitCard.innerHTML = `
     <div class="flex items-center justify-between">
-      <div class="text-display-md font-medium">커밋</div>
+      <div class="text-display-md font-medium">이 저장소에서 할 일</div>
       <span id="upstream-pill" class="inline-flex items-center gap-1"></span>
     </div>
     <div class="gc-action-bar gc-action-bar--4col">
@@ -356,16 +374,82 @@ export async function renderRepoView(
       });
   }
 
+  /** 커밋이 아직 없는 저장소인지 — 그때는 브랜치 ref 가 하나도 없다. */
+  let noCommitsYet = false;
+
   async function loadBranches() {
     const branches = await ipc.listBranches(repoId).catch(() => []);
     branchSel.innerHTML = "";
-    for (const b of branches) {
+    // 방금 `git init` 한 저장소에는 브랜치 ref 가 없어서 목록이 통째로 비었다.
+    // 선택 상자가 빈 채로 놓여 있으면 무엇이 잘못된 건지 알 수 없으므로,
+    // status 가 알려 주는 (아직 만들어지지 않은) 브랜치 이름을 보여 준다.
+    noCommitsYet = branches.length === 0;
+    if (noCommitsYet) {
+      const name = currentStatus?.branch || repo?.default_branch || "main";
       const opt = document.createElement("option");
-      opt.value = b.name;
-      opt.textContent = b.name + (b.is_remote ? " (remote)" : "");
-      if (repo && b.name === repo.working_branch) opt.selected = true;
+      opt.value = name;
+      opt.textContent = `${name} (커밋 없음)`;
+      opt.selected = true;
       branchSel.appendChild(opt);
+      branchSel.disabled = true;
+      branchSel.title = "첫 커밋을 만들면 브랜치가 생깁니다.";
+    } else {
+      branchSel.disabled = false;
+      branchSel.title = "";
+      for (const b of branches) {
+        const opt = document.createElement("option");
+        opt.value = b.name;
+        opt.textContent = b.name + (b.is_remote ? " (remote)" : "");
+        if (repo && b.name === repo.working_branch) opt.selected = true;
+        branchSel.appendChild(opt);
+      }
+      // working_branch 가 비어 있으면(등록 직후) 지금 체크아웃된 브랜치를 고른다.
+      if (!repo?.working_branch && currentStatus?.branch) {
+        branchSel.value = currentStatus.branch;
+      }
     }
+    renderFirstStepBanner();
+  }
+
+  // ── 첫걸음 안내 ──────────────────────────────────────────────────────────
+  //
+  // 저장소를 막 만든 사람은 화면에 무엇을 해야 하는지가 없으면 멈춘다.
+  // 커밋이 없을 때 / 원격이 없을 때 각각 다음 한 걸음을 알려 준다.
+  const firstStep = document.createElement("div");
+  firstStep.className = "gc-banner gc-banner--info";
+  firstStep.style.display = "none";
+  main.insertBefore(firstStep, table);
+
+  function renderFirstStepBanner() {
+    const noRemote = !repo?.remote_url;
+    if (!noCommitsYet && !noRemote) {
+      firstStep.style.display = "none";
+      return;
+    }
+    firstStep.style.display = "";
+    firstStep.innerHTML = "";
+    const iw = document.createElement("span");
+    iw.className = "gc-banner__icon";
+    iw.appendChild(icon("info", 20));
+    firstStep.appendChild(iw);
+    const body = document.createElement("div");
+    body.className = "gc-banner__body flex-1 flex flex-col gap-0.5";
+    const title = document.createElement("div");
+    title.className = "gc-banner__title";
+    const desc = document.createElement("div");
+    desc.className = "text-display-sm whitespace-pre-line";
+    if (noCommitsYet) {
+      title.textContent = "아직 커밋이 없습니다";
+      desc.textContent =
+        "아래 목록에서 파일을 고르고 ‘커밋’을 누르면 첫 커밋이 만들어집니다. 그때 브랜치도 함께 생깁니다.";
+    } else {
+      title.textContent = "이 저장소에는 원격(origin)이 없습니다";
+      desc.textContent =
+        "커밋은 이 컴퓨터에 저장되지만, 팀원과 주고받으려면 원격이 필요합니다.\n터미널에서 한 번 등록하세요:  git remote add origin <저장소 주소>";
+    }
+    body.appendChild(title);
+    body.appendChild(desc);
+    firstStep.appendChild(body);
   }
 
   function renderStatusTable() {
@@ -375,7 +459,17 @@ export async function renderRepoView(
       return;
     }
     const { ahead, behind, files } = currentStatus;
-    statusPill.textContent = `${ahead > 0 ? `↑${ahead}` : ""}${behind > 0 ? ` ↓${behind}` : ""} ${files.length}개 파일`;
+    // 예전에는 `" 1개 파일"` 처럼 앞에 빈 칸이 남았고, 변경이 없을 때도
+    // "0개 파일" 이라고 했다. 상태 한 줄은 그 자체로 읽혀야 한다.
+    const parts: string[] = [];
+    if (ahead > 0) parts.push(`↑${ahead}`);
+    if (behind > 0) parts.push(`↓${behind}`);
+    parts.push(files.length === 0 ? "변경 없음" : `변경 ${files.length}개`);
+    statusPill.textContent = parts.join(" ");
+    statusPill.title =
+      (ahead > 0 ? `푸시하지 않은 커밋 ${ahead}개. ` : "") +
+      (behind > 0 ? `아직 받지 않은 커밋 ${behind}개. ` : "") +
+      (files.length === 0 ? "커밋할 변경이 없습니다." : `커밋하지 않은 파일 ${files.length}개.`);
     // Upstream pill near commit row.
     const pill = commitCard.querySelector<HTMLElement>("#upstream-pill")!;
     pill.innerHTML = "";
@@ -391,23 +485,23 @@ export async function renderRepoView(
       b.textContent = `↓${behind}`;
       pill.appendChild(b);
     }
+    // 커밋할 것이 없을 때 '커밋'을 누르면 메시지를 다 쓴 뒤에야 실패한다.
+    // 눌리지 않게 하고, 무엇을 하면 눌리는지 툴팁에 적는다.
+    const commitBtnEl = commitCard.querySelector<HTMLButtonElement>("#btn-commit")!;
+    commitBtnEl.disabled = files.length === 0;
+    commitBtnEl.title = files.length === 0
+      ? "커밋할 변경이 없습니다. 파일을 고치면 아래 목록에 나타납니다."
+      : "";
     if (files.length === 0) {
       table.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)]">변경 사항 없음</div>`;
       return;
     }
-    const labelMap: Record<string, string> = {
-      added: "추가",
-      modified: "수정",
-      deleted: "삭제",
-      renamed: "이름 변경",
-      copied: "복사",
-      untracked: "미추적",
-      conflicted: "충돌",
-    };
+    // 라벨/설명은 StatusTable 의 것을 쓴다. 예전에는 같은 표가 여기에도
+    // 복사돼 있어서, 한쪽만 고치면 화면은 그대로였다.
     const rows = files.map((f) => `
       <tr>
         <td class="px-3 py-2"><input type="checkbox" data-path="${escape(f.path)}" aria-label="${escape(f.path)}" /></td>
-        <td class="px-3 py-2 text-display-sm font-medium">${labelMap[f.kind] ?? f.kind}</td>
+        <td class="px-3 py-2 text-display-sm font-medium" title="${escape(kindHint(f.kind))}">${escape(kindLabel(f.kind))}</td>
         <td class="px-3 py-2 text-display-sm">${escape(f.path)}</td>
         <td class="px-3 py-2 text-right">
           <button class="gc-button-secondary text-display-sm" data-diff="${escape(f.path)}" data-staged="${f.staged ? "1" : "0"}" data-unstaged="${f.unstaged ? "1" : "0"}" data-kind="${escape(f.kind)}">변경 내용</button>
@@ -473,14 +567,22 @@ export async function renderRepoView(
   // 브랜치별 관리자를 표시하고, 명시된 관리자가 아닌 로그인 사용자의 푸시를 잠근다.
   let projectCfg = await ipc.projectConfigGet(repoId).catch(() => null);
   const pushBtnRef = () => commitCard.querySelector<HTMLButtonElement>("#btn-push")!;
+  /** 원격이 없으면 푸시·풀·동기화는 무엇을 해도 실패한다 — 아래 두 곳이 함께 본다. */
+  const noRemote = !repo?.remote_url;
+  const noRemoteWhy =
+    "이 저장소에는 원격(origin)이 없어 주고받을 곳이 없습니다.\n" +
+    "터미널에서 등록하세요:  git remote add origin <저장소 주소>";
 
   function refreshManagerBadge() {
     const branch = branchSel.value.replace(/^origin\//, "");
     const managerEmail = projectCfg?.config?.merge_managers?.[branch];
     if (!managerEmail) {
       managerBadge.style.display = "none";
-      pushBtnRef().disabled = false;
-      pushBtnRef().title = "";
+      // 관리자 잠금이 없다고 해서 푸시를 무조건 열면 안 된다 — 원격이 없는
+      // 저장소에서 브랜치를 전환하거나 로그인/로그아웃할 때마다 여기가
+      // 불려서, 눌러 보면 실패하는 버튼이 되살아났다.
+      pushBtnRef().disabled = noRemote;
+      pushBtnRef().title = noRemote ? noRemoteWhy : "";
       return;
     }
     const member = projectCfg?.config?.members.find((x) => x.email.toLowerCase() === managerEmail.toLowerCase());
@@ -499,12 +601,38 @@ export async function renderRepoView(
     // 명시된 관리자가 있고, 로그인 계정이 그 관리자(또는 admin)가 아니면 푸시 잠금.
     const blocked = !!me && !isManager && !isAdmin;
     const btn = pushBtnRef();
-    btn.disabled = blocked;
-    btn.title = blocked ? `이 브랜치의 병합 관리자는 ${name}님입니다. 푸시는 관리자만 할 수 있습니다.` : "";
+    btn.disabled = blocked || noRemote;
+    btn.title = blocked
+      ? `이 브랜치의 병합 관리자는 ${name}님입니다. 푸시는 관리자만 할 수 있습니다.`
+      : noRemote
+        ? noRemoteWhy
+        : "";
   }
 
   window.addEventListener("gc-account-changed", refreshManagerBadge);
   refreshManagerBadge();
+
+  // ── 누르면 반드시 실패하는 버튼은 막아 둔다 ──────────────────────────────
+  //
+  // 원격(origin)이 없는 저장소에서 푸시·풀·동기화는 예외 없이 실패한다.
+  // 메시지를 친절하게 바꾸는 것만으로는 부족하다 — 처음 쓰는 사람에게
+  // "눌러 보면 실패하는 버튼"은 자기가 뭘 잘못한 줄 알게 만든다.
+  // 눌리지 않게 하고, 왜 그런지와 무엇을 하면 되는지 툴팁에 남긴다.
+  function refreshRemoteDependentButtons() {
+    if (!noRemote) return;
+    const why = noRemoteWhy;
+    const targets: (HTMLButtonElement | null)[] = [
+      commitCard.querySelector<HTMLButtonElement>("#btn-push"),
+      commitCard.querySelector<HTMLButtonElement>("#btn-pull"),
+      syncBtn,
+    ];
+    for (const b of targets) {
+      if (!b) continue;
+      b.disabled = true;
+      b.title = why;
+    }
+  }
+  refreshRemoteDependentButtons();
 
   // ── Branch change ─────────────────────────────────────────────────────────
   branchSel.addEventListener("change", async () => {
@@ -530,7 +658,8 @@ export async function renderRepoView(
   commitCard.querySelector<HTMLButtonElement>("#btn-commit")!.addEventListener("click", () => {
     const m = openModal({
       title: "커밋 메시지 작성",
-      submitLabel: "commit",
+      description: "무엇을 왜 바꿨는지 한 줄로 적으면 나중에 팀원이 이 커밋을 찾을 때 도움이 됩니다.",
+      submitLabel: "커밋",
       onSubmit: async (close) => {
         const msg = (m.body.querySelector<HTMLTextAreaElement>("#commit-msg")!).value.trim();
         if (!msg) { m.setError("커밋 메시지를 입력하세요."); return; }
@@ -562,7 +691,7 @@ export async function renderRepoView(
       </div>
       <label class="flex items-center gap-2 text-display-sm cursor-pointer">
         <input type="checkbox" id="stage-all" checked />
-        <span>모든 변경 사항 stage (선택 해제 시 체크된 파일만)</span>
+        <span>바뀐 파일 전부 커밋 (끄면 위 목록에서 체크한 파일만)</span>
       </label>
     `;
   });
@@ -592,10 +721,11 @@ export async function renderRepoView(
   // ── Pull ─────────────────────────────────────────────────────────────────
   const pullBtn = commitCard.querySelector<HTMLButtonElement>("#btn-pull")!;
   pullBtn.addEventListener("click", async () => {
+    const current = branchSel.value.replace(/^origin\//, "");
     const confirmed = await confirmDialog({
       title: "풀",
-      message: "현재 브랜치를 origin에서 풀하시겠습니까?",
-      confirmLabel: "풀",
+      message: `원격(origin)에 올라온 ${current} 브랜치의 새 커밋을 이 컴퓨터로 받아옵니다.\n같은 줄을 서로 고쳤다면 충돌이 날 수 있고, 그때는 병합 탭에서 해결합니다.`,
+      confirmLabel: "받아오기",
     });
     if (!confirmed) return;
     setBusy(pullBtn, true, "풀 중…");

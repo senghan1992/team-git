@@ -130,7 +130,7 @@ export type Resolution =
   | { type: "theirs" }
   | { type: "manual"; content: string };
 
-export type AutoResolveMethod = "ai" | "ours" | "theirs";
+export type AutoResolveMethod = "ai" | "ours" | "theirs" | "skipped";
 
 export interface AutoFileResolution {
   path: string;
@@ -141,8 +141,15 @@ export interface AutoFileResolution {
 export interface AutoResolveReport {
   resolved: AutoFileResolution[];
   remaining: string[];
+  /**
+   * 아직 충돌로 남은 파일마다 "왜 자동으로 안 고쳤는지". 특히 양쪽이 모두 고친
+   * 파일은 일부러 손대지 않으므로, 이유가 없으면 사용자는 오류인지 의도인지
+   * 구분할 수 없다.
+   */
+  remainingReasons?: AutoFileResolution[];
   committed: boolean;
-  backup_id?: string | null;
+  /** Rust 쪽 `AutoResolveReport`는 camelCase로 직렬화한다. */
+  backupId?: string | null;
   message: string;
 }
 
@@ -163,16 +170,28 @@ export interface AiConfig {
   base_url: string;
   api_key: string;
   model: string;
+  /** 병합 관리자가 미리 저장해 두는 해결 지침. 비우면 기본 프롬프트를 쓴다. */
+  system_prompt: string;
+  /** 병합/동기화가 충돌로 끝나면 바로 자동 해결을 실행한다. */
+  auto_resolve: boolean;
+  /** 바이너리·대용량 파일 처리: "theirs" | "ours" */
+  binary_strategy: string;
 }
 
 // ─── 로그인 계정 / 푸시 자격증명 / 프로젝트 설정 ───────────────────────────────
 
+/**
+ * 로그인한 사람. 계정 자체는 팀 서버의 `users` 테이블이 소유하고, 앱은
+ * "지금 로그인한 사람"만 캐시한다 — 비밀번호(해시 포함)는 앱에 오지 않는다.
+ */
 export interface Account {
   id: string;
   name: string;
+  /** 소문자. 팀 구성원·병합 관리자는 이메일로 매칭된다 (.gpconfig). */
   email: string;
-  username?: string | null;
-  password_hash?: string | null;
+  /** 로그인 아이디 (소문자). */
+  username: string;
+  /** 서버가 준 ISO-8601 문자열. */
   created_at: string;
 }
 
@@ -300,6 +319,8 @@ export const ipc = {
     invoke<Repo>("register_repository", { args }),
   browseSshDir: (target: SshTarget, path: string) =>
     invoke<SshDirListing>("browse_ssh_dir", { target, path }),
+  /** 아직 git 저장소가 아닌 폴더를 저장소로 만들고 바로 등록한다. */
+  initRepository: (path: string) => invoke<Repo>("init_repository", { path }),
   removeRepository: (id: Uuid) => invoke<void>("remove_repository", { id }),
   updateRepository: (id: Uuid, patch: RepoPatch) =>
     invoke<Repo>("update_repository", { id, patch }),
@@ -396,6 +417,7 @@ export const ipc = {
   // AI config
   getAiConfig: () => invoke<AiConfig>("get_ai_config"),
   setAiConfig: (cfg: AiConfig) => invoke<void>("set_ai_config", { cfg }),
+  aiDefaultPrompt: () => invoke<string>("ai_default_prompt"),
   aiSuggestResolution: (
     filePath: string,
     base: string | null,
@@ -410,20 +432,24 @@ export const ipc = {
     }),
 
   // ── accounts (로그인) ────────────────────────────────────────────
-  accountRegister: (name: string, email: string, username?: string, password?: string) =>
-    invoke<Account>("account_register", {
-      name,
-      email,
-      username: username ?? null,
-      password: password ?? null,
-    }),
+  // 계정은 팀 서버가 소유한다. accountCurrent 만 로컬 캐시를 읽으므로
+  // 오프라인에서도 즉시 답한다.
+  accountRegister: (name: string, email: string, username: string, password: string) =>
+    invoke<Account>("account_register", { name, email, username, password }),
   accountLoginByPassword: (username: string, password: string) =>
     invoke<Account>("account_login_by_password", { username, password }),
-  accountList: () => invoke<Account[]>("account_list"),
-  accountDelete: (id: string) => invoke<void>("account_delete", { id }),
-  accountLogin: (id: string) => invoke<Account>("account_login", { id }),
   accountLogout: () => invoke<void>("account_logout"),
   accountCurrent: () => invoke<Account | null>("account_current"),
+  /** 서버에서 내 정보를 다시 읽는다. 오프라인이면 캐시를 그대로 돌려준다. */
+  accountRefresh: () => invoke<Account | null>("account_refresh"),
+  accountUpdateProfile: (name?: string, email?: string) =>
+    invoke<Account>("account_update_profile", { name, email }),
+  accountChangePassword: (currentPassword: string, newPassword: string) =>
+    invoke<void>("account_change_password", { currentPassword, newPassword }),
+  /** 회원 탈퇴 — 서버에서 계정을 지우고 로그아웃한다. */
+  accountDeleteSelf: () => invoke<void>("account_delete_self"),
+  /** 팀 구성원 검색 (이름/아이디/이메일). 2자 이상부터 결과가 온다. */
+  accountSearch: (query: string) => invoke<Account[]>("account_search", { query }),
 
   // ── push credentials (푸시 자격증명) ─────────────────────────────
   pushCredentialsList: () =>
@@ -522,6 +548,9 @@ export interface RepoLinkSummary {
 export const ipc_peer = {
   getConfig: () => invoke<PeerConfig>("peer_get_config"),
   setBackendUrl: (url: string) => invoke<void>("peer_set_backend_url", { url }),
+  /** 저장한(또는 넘긴) 주소로 실제 연결되는지 확인한다. */
+  checkBackend: (url?: string) =>
+    invoke<{ ok: boolean; message: string }>("peer_check_backend", { url }),
   registerDevice: (backendUrl: string, name: string) =>
     invoke<{ id: string; name: string; user_id: string }>("peer_register_device", { backendUrl, name }),
   pollNow: () => invoke<void>("peer_poll_now"),

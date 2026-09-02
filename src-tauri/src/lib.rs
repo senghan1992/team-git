@@ -1,3 +1,4 @@
+pub mod accounts;
 pub mod ai;
 pub mod commands;
 pub mod config_store;
@@ -18,6 +19,21 @@ pub fn run() {
                 Ok(d) => d,
                 Err(_) => return Ok(()),
             };
+            // 등록된 로컬 저장소의 pre-push hook을 매 실행마다 최신 템플릿으로
+            // 갱신한다. 앱을 업데이트해도 예전 hook이 남아 알림 분류가 틀리는
+            // 일을 막는다. 실패해도 앱 실행은 계속한다 (hook은 fail-open).
+            if let Ok(cfg) = config_store::load() {
+                for repo in &cfg.repositories {
+                    if !repo.ssh_host.is_empty() {
+                        continue; // 원격(SSH) 저장소에는 로컬 hook을 걸 수 없다.
+                    }
+                    let path = std::path::Path::new(&repo.path);
+                    if path.join(".git").exists() {
+                        let _ = pre_push_hook::install(path);
+                    }
+                }
+            }
+
             let peer = config_store::load()
                 .map(|cfg| cfg.peer.clone())
                 .unwrap_or_default();
@@ -64,6 +80,7 @@ pub fn run() {
             // repo commands
             commands::repo::list_repositories,
             commands::repo::register_repository,
+            commands::repo::init_repository,
             commands::repo::browse_ssh_dir,
             commands::repo::remove_repository,
             commands::repo::update_repository,
@@ -79,11 +96,13 @@ pub fn run() {
             commands::project::push_credential_delete,
             commands::account::account_register,
             commands::account::account_login_by_password,
-            commands::account::account_list,
-            commands::account::account_delete,
-            commands::account::account_login,
             commands::account::account_logout,
             commands::account::account_current,
+            commands::account::account_refresh,
+            commands::account::account_update_profile,
+            commands::account::account_change_password,
+            commands::account::account_delete_self,
+            commands::account::account_search,
             commands::project::project_config_get,
             commands::project::project_config_set,
             commands::project::project_config_commit,
@@ -101,6 +120,7 @@ pub fn run() {
             commands::auto::sync_branch,
             commands::config::get_ai_config,
             commands::config::set_ai_config,
+            commands::config::ai_default_prompt,
             commands::git::pull,
             commands::git::diff,
             commands::git::stash,
@@ -126,6 +146,7 @@ pub fn run() {
             commands::peer::peer_local_url,
             commands::peer::peer_get_config,
             commands::peer::peer_set_backend_url,
+            commands::peer::peer_check_backend,
             commands::peer::peer_poll_now,
             commands::peer::peer_leave_project,
             commands::peer::peer_list_team_events,

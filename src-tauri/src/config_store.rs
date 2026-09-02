@@ -13,9 +13,13 @@ use crate::peer::PeerConfig;
 
 pub const APP_DIR: &str = "com.gitcompanion.app";
 pub const CONFIG_FILE: &str = "config.json";
-pub const CURRENT_SCHEMA: u32 = 8;
-// v8: Locks the app behind login and adds username+password login with two
-// seeded demo accounts (`test`/`test`, `test2`/`test2`) for trying team features.
+pub const CURRENT_SCHEMA: u32 = 9;
+// v9: Accounts moved to the team server's `users` table (SQLite). This file now
+// keeps only `session` — the signed-in user plus their token — so the app stays
+// signed in offline. The old local `accounts` array, `active_account_id` and the
+// seeded demo logins are gone: serde drops those unknown keys, so an upgraded
+// install is simply signed out once and signs in against the server.
+// v8: Locked the app behind login and added username+password login.
 // v7: Added `accounts`, `active_account_id`, `push_credentials` (existing
 // fields use `#[serde(default)]`, so no explicit migration step is required).
 
@@ -132,6 +136,11 @@ impl Default for ExternalTool {
 
 /// OpenAI-compatible `/chat/completions` settings for the optional conflict
 /// suggester. Default is **disabled** — the user must opt in from Settings.
+///
+/// `system_prompt` is the merge-manager's **pre-configured instruction** to the
+/// resolver: it is written once in Settings and reused for every conflicted
+/// file, so a merge that crashes can be repaired without anyone typing a
+/// prompt in the moment. Empty means "use `ai::DEFAULT_SYSTEM_PROMPT`".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiConfig {
     #[serde(default)]
@@ -142,6 +151,21 @@ pub struct AiConfig {
     pub api_key: String,
     #[serde(default)]
     pub model: String,
+    /// Pre-configured system prompt. Empty → built-in default.
+    #[serde(default)]
+    pub system_prompt: String,
+    /// When true, a merge/sync that ends in conflicts immediately runs the
+    /// auto-resolver instead of waiting for the user to press the button.
+    #[serde(default)]
+    pub auto_resolve: bool,
+    /// Side used for binary / oversized files during auto-resolve:
+    /// "theirs" (default) or "ours".
+    #[serde(default = "default_binary_strategy")]
+    pub binary_strategy: String,
+}
+
+fn default_binary_strategy() -> String {
+    "theirs".into()
 }
 
 impl Default for AiConfig {
@@ -151,6 +175,9 @@ impl Default for AiConfig {
             base_url: String::new(),
             api_key: String::new(),
             model: String::new(),
+            system_prompt: String::new(),
+            auto_resolve: false,
+            binary_strategy: default_binary_strategy(),
         }
     }
 }
@@ -181,56 +208,32 @@ impl Default for Project {
 
 // ── Accounts & push credentials ───────────────────────────────────────────
 
-/// A registered human identity (login). Match with `.gpconfig` members by email.
+/// The signed-in person, as the team server describes them.
+///
+/// This is a **cache**, not a registry: the server's `users` table owns
+/// identities (see `accounts.rs`). Only the currently signed-in user is stored,
+/// so the app can stay signed in across restarts and while offline.
+///
+/// `id`/`created_at` are kept as the server's own strings — the app never
+/// parses or generates them, so re-encoding would only invite mismatches.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Account {
-    pub id: Uuid,
+    pub id: String,
     pub name: String,
+    /// Lowercased. Members and merge managers are matched by email
+    /// (see `.gpconfig`), so this is the identity that matters to a team.
     pub email: String,
-    /// Login id (lowercase). None for legacy accounts registered before v8.
-    #[serde(default)]
-    pub username: Option<String>,
-    /// SHA-256(password) hash: `sha256("git-companion::" + username + ":" + password)`.
-    #[serde(default)]
-    pub password_hash: Option<String>,
-    pub created_at: DateTime<Utc>,
+    /// Login id, lowercased.
+    pub username: String,
+    /// ISO-8601 timestamp from the server.
+    pub created_at: String,
 }
 
-/// Password hashing scheme shared with the dev bridge (`dev/git-bridge.ts`).
-pub fn hash_password(username: &str, password: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(format!("git-companion::{username}:{password}").as_bytes());
-    format!("{:x}", hasher.finalize())
-}
-
-/// Built-in demo accounts so anyone can try the app without registering.
-/// Inserted once per config; dedup is by username, so ids only need to be local.
-pub const SEED_ACCOUNTS: &[(&str, &str, &str, &str)] = &[
-    ("test", "test", "테스트 1", "test@example.com"),
-    ("test2", "test2", "테스트 2", "test2@example.com"),
-];
-
-/// Insert missing seed accounts (username `test` / `test2`) into the settings.
-pub fn ensure_seed_accounts(cfg: &mut AppSettings) {
-    for (username, password, name, email) in SEED_ACCOUNTS {
-        let exists = cfg
-            .accounts
-            .iter()
-            .any(|a| a.username.as_deref().map(|u| u.to_lowercase()) == Some(username.to_string()));
-        if exists {
-            continue;
-        }
-        let id = Uuid::new_v4();
-        cfg.accounts.push(Account {
-            id,
-            name: name.to_string(),
-            email: email.to_string(),
-            username: Some(username.to_string()),
-            password_hash: Some(hash_password(username, password)),
-            created_at: Utc::now(),
-        });
-    }
+/// A signed-in session: who, plus the bearer token for `/auth/*` calls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionState {
+    pub user: Account,
+    pub token: String,
 }
 
 /// Git-host credentials saved per repo — auto-filled in the push modal.
@@ -260,12 +263,12 @@ pub struct AppSettings {
     /// Optional AI conflict-resolver settings (disabled by default).
     #[serde(default)]
     pub ai: AiConfig,
-    /// Registered people (login identities).
+    /// Cached sign-in. The server owns the user list; this is only "who is
+    /// signed in on this machine" so the app works offline and across restarts.
+    /// Older configs carried an `accounts` array and `active_account_id` —
+    /// serde drops those unknown keys, which signs the user out once.
     #[serde(default)]
-    pub accounts: Vec<Account>,
-    /// Currently logged-in account.
-    #[serde(default)]
-    pub active_account_id: Option<String>,
+    pub session: Option<SessionState>,
     /// Saved git-host push credentials keyed by repository id.
     #[serde(default)]
     pub push_credentials: std::collections::HashMap<String, PushCredential>,
@@ -324,152 +327,42 @@ impl Default for AppSettings {
             ssh_profile: SshProfile::default(),
             peer: PeerConfig::default(),
             ai: AiConfig::default(),
-            accounts: vec![],
-            active_account_id: None,
+            session: None,
             push_credentials: std::collections::HashMap::new(),
         }
     }
 }
 
-// ── Accounts ───────────────────────────────────────────────────────────────────
+// ── Signed-in session ──────────────────────────────────────────────────────────
+//
+// Registering, signing in, and editing a profile all live in `accounts.rs`,
+// which talks to the team server. This file only remembers the result.
 
-pub fn list_accounts() -> AppResult<Vec<Account>> {
-    Ok(load()?.accounts)
-}
-
-/// Register a new human identity. Email must be unique.
-pub fn register_account(
-    name: &str,
-    email: &str,
-    username: Option<&str>,
-    password: Option<&str>,
-) -> AppResult<Account> {
-    let name = name.trim();
-    let email = email.trim().to_lowercase();
-    if name.is_empty() || email.is_empty() {
-        return Err(AppError::Config("이름과 이메일을 입력하세요.".into()));
-    }
-    if !email.contains('@') {
-        return Err(AppError::Config("올바른 이메일 주소를 입력하세요.".into()));
-    }
-    let username = match username.map(|u| u.trim().to_lowercase()) {
-        Some(u) if u.is_empty() => None,
-        other => other,
-    };
-    let password_hash = match (username.as_deref(), password.map(str::trim)) {
-        (Some(uname), _) if uname.is_empty() => None,
-        (Some(uname), Some(pw)) if !pw.is_empty() => {
-            let valid = uname.len() <= 32
-                && uname.chars().all(|c| {
-                    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '_' || c == '-'
-                });
-            if !valid {
-                return Err(AppError::Config(
-                    "아이디는 영문/숫자/._- 만 사용하고 1~32자로 입력하세요.".into(),
-                ));
-            }
-            if pw.len() < 4 {
-                return Err(AppError::Config("비밀번호는 4자 이상 입력하세요.".into()));
-            }
-            Some(hash_password(uname, pw))
-        }
-        _ => None,
-    };
+/// Store (or refresh) the signed-in user and their token.
+pub fn save_session(user: &Account, token: &str) -> AppResult<()> {
     let mut cfg = load()?;
-    if cfg.accounts.iter().any(|a| a.email == email) {
-        return Err(AppError::Config(format!(
-            "{email}은(는) 이미 등록된 이메일입니다."
-        )));
-    }
-    if let Some(uname) = username.as_deref() {
-        if !uname.is_empty()
-            && cfg
-                .accounts
-                .iter()
-                .any(|a| a.username.as_deref().map(|u| u.to_lowercase()).as_deref() == Some(uname))
-        {
-            return Err(AppError::Config(format!(
-                "{uname}은(는) 이미 사용 중인 아이디입니다."
-            )));
-        }
-    }
-    let account = Account {
-        id: Uuid::new_v4(),
-        name: name.to_string(),
-        email: email.clone(),
-        username,
-        password_hash,
-        created_at: Utc::now(),
-    };
-    cfg.accounts.push(account.clone());
-    cfg.active_account_id = Some(account.id.to_string());
-    save(&cfg)?;
-    Ok(account)
-}
-
-/// Login with username (or email) + password. Errors are intentionally generic
-/// so the login form cannot be used to enumerate accounts.
-pub fn login_by_password(username: &str, password: &str) -> AppResult<Account> {
-    let id = username.trim().to_lowercase();
-    let mut cfg = load()?;
-    let err = || AppError::Config("아이디 또는 비밀번호가 올바르지 않습니다.".into());
-    let candidate = cfg.accounts.iter().find(|a| {
-        a.username.as_deref().map(|u| u.to_lowercase()).as_deref() == Some(id.as_str())
-            || (id.contains('@') && a.email == id)
+    cfg.session = Some(SessionState {
+        user: user.clone(),
+        token: token.to_string(),
     });
-    let Some(account) = candidate else {
-        return Err(err());
-    };
-    let Some(hash) = account.password_hash.as_deref() else {
-        return Err(err());
-    };
-    let uname = account.username.as_deref().unwrap_or(id.as_str());
-    if hash != hash_password(uname, password) {
-        return Err(err());
-    }
-    cfg.active_account_id = Some(account.id.to_string());
-    save(&cfg)?;
-    Ok(account.clone())
-}
-
-pub fn login_account(id: &Uuid) -> AppResult<Account> {
-    let mut cfg = load()?;
-    let account = cfg
-        .accounts
-        .iter()
-        .find(|a| &a.id == id)
-        .cloned()
-        .ok_or_else(|| AppError::Config("계정을 찾을 수 없습니다.".into()))?;
-    cfg.active_account_id = Some(account.id.to_string());
-    save(&cfg)?;
-    Ok(account)
-}
-
-pub fn logout_account() -> AppResult<()> {
-    let mut cfg = load()?;
-    cfg.active_account_id = None;
     save(&cfg)
 }
 
-pub fn delete_account(id: &Uuid) -> AppResult<()> {
+pub fn clear_session() -> AppResult<()> {
     let mut cfg = load()?;
-    cfg.accounts.retain(|a| &a.id != id);
-    if cfg.active_account_id.as_deref() == Some(&id.to_string()) {
-        cfg.active_account_id = None;
-    }
+    cfg.session = None;
     save(&cfg)
 }
 
+/// The bearer token for `/auth/*` calls, or `None` when signed out.
+pub fn session_token() -> AppResult<Option<String>> {
+    Ok(load()?.session.map(|s| s.token))
+}
+
+/// The signed-in user from the local cache. No network, so callers can use it
+/// during startup and while offline.
 pub fn active_account() -> AppResult<Option<Account>> {
-    let cfg = load()?;
-    let Some(id) = cfg.active_account_id.as_deref() else {
-        return Ok(None);
-    };
-    Ok(cfg
-        .accounts
-        .iter()
-        .find(|a| a.id.to_string() == id)
-        .cloned())
+    Ok(load()?.session.map(|s| s.user))
 }
 
 // ── Push credentials ───────────────────────────────────────────────────────────
@@ -532,9 +425,7 @@ pub fn ensure_dirs() -> AppResult<()> {
 pub fn load() -> AppResult<AppSettings> {
     let path = config_path()?;
     if !path.exists() {
-        let mut cfg = AppSettings::default();
-        // Demo login accounts (`test`/`test`, `test2`/`test2`) — the app requires login.
-        ensure_seed_accounts(&mut cfg);
+        let cfg = AppSettings::default();
         save(&cfg)?;
         return Ok(cfg);
     }
@@ -550,8 +441,6 @@ pub fn load() -> AppResult<AppSettings> {
     if cfg.external_tools.is_empty() {
         cfg.external_tools = AppSettings::default().external_tools;
     }
-    // Demo login accounts (`test`/`test`, `test2`/`test2`) — the app requires login.
-    ensure_seed_accounts(&mut cfg);
     Ok(cfg)
 }
 
@@ -594,6 +483,44 @@ mod tests {
         assert_eq!(back.external_tools.len(), 6);
         assert!(back.ssh_profile.default_key_path.is_empty());
         assert_eq!(back.ssh_profile.default_port, 22);
+    }
+
+    /// 시나리오 5: 병합 관리자가 미리 저장해 둔 지침/자동 해결 스위치는
+    /// 재시작 후에도 그대로 남아야 하고, 이 필드들이 없던 옛 config.json 도
+    /// 안전한 기본값으로 열려야 한다.
+    #[test]
+    fn ai_config_persists_prompt_and_defaults_for_old_files() {
+        let mut s = AppSettings::default();
+        assert_eq!(s.ai.binary_strategy, "theirs");
+        assert!(!s.ai.auto_resolve);
+        assert!(s.ai.system_prompt.is_empty());
+
+        s.ai.enabled = true;
+        s.ai.auto_resolve = true;
+        s.ai.system_prompt = "마이그레이션 파일은 합치지 말고 양쪽을 모두 남긴다.".into();
+        s.ai.binary_strategy = "ours".into();
+        let json = serde_json::to_string(&s).unwrap();
+        let back: AppSettings = serde_json::from_str(&json).unwrap();
+        assert!(back.ai.auto_resolve);
+        assert_eq!(
+            back.ai.system_prompt,
+            "마이그레이션 파일은 합치지 말고 양쪽을 모두 남긴다."
+        );
+        assert_eq!(back.ai.binary_strategy, "ours");
+
+        // 새 필드가 전혀 없는 예전 파일.
+        let legacy = r#"{"schema_version":7,"ai":{"enabled":true,"base_url":"u","api_key":"k","model":"m"}}"#;
+        let old: AppSettings = serde_json::from_str(legacy).unwrap();
+        assert!(old.ai.enabled);
+        assert!(!old.ai.auto_resolve, "옛 파일은 자동 해결이 꺼진 채 열린다");
+        assert!(
+            old.ai.system_prompt.is_empty(),
+            "지침은 비어 있어 기본값을 쓴다"
+        );
+        assert_eq!(
+            old.ai.binary_strategy, "theirs",
+            "바이너리 전략은 안전한 기본값으로 채워진다"
+        );
     }
 
     #[test]

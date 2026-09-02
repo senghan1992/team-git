@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.db import engine, Base
-from app.routes import devices, projects, members, events
+from app.routes import auth, devices, projects, members, events
 
 
 @asynccontextmanager
@@ -25,6 +25,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router, prefix="/auth", tags=["auth"])
 app.include_router(devices.router, prefix="/devices", tags=["devices"])
 app.include_router(projects.router, prefix="/projects", tags=["projects"])
 app.include_router(members.router, prefix="/projects", tags=["members"])

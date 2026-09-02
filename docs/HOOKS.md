@@ -21,9 +21,21 @@ for the registered repo so git picks it up automatically.
 
 For every ref being pushed:
 
-- `refs/heads/main` → `event = main-push`
-- `refs/heads/<other>` → `event = branch-push`
+- `refs/heads/<branch>` → `event = branch-push`
 - `refs/tags/vX.Y.Z` → `event = release`
+
+The shell script carries **no policy**. Which branches count as the team's
+merge branch varies per project (`.gpconfig` → `merge_targets`: `main`,
+`develop`, `release/1.0`, …) and can change at any time, so the classification
+happens in `hook emit`, not in bash:
+
+| pushed branch | emitted event kind | who is notified |
+| --- | --- | --- |
+| a merge target (`.gpconfig` `merge_targets`, else `default_base_branch`, else the repo's registered default branch) | `main_push` | **every member** — "새 병합이 반영되었습니다 / 내 브랜치에 동기화" |
+| any other branch | `branch_push` | **the merge manager of the base branch only** — "브랜치가 병합을 기다립니다 / 병합하기" |
+
+This is why a team whose merge branch is `develop` still gets correct sync
+notifications: nothing is hardcoded to `main`.
 
 Each event calls:
 
@@ -66,9 +78,14 @@ searches. Pick one:
 
 ## Reinstalling the hook
 
-The Settings view has a **pre-push hook 다시 설치** button that walks every
-registered repo and re-runs the install. Useful after upgrading the binary if
-the embedded template changed.
+The app re-installs the hook for every registered **local** repository on
+every launch, so upgrading the binary picks up a changed template with no
+manual step. The install never clobbers a repo that has its own
+`core.hooksPath` pointing somewhere else.
+
+Repositories accessed over SSH get no local hook — the working tree lives on
+the remote host. For those, notifications come from the app's own merge/push
+flow rather than from git.
 
 ## Removing the hook
 

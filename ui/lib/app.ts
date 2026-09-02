@@ -1,4 +1,5 @@
-import { ipc, ipc_peer, type Repo, type TeamEventRow } from "./ipc";
+import { ipc, ipc_peer, type ProjectConfigResult, type Repo, type TeamEventRow } from "./ipc";
+import { isMergeManagerFor } from "../components/nextAction";
 import { renderSidebar, type Page } from "../components/Sidebar";
 import { renderHomeView } from "../views/HomeView";
 import { renderRepoView } from "../views/RepoView";
@@ -20,18 +21,20 @@ export async function createApp(root: HTMLElement) {
   let page: Page = { kind: "home" };
   let repos: Repo[] | null = null;
   let teamUnread = 0;
-  let teamTab: TeamTab = "projects";
+  // 알림 화면은 기본이 "받은 알림"이고, 배달망 설정은 접혀 있다.
+  let teamTab: TeamTab = "inbox";
 
   void ipc.listRepositories().then((r) => { repos = r; rerender(); });
-
-  void refreshSession();
 
   // 로그인 상태가 바뀌면 (로그인/로그아웃/계정 삭제) 앱 전체를 다시 그린다.
   window.addEventListener(ACCOUNT_EVENT, () => { rerender(); });
 
-  void ipc_peer.unreadCount()
-    .then((n) => { teamUnread = n; updateTeamBadge(); })
-    .catch(() => { teamUnread = 0; });
+  // 알림 개수는 로그인한 뒤에만 의미가 있다. 예전에는 로그아웃 상태에서도
+  // 조회해서 사이드바에 "알림 2" 가 떴다 — 로그인도 안 했는데 읽지 않은
+  // 알림이 있다고 하니 앱을 처음 켠 사람에게는 앞뒤가 맞지 않는다.
+  void refreshSession().then(() => {
+    if (getSession()) void reloadTeamUnread().then(updateTeamBadge);
+  });
 
   async function reloadRepos() {
     repos = await ipc.listRepositories();
@@ -39,6 +42,10 @@ export async function createApp(root: HTMLElement) {
   }
 
   async function reloadTeamUnread() {
+    if (!getSession()) {
+      teamUnread = 0;
+      return;
+    }
     try {
       teamUnread = await ipc_peer.unreadCount();
     } catch {
@@ -54,6 +61,34 @@ export async function createApp(root: HTMLElement) {
   function repoByDisplayName(name: string): Repo | null {
     const matches = (repos ?? []).filter((r) => r.display_name === name);
     return matches.length === 1 ? matches[0]! : null;
+  }
+
+  // 저장소별 .gpconfig 캐시 — 알림 판정마다 IPC(원격이면 SSH 왕복)를 때리지
+  // 않기 위해 짧게 캐시한다. 관리자 지정이 바뀌면 1분 안에 반영된다.
+  const PROJECT_CFG_TTL_MS = 60_000;
+  const projectCfgCache = new Map<
+    string,
+    { cfg: ProjectConfigResult | null; at: number }
+  >();
+  async function projectCfgOf(repoId: string): Promise<ProjectConfigResult | null> {
+    const hit = projectCfgCache.get(repoId);
+    if (hit && Date.now() - hit.at < PROJECT_CFG_TTL_MS) return hit.cfg;
+    const cfg = await ipc.projectConfigGet(repoId).catch(() => null);
+    projectCfgCache.set(repoId, { cfg, at: Date.now() });
+    return cfg;
+  }
+
+  /** 이벤트를 만든 사람이 나인지 — 내 푸시 알림을 나에게 다시 띄우지 않는다. */
+  function isMyOwnEvent(r: TeamEventRow): boolean {
+    const me = getSession();
+    if (!me) return false;
+    try {
+      const payload = JSON.parse(r.payload) as { data?: { author?: string } };
+      const author = payload.data?.author?.trim();
+      return !!author && author === me.name.trim();
+    } catch {
+      return false;
+    }
   }
 
   async function runSyncFromEvent(r: TeamEventRow, repo: Repo) {
@@ -83,6 +118,17 @@ export async function createApp(root: HTMLElement) {
     rerender();
   }
 
+  /** 이벤트 payload에서 브랜치 이름을 꺼낸다 (없으면 null). */
+  function branchOfEvent(r: TeamEventRow): string | null {
+    try {
+      const payload = JSON.parse(r.payload) as { data?: { branch?: string } };
+      const b = payload.data?.branch?.trim();
+      return b || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function pollTeamEvents() {
     if (!getSession()) return;
     try {
@@ -91,26 +137,65 @@ export async function createApp(root: HTMLElement) {
       for (const r of rows) {
         if (seenEvents.has(r.id)) continue;
         seenEvents.add(r.id);
-        const isMainPush =
-          r.event_kind === "main_push" || r.event_kind.endsWith("main_push");
-        if (!isMainPush || r.read) continue;
+        if (r.read) continue;
         // 오래된 백로그는 방해하지 않도록 최근 15분 이벤트만 알림으로 띄운다.
         const ageMs = Date.now() - new Date(r.received_at).getTime();
         if (ageMs > 15 * 60 * 1000) continue;
+
+        const isMainPush =
+          r.event_kind === "main_push" || r.event_kind.endsWith("main_push");
+        const isBranchPush =
+          r.event_kind === "branch_push" || r.event_kind.endsWith("branch_push");
+        if (!isMainPush && !isBranchPush) continue;
+        if (isMyOwnEvent(r)) continue;
+
         const repo = repoByDisplayName(r.repo_name);
-        if (repo) {
-          notify(
-            `${r.repo_name}에 새 병합이 반영되었습니다`,
-            { label: "내 브랜치에 동기화", run: () => void runSyncFromEvent(r, repo) },
-            "main에 최신 코드가 푸시되었습니다. 내 브랜치에도 반영하세요.",
-          );
-        } else {
-          notify(
-            `${r.repo_name}에 새 병합이 반영되었습니다`,
-            { label: "저장소 등록하기", run: () => { page = { kind: "home" }; rerender(); } },
-            "등록된 저장소가 없어 동기화할 수 없습니다.",
-          );
+
+        // ── 시나리오 6: 병합 브랜치에 푸시됨 → 팀원은 내 브랜치에 동기화한다.
+        if (isMainPush) {
+          if (repo) {
+            notify(
+              `${r.repo_name}에 새 병합이 반영되었습니다`,
+              { label: "내 브랜치에 동기화", run: () => void runSyncFromEvent(r, repo) },
+              `${repo.default_branch || "main"}에 최신 코드가 푸시되었습니다. 내 브랜치에도 반영하세요.`,
+            );
+          } else {
+            notify(
+              `${r.repo_name}에 새 병합이 반영되었습니다`,
+              { label: "저장소 등록하기", run: () => { page = { kind: "home" }; rerender(); } },
+              "등록된 저장소가 없어 동기화할 수 없습니다.",
+            );
+          }
+          continue;
         }
+
+        // ── 시나리오 7: 팀원이 자기 브랜치를 푸시함 → 병합 관리자에게만 알린다.
+        //    관리자가 아닌 사람에게는 팀 수신함 배지로만 남는다.
+        if (!repo) continue;
+        const base = repo.default_branch || "main";
+        const cfg = await projectCfgOf(repo.id);
+        const me = getSession();
+        // 관리자가 아직 지정되지 않았으면(설정 전 초기 상태) 알림으로 재촉하지
+        // 않는다 — 모두에게 알림이 가면 소음이 된다.
+        const assigned = cfg?.config?.merge_managers?.[base];
+        if (!assigned) continue;
+        if (!isMergeManagerFor(cfg, me?.email ?? null, base)) continue;
+
+        const branch = branchOfEvent(r);
+        notify(
+          branch
+            ? `${r.repo_name}: ${branch} 브랜치가 병합을 기다립니다`
+            : `${r.repo_name}에 새 푸시가 있습니다`,
+          {
+            label: "병합하기",
+            run: () => {
+              ipc_peer.markTeamRead(r.id).then(reloadTeamUnread).catch(() => undefined);
+              page = { kind: "repo", repoId: repo.id, tab: "merge" };
+              rerender();
+            },
+          },
+          `${base}(으)로 병합할 수 있습니다.`,
+        );
       }
     } catch {
       teamUnread = 0;
@@ -121,7 +206,7 @@ export async function createApp(root: HTMLElement) {
   function updateTeamBadge() {
     const badge = document.querySelector<HTMLSpanElement>("#team-badge");
     if (badge) {
-      if (teamUnread > 0) {
+      if (teamUnread > 0 && getSession()) {
         badge.textContent = String(teamUnread);
         badge.style.display = "";
       } else {
@@ -130,41 +215,114 @@ export async function createApp(root: HTMLElement) {
     }
   }
 
-  function renderGate() {
+  // ── 시작 화면 ────────────────────────────────────────────────────────────
+  //
+  // 로그인은 **선택**이다. 예전에는 로그인하지 않으면 여기서 더 나아갈 수
+  // 없었는데, 계정이 팀 서버로 옮겨간 뒤에는 그 벽이 곧 "FastAPI 서버를 직접
+  // 띄워야 앱을 열 수 있다"는 뜻이 됐다. 처음 git 을 쓰는 사람에게는 사실상
+  // 사용 불가다.
+  //
+  // 커밋·푸시·병합·충돌 해결은 서버 없이 전부 동작한다. 계정이 실제로 필요한
+  // 것은 팀 알림과 구성원 검색뿐이므로, 그때 그 자리에서 로그인을 권한다.
+  const SKIP_LOGIN_KEY = "gc-skip-login";
+
+  function hasDismissedLogin(): boolean {
+    try {
+      return localStorage.getItem(SKIP_LOGIN_KEY) === "1";
+    } catch {
+      // 저장소를 못 쓰는 환경(사생활 보호 모드 등)에서도 앱은 열려야 한다.
+      return false;
+    }
+  }
+  function dismissLogin() {
+    try {
+      localStorage.setItem(SKIP_LOGIN_KEY, "1");
+    } catch {
+      /* 이번 실행에만 적용된다 */
+    }
+    skippedThisRun = true;
+  }
+  let skippedThisRun = false;
+
+  function renderWelcome() {
     shell.innerHTML = "";
     const gate = document.createElement("div");
     gate.className = "flex-1 flex items-center justify-center p-8";
     gate.id = "login-gate";
     const plaque = document.createElement("div");
-    plaque.className = "gc-card flex flex-col items-center gap-4 text-center max-w-md w-full px-10 py-12";
+    plaque.className =
+      "gc-card flex flex-col items-center gap-4 text-center max-w-lg w-full px-10 py-12";
     const tile = document.createElement("div");
-    tile.className = "inline-flex items-center justify-center w-11 h-11 rounded-[12px] bg-[color:var(--color-primary)] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.2),0_2px_6px_rgba(28,50,96,0.3)]";
-    tile.appendChild(icon("lock", 20));
+    tile.className =
+      "inline-flex items-center justify-center w-11 h-11 rounded-[12px] bg-[color:var(--color-primary)] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.2),0_2px_6px_rgba(28,50,96,0.3)]";
+    tile.appendChild(icon("commit", 20));
     plaque.appendChild(tile);
     const title = document.createElement("h1");
     title.className = "text-display-xl font-bold tracking-[-0.02em]";
     title.textContent = "Git Companion";
     plaque.appendChild(title);
     const desc = document.createElement("p");
-    desc.className = "text-display-sm text-[color:var(--color-ink-muted)] max-w-sm whitespace-pre-line";
+    desc.className =
+      "text-display-md text-[color:var(--color-ink-muted)] max-w-md whitespace-pre-line";
     desc.textContent =
-      "이 앱을 사용하려면 로그인이 필요합니다. \n테스트 계정: test / test, test2 / test2";
+      "팀이 하나의 프로젝트를 각자 브랜치로 나눠 작업할 때,\n커밋·푸시·병합을 터미널 없이 처리하는 앱입니다.";
     plaque.appendChild(desc);
+
+    // 무엇이 로그인 없이 되고, 무엇이 안 되는지 미리 알려 준다.
+    const table = document.createElement("div");
+    table.className = "flex flex-col gap-1.5 text-display-sm w-full max-w-md mt-1";
+    const rows: [string, string][] = [
+      ["바로 사용", "저장소 등록 · 커밋 · 푸시 · 병합 · 충돌 해결"],
+      ["로그인 필요", "팀원 push 알림 · 구성원 검색"],
+    ];
+    for (const [tag, what] of rows) {
+      const row = document.createElement("div");
+      row.className = "flex items-start gap-2 text-left";
+      const chip = document.createElement("span");
+      chip.className =
+        "gc-badge shrink-0 " + (tag === "바로 사용" ? "gc-badge--success" : "gc-badge--muted");
+      chip.textContent = tag;
+      row.appendChild(chip);
+      const txt = document.createElement("span");
+      txt.className = "text-[color:var(--color-ink-muted)]";
+      txt.textContent = what;
+      row.appendChild(txt);
+      table.appendChild(row);
+    }
+    plaque.appendChild(table);
+
     const btnRow = document.createElement("div");
-    btnRow.className = "flex items-center gap-3 mt-2";
+    btnRow.className = "flex flex-wrap items-center justify-center gap-2 mt-3";
+    const start = document.createElement("button");
+    start.className = "gc-button-primary";
+    start.id = "gate-start-btn";
+    start.textContent = "저장소 열고 시작하기";
+    start.addEventListener("click", () => {
+      dismissLogin();
+      page = { kind: "home" };
+      rerender();
+    });
+    btnRow.appendChild(start);
     const btn = document.createElement("button");
-    btn.className = "gc-button-primary";
+    btn.className = "gc-button-secondary";
     btn.id = "gate-login-btn";
     btn.textContent = "로그인";
     btn.addEventListener("click", () => openAccountModal());
+    btnRow.appendChild(btn);
     const regBtn = document.createElement("button");
     regBtn.className = "gc-button-secondary";
     regBtn.id = "gate-register-btn";
     regBtn.textContent = "계정 만들기";
     regBtn.addEventListener("click", () => openRegisterModal());
-    btnRow.appendChild(btn);
     btnRow.appendChild(regBtn);
     plaque.appendChild(btnRow);
+
+    const note = document.createElement("p");
+    note.className = "text-display-xs text-[color:var(--color-ink-muted)] max-w-md";
+    note.textContent =
+      "계정은 팀이 함께 쓰는 서버에 저장됩니다. 나중에 왼쪽 아래에서 언제든 로그인할 수 있습니다.";
+    plaque.appendChild(note);
+
     gate.appendChild(plaque);
     shell.appendChild(gate);
     updateTeamBadge();
@@ -178,8 +336,10 @@ export async function createApp(root: HTMLElement) {
       shell.appendChild(renderPageLoadingFill());
       return;
     }
-    if (session === null) {
-      renderGate();
+    // 처음 실행에서 한 번만 소개 화면을 보여 준다. "시작하기"를 누른 뒤에는
+    // 로그아웃 상태여도 곧바로 앱으로 들어간다.
+    if (session === null && !hasDismissedLogin() && !skippedThisRun) {
+      renderWelcome();
       return;
     }
     // Close any open dialogs before wiping the shell — they live in the top layer
@@ -201,7 +361,12 @@ export async function createApp(root: HTMLElement) {
       const loading = renderPageLoadingFill();
       shell.appendChild(loading);
       const myPage = page;
-      renderRepoView(myPage.repoId, myPage.tab ?? "work", onTab).then((m) => {
+      renderRepoView(
+        myPage.repoId,
+        myPage.tab ?? "work",
+        onTab,
+        () => { page = { kind: "settings" }; rerender(); },
+      ).then((m) => {
         if (page !== myPage) return; // 로딩 중 다른 페이지로 이동 시 폐기
         loading.replaceWith(m);
       });

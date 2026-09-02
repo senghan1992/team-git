@@ -105,8 +105,47 @@ pub fn commit(target: &Target, message: &str, stage_all: bool) -> AppResult<Comm
         Ok(CommitResult {
             ok: false,
             sha: None,
-            message: out.stderr.trim().to_string(),
+            message: explain_commit_failure(&out.stdout, &out.stderr),
         })
+    }
+}
+
+/// 커밋 실패 이유를 사람 말로 바꾼다.
+///
+/// git 은 "nothing to commit" 같은 가장 흔한 실패를 **stdout** 에 쓴다.
+/// 예전에는 stderr 만 읽어서 메시지가 빈 문자열이 됐고, 화면에는
+/// "커밋 실패: " 만 떴다 — 커밋할 변경이 없을 때 버튼을 누르는 건 처음
+/// 쓰는 사람이 가장 자주 하는 일인데, 아무 설명이 없었다.
+pub fn explain_commit_failure(stdout: &str, stderr: &str) -> String {
+    let all = format!("{stdout}\n{stderr}");
+    if all.contains("nothing to commit")
+        || all.contains("no changes added to commit")
+        || all.contains("nothing added to commit")
+    {
+        return "커밋할 변경이 없습니다. 파일을 수정한 뒤 다시 커밋하세요.".into();
+    }
+    if all.contains("empty commit message") || all.contains("Aborting commit due to empty") {
+        return "커밋 메시지를 입력하세요.".into();
+    }
+    if all.contains("Please tell me who you are") || all.contains("unable to auto-detect email") {
+        return "git 사용자 정보가 없어 커밋할 수 없습니다. 터미널에서 한 번 설정하세요:\n  git config --global user.name \"이름\"\n  git config --global user.email \"메일@example.com\"".into();
+    }
+    if all.contains("index.lock") {
+        return "다른 git 작업이 진행 중입니다(.git/index.lock). 잠시 후 다시 시도하세요.".into();
+    }
+    if all.contains("unmerged") || all.contains("Unmerged paths") {
+        return "해결하지 않은 충돌이 남아 있습니다. 병합 탭에서 먼저 마무리하세요.".into();
+    }
+    // 알 수 없는 실패 — 최소한 git 이 한 말은 보여 준다.
+    let raw = if !stderr.trim().is_empty() {
+        stderr.trim()
+    } else {
+        stdout.trim()
+    };
+    if raw.is_empty() {
+        "알 수 없는 이유로 커밋에 실패했습니다.".into()
+    } else {
+        raw.to_string()
     }
 }
 
@@ -527,21 +566,66 @@ fn dirty_tree_error(stderr: &str) -> bool {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
-fn friendly_git_error(stderr: &str) -> String {
+/// git 의 영어 오류를 사람 말로 바꾼다.
+///
+/// 한국어 화면에 `fatal: 'origin' does not appear to be a git repository` 같은
+/// 영어 5줄이 그대로 뜨면, 처음 git 을 쓰는 사람은 무엇이 잘못됐는지도, 무엇을
+/// 해야 하는지도 알 수 없다. 구체적인 원인을 먼저 검사한다 — 원격이 없다는
+/// 오류에는 "access rights" 같은 단어가 함께 들어 있어서, 일반적인 인증 실패로
+/// 잘못 분류되기 쉽다.
+pub fn friendly_git_error(stderr: &str) -> String {
     let s = stderr.trim();
-    if s.contains("non-fast-forward") || s.contains("updates were rejected") {
-        "푸시 거부됨: 원격 브랜치가 로컬보다 앞서 있습니다. 풀 후 다시 시도하세요.".into()
-    } else if s.contains("auth") || s.contains("authentication") || s.contains("permission denied")
+
+    // ── 원격이 아예 없음 (혼자 만든 로컬 저장소에서 가장 흔하다) ──
+    if s.contains("does not appear to be a git repository")
+        || s.contains("No such remote")
+        || s.contains("'origin' does not appear")
     {
-        "인증 실패: SSH 키 또는 접근 권한을 확인하세요.".into()
-    } else if s.contains("network")
-        || s.contains("Could not resolve host")
-        || s.contains("Connection refused")
-    {
-        "네트워크 오류: 연결을 확인하세요.".into()
-    } else if s.contains("failed to push some refs") {
-        "푸시 실패: 원격 변경사항을 먼저 풀하세요.".into()
-    } else {
-        s.to_string()
+        return "이 저장소에는 원격(origin)이 없어서 푸시할 곳이 없습니다.\n             터미널에서 원격을 한 번 등록하세요:\n  git remote add origin <저장소 주소>"
+            .into();
     }
+    // ── 아직 커밋이 없음 / 브랜치가 없음 ──
+    if s.contains("src refspec") && s.contains("does not match any") {
+        return "푸시할 커밋이 없습니다. 먼저 커밋한 뒤 다시 시도하세요.".into();
+    }
+    if s.contains("has no upstream branch") || s.contains("no upstream configured") {
+        return "이 브랜치는 아직 원격에 없습니다. 앱이 자동으로 만들어 주니 다시 시도하세요."
+            .into();
+    }
+    // ── 원격은 있지만 없는 저장소 / 권한 없음 ──
+    if s.contains("Repository not found") || s.contains("repository does not exist") {
+        return "원격에서 저장소를 찾을 수 없습니다. 저장소 주소와 접근 권한을 확인하세요.".into();
+    }
+    if s.contains("non-fast-forward") || s.contains("updates were rejected") {
+        return "푸시 거부됨: 원격 브랜치가 로컬보다 앞서 있습니다. 먼저 ‘동기화’로 최신 내용을 받은 뒤 다시 푸시하세요.".into();
+    }
+    if s.contains("failed to push some refs") {
+        return "푸시 실패: 원격에 새 변경이 있습니다. 먼저 ‘동기화’로 받은 뒤 다시 푸시하세요."
+            .into();
+    }
+    // ── 네트워크 (인증보다 먼저 — 호스트를 못 찾은 것은 권한 문제가 아니다) ──
+    if s.contains("Could not resolve host")
+        || s.contains("Connection refused")
+        || s.contains("Connection timed out")
+        || s.contains("network is unreachable")
+        || s.contains("network")
+    {
+        return "네트워크에 연결할 수 없습니다. 인터넷 연결과 저장소 주소를 확인하세요.".into();
+    }
+    // ── 인증 ──
+    if s.contains("Permission denied")
+        || s.contains("permission denied")
+        || s.contains("Authentication failed")
+        || s.contains("authentication")
+        || s.contains("auth")
+    {
+        return "접근 권한이 없습니다. SSH 키가 등록되어 있는지, 또는 아이디/비밀번호가 맞는지 확인하세요.".into();
+    }
+    if s.contains("Host key verification failed") {
+        return "서버의 SSH 호스트 키를 확인할 수 없습니다. 터미널에서 한 번 접속해 호스트를 신뢰 목록에 추가하세요.".into();
+    }
+    if s.is_empty() {
+        return "알 수 없는 이유로 실패했습니다.".into();
+    }
+    s.to_string()
 }

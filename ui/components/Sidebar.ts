@@ -1,6 +1,7 @@
 import type { Repo } from "../lib/ipc";
 import { icon } from "./Icon";
 import { openAccountModal } from "./AccountModal";
+import { openMyPageModal } from "./MyPageModal";
 import { getSession } from "../lib/session";
 
 export type RepoTab = "work" | "merge" | "config";
@@ -25,7 +26,7 @@ export function renderSidebar(
     <nav class="flex flex-col gap-1 px-2 py-3">
       <button data-nav="home" class="gc-nav-btn"><span class="gc-nav-ico"></span><span>저장소</span></button>
       <button data-nav="team" class="gc-nav-btn flex items-center justify-between">
-        <span class="inline-flex items-center gap-2"><span class="gc-nav-ico"></span><span>팀</span></span>
+        <span class="inline-flex items-center gap-2"><span class="gc-nav-ico"></span><span>알림</span></span>
         <span id="team-badge" class="text-xs font-semibold rounded-full px-2 py-0.5 bg-[color:var(--color-primary)] text-white" style="display:none"></span>
       </button>
       <button data-nav="settings" class="gc-nav-btn"><span class="gc-nav-ico"></span><span>설정</span></button>
@@ -43,7 +44,8 @@ export function renderSidebar(
   // Inject icons into nav buttons (folder for repos, users for team, settings for settings).
   const navIconMap: Record<string, SVGSVGElement> = {
     home: icon("folder", 16),
-    team: icon("users", 16),
+    // 이 화면은 사람 관리가 아니라 "팀원 소식 받기"다 — 종 아이콘이 맞다.
+    team: icon("bell", 16),
     settings: icon("settings", 16),
   };
   const navBtns0 = aside.querySelectorAll<HTMLButtonElement>("[data-nav]");
@@ -84,16 +86,28 @@ export function renderSidebar(
   const chipLabel = chip.querySelector<HTMLElement>("#account-label")!;
   function renderChip() {
     const acc = getSession();
+    chipLabel.classList.remove("text-[color:var(--color-ink-muted)]");
     if (acc) {
       chipLabel.textContent = `${acc.name} (${acc.email})`;
+      chip.title = "내 정보";
     } else if (acc === null) {
-      chipLabel.textContent = "로그인";
+      // 로그아웃 상태로도 앱을 쓸 수 있으므로, 여기서 왜 눌러야 하는지까지
+      // 알려 준다. "로그인" 한 단어만 있으면 눌러야 하는지 알 수 없다.
+      chipLabel.textContent = "로그인 안 됨 — 로그인하기";
+      chipLabel.classList.add("text-[color:var(--color-ink-muted)]");
+      chip.title = "로그인하면 팀원 push 알림을 받고 구성원을 검색할 수 있습니다.";
     } else {
       chipLabel.textContent = "…";
+      chip.title = "";
     }
   }
   renderChip();
-  chip.addEventListener("click", () => { openAccountModal(); });
+  // 로그인 상태면 마이페이지, 아니면 로그인 — 로그인한 뒤에도 로그인 폼이
+  // 뜨는 것이 예전 UX 의 가장 큰 위화감이었다.
+  chip.addEventListener("click", () => {
+    if (getSession()) openMyPageModal();
+    else openAccountModal();
+  });
   window.addEventListener("gc-account-changed", renderChip);
 
   return aside;

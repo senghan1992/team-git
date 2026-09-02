@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Git Companion pre-push hook (auto-generated; do not edit by hand)
+#
+# 이 스크립트는 정책을 갖지 않는다. 어떤 브랜치가 "병합 브랜치"인지는 프로젝트
+# 마다 다르고(.gpconfig 의 merge_targets — main, develop, release/1.0 …) 언제든
+# 바뀔 수 있으므로, 분류는 `git-companion hook emit` 쪽에서 한다. 여기서는
+# 밀려나간 ref 를 그대로 넘기기만 한다.
 set -e
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 APP_BIN="${GIT_COMPANION_BIN:-git-companion}"
@@ -8,11 +13,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   COMMIT_MSG="$(git log -1 --format='%s' "$local_sha" 2>/dev/null || echo '')"
   SHA="$(git log -1 --format='%H' "$local_sha" 2>/dev/null || echo '')"
   REMOTE_URL="$(git remote get-url origin 2>/dev/null || echo '')"
-  if [[ "$remote_ref" == "refs/heads/main" ]]; then
-    "$APP_BIN" hook emit --event main-push \
-      --author "$AUTHOR" --message "$COMMIT_MSG" --sha "$SHA" \
-      --branch main --remote-url "$REMOTE_URL" --repo "$REPO_ROOT" || true
-  elif [[ "$remote_ref" == refs/heads/* ]]; then
+  if [[ "$remote_ref" == refs/heads/* ]]; then
     BRANCH="${remote_ref#refs/heads/}"
     "$APP_BIN" hook emit --event branch-push \
       --author "$AUTHOR" --message "$COMMIT_MSG" --sha "$SHA" \

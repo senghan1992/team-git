@@ -35,6 +35,20 @@ pub struct RegisterProjectArgs {
     pub project_path: String,
 }
 
+impl Default for RegisterProjectArgs {
+    /// 로컬 저장소 등록용 기본값 — SSH 항목은 모두 비어 있다.
+    fn default() -> Self {
+        Self {
+            ssh_user: String::new(),
+            ssh_host: String::new(),
+            ssh_key_path: String::new(),
+            ssh_password: String::new(),
+            ssh_port: default_args_ssh_port(),
+            project_path: String::new(),
+        }
+    }
+}
+
 fn default_args_ssh_port() -> u16 {
     22
 }
@@ -227,18 +241,60 @@ pub fn list_repositories() -> AppResult<Vec<Repository>> {
     Ok(config_store::load()?.repositories)
 }
 
+/// 아직 git 저장소가 아닌 폴더를 저장소로 만들고 바로 등록한다.
+///
+/// 처음 git 을 쓰는 사람은 "이 폴더는 git 저장소가 아닙니다"에서 막힌다 —
+/// 무엇을 해야 하는지 모르고, 터미널로 나가야 한다는 뜻이기도 하다.
+/// 되돌릴 수 있는 안전한 동작이므로(`.git` 폴더만 생긴다) 앱에서 해 준다.
+#[tauri::command]
+pub fn init_repository(path: String) -> AppResult<Repository> {
+    let expanded = crate::git::expand_tilde(&path);
+    let p = std::path::Path::new(&expanded);
+    if !p.exists() {
+        return Err(AppError::RepoNotFound(format!(
+            "그 경로에 폴더가 없습니다: {expanded}"
+        )));
+    }
+    if !p.is_dir() {
+        return Err(AppError::RepoNotFound(format!(
+            "폴더가 아닙니다: {expanded}"
+        )));
+    }
+    if p.join(".git").exists() {
+        // 이미 저장소라면 새로 만들지 않고 그대로 등록한다 — init 을 다시
+        // 돌리면 기존 저장소를 건드릴 수 있다.
+        return register_repository(RegisterProjectArgs {
+            project_path: expanded,
+            ..Default::default()
+        });
+    }
+    let out = crate::git::run(Some(p), ["init", "-b", "main"])?;
+    if !out.ok() {
+        return Err(AppError::Git(format!(
+            "git 저장소로 만들지 못했습니다: {}",
+            out.stderr.trim()
+        )));
+    }
+    register_repository(RegisterProjectArgs {
+        project_path: expanded,
+        ..Default::default()
+    })
+}
+
 #[tauri::command]
 pub fn register_repository(args: RegisterProjectArgs) -> AppResult<Repository> {
     // 1. Verify .git exists.
+    //
+    // 로컬 경로는 `~` 를 펼쳐 **확장된 경로로 저장**한다. 그러지 않으면 등록은
+    // 되지만 이후 모든 git 호출이 존재하지 않는 "~/..." 를 향하게 된다.
+    let mut args = args;
+    if args.ssh_host.is_empty() {
+        args.project_path = crate::git::expand_tilde(&args.project_path);
+    }
+    let args = args;
     let repo_path = &args.project_path;
     if args.ssh_host.is_empty() {
-        let p = resolve_repo_path(repo_path)?;
-        if !p.join(".git").exists() {
-            return Err(AppError::RepoNotFound(format!(
-                "no .git directory at {}",
-                repo_path
-            )));
-        }
+        resolve_repo_path(repo_path)?;
     } else {
         let out = run_ssh(
             &args,

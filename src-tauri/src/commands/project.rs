@@ -2,7 +2,7 @@
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::commands::git::resolve_target;
+use crate::commands::git::{resolve_target, MERGE_REMOTE};
 use crate::error::AppResult;
 use crate::gpconfig::{self, CommitOutcome, ProjectConfig};
 use crate::{config_store, gpconfig::member_from_account};
@@ -22,8 +22,11 @@ pub struct ProjectConfigSaveResult {
 
 #[tauri::command]
 pub fn project_config_get(repo_id: Uuid) -> AppResult<ProjectConfigResult> {
-    let (target, _) = resolve_target(repo_id)?;
-    let (config, exists) = gpconfig::read_config(&target)?;
+    let (target, repo) = resolve_target(repo_id)?;
+    // 작업 브랜치에 .gpconfig 사본이 없어도 팀 규칙(병합 관리자 등)은 보여야
+    // 한다 — 없으면 병합 관리자 미지정으로 읽혀 팀원에게 관리자 화면이 뜬다.
+    let (config, exists) =
+        gpconfig::read_config_effective(&target, &repo.default_branch, MERGE_REMOTE)?;
     Ok(ProjectConfigResult { exists, config })
 }
 

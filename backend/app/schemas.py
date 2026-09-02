@@ -3,6 +3,46 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 
+# ── User / auth ───────────────────────────────────────────────────────────────
+
+
+class UserPublic(BaseModel):
+    """A user as the client is allowed to see them — never the password hash."""
+    id: str
+    username: str
+    email: str
+    name: str
+    created_at: datetime
+
+
+class RegisterRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=256)
+    email: str = Field(..., min_length=3, max_length=256)
+    username: str = Field(..., min_length=2, max_length=64)
+    password: str = Field(..., min_length=8, max_length=256)
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=256)
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+class AuthResponse(BaseModel):
+    """Returned by register and login: who you are + the token to send back."""
+    user: UserPublic
+    token: str
+
+
+class ProfileUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=256)
+    email: str | None = Field(default=None, min_length=3, max_length=256)
+
+
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., min_length=1, max_length=256)
+    new_password: str = Field(..., min_length=8, max_length=256)
+
+
 # ── Device ────────────────────────────────────────────────────────────────────
 
 

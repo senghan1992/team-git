@@ -20,6 +20,7 @@ import { setBusy } from "./Busy";
 import { getSession } from "../lib/session";
 import { parseConflictBlocks, reassemble, type ConflictBlock } from "./conflictParser";
 import { renderCommitList } from "./CommitList";
+import { renderChangeMap } from "./ChangeMap";
 import { openPushCredentialFlow } from "./PushButton";
 
 interface BlockEdit {
@@ -66,7 +67,15 @@ async function relativeTime(unix: number): Promise<string> {
   return `${Math.floor(diff / 86400)}일 전`;
 }
 
-export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
+export interface MergeCenterOpts {
+  /** 작업 탭으로 보내기 — 병합 전에 작업 트리를 정리해야 할 때 쓴다. */
+  onGoToWork?: () => void;
+}
+
+export async function renderMergeCenter(
+  repo: Repo,
+  opts: MergeCenterOpts = {},
+): Promise<HTMLElement> {
   const root = document.createElement("section");
   root.className = "flex flex-col gap-4";
 
@@ -82,6 +91,8 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
   const conflictCache = new Map<string, ConflictFileState>();
   let selectedPath: string | null = null;
   let aiEnabled = false;
+  // 설정에서 미리 켜 둔 "충돌 나면 곧바로 자동 해결" 스위치 (시나리오 5).
+  let aiAutoResolve = false;
   // Auto-resolve backups (safety net) for the current merge.
   let backups: BackupEntry[] = [];
   // `.gpconfig` — 병합 대상 브랜치 + 브랜치별 병합 관리자.
@@ -90,8 +101,10 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
   try {
     const cfg = await ipc.getAiConfig();
     aiEnabled = cfg.enabled;
+    aiAutoResolve = cfg.enabled && cfg.auto_resolve;
   } catch {
     aiEnabled = false;
+    aiAutoResolve = false;
   }
   projectCfg = await ipc.projectConfigGet(repo.id).catch(() => null);
 
@@ -113,8 +126,15 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
   // ── Top row: base select + fetch ─────────────────────────────────────────
   const topRow = document.createElement("div");
   const baseSel = document.createElement("select");
-  baseSel.className = "gc-input";
+  baseSel.className = "gc-input w-auto";
   baseSel.dataset.baseBranchSelect = "true";
+  baseSel.id = "merge-base-select";
+  // 라벨 없는 선택 상자는 "main" 이라고만 적힌 칸이 된다 — 무엇을 고르는
+  // 자리인지 화면에 적어 둔다.
+  const baseLabel = document.createElement("label");
+  baseLabel.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+  baseLabel.htmlFor = "merge-base-select";
+  baseLabel.textContent = "병합 대상";
   const targetsNow = effectiveTargets();
   for (const n of targetsNow) {
     const opt = document.createElement("option");
@@ -130,8 +150,17 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
   const fetchLabel = document.createElement("span");
   fetchLabel.textContent = "가져오기";
   fetchBtn.appendChild(fetchLabel);
+  // "가져오기" 는 git fetch 다. 코드를 바꾸지 않는다는 점을 알려 두면
+  // 처음 쓰는 사람이 눌러 보기를 겁내지 않는다.
+  fetchBtn.title = "팀원이 새로 push한 내용이 있는지 확인합니다. 내 파일은 바뀌지 않습니다.";
+  topRow.appendChild(baseLabel);
   topRow.appendChild(baseSel);
   topRow.appendChild(fetchBtn);
+  // 이 브랜치의 병합 관리자 — 카드마다 반복하지 않고 여기서 한 번만 알린다.
+  const roleBadge = document.createElement("span");
+  roleBadge.className = "gc-badge";
+  roleBadge.style.display = "none";
+  topRow.appendChild(roleBadge);
   // ── Auto-refresh toggle — polls fetch + branch list so teammates' pushes
   //    surface without the reviewer having to click 가져오기.
   const autoWrap = document.createElement("label");
@@ -153,6 +182,9 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
       return;
     }
     if (!autoRefresh || autoTicking) return;
+    // 자동 해결이 도는 중에는 절대 새로고침하지 않는다 — 해결기가 파일과
+    // 인덱스를 바꾸는 중이라 화면을 다시 그리면 상태가 어긋난다.
+    if (autoRunning) return;
     // Never disturb an in-progress edit or an open dialog.
     if (document.querySelector("dialog[open]")) return;
     const active = document.activeElement;
@@ -174,11 +206,9 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
   banner.style.display = "none";
   root.appendChild(banner);
 
-  // ── Overlap warning (danger tint) ─────────────────────────────────────────
-  const overlap = document.createElement("div");
-  overlap.className = "gc-banner gc-banner--danger flex-col items-start";
-  overlap.style.display = "none";
-  root.appendChild(overlap);
+  // ── 변경 지도 — 파일 기준으로 "누가 어디를 고치고 있는지" (시나리오 4) ──
+  const changeMapHost = document.createElement("div");
+  root.appendChild(changeMapHost);
 
   // ── Branch list ──────────────────────────────────────────────────────────
   const list = document.createElement("div");
@@ -247,46 +277,40 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
     });
     banner.appendChild(abortBtn);
   }
-  function renderOverlap() {
-    if (branches.length < 2) {
-      overlap.style.display = "none";
+  function renderRoleBadge() {
+    const managerEmail = projectCfg?.config?.merge_managers?.[base];
+    if (!managerEmail) {
+      // 관리자 미지정 — 누구나 병합할 수 있다는 사실을 알려 준다.
+      roleBadge.style.display = "";
+      roleBadge.className = "gc-badge gc-badge--muted";
+      roleBadge.textContent = `${base} 병합 관리자 미지정 — 설정 탭에서 지정할 수 있습니다`;
       return;
     }
-    const msgs: string[] = [];
-    for (let i = 0; i < branches.length; i++) {
-      for (let j = i + 1; j < branches.length; j++) {
-        const a = new Set(branches[i]!.changed_files.map((c) => c.path));
-        const b = branches[j]!.changed_files.map((c) => c.path);
-        const common = b.filter((p) => a.has(p));
-        if (common.length > 0) {
-          msgs.push(
-            `${branches[i]!.short_name} ↔ ${branches[j]!.short_name}: 겹치는 파일 ${common.length}개(${common.join(", ")})`,
-          );
-        }
-      }
+    const member = projectCfg?.config?.members.find(
+      (x) => x.email.toLowerCase() === managerEmail.toLowerCase(),
+    );
+    const name = member?.name || managerEmail;
+    const me = getSession();
+    const isManager = !!me && me.email.toLowerCase() === managerEmail.toLowerCase();
+    const isAdmin = !!me && (projectCfg?.config?.members ?? []).some(
+      (x) => x.email.toLowerCase() === me.email.toLowerCase() && x.role === "admin",
+    );
+    roleBadge.style.display = "";
+    if (isManager || isAdmin) {
+      roleBadge.className = "gc-badge gc-badge--success";
+      roleBadge.textContent = isManager
+        ? `내가 ${base}의 병합 관리자입니다`
+        : `관리자 권한으로 ${base}에 병합할 수 있습니다 (담당: ${name})`;
+    } else {
+      roleBadge.className = "gc-badge gc-badge--muted";
+      roleBadge.textContent = `${base} 병합 관리자: ${name} — 병합은 관리자만 할 수 있습니다`;
     }
-    if (msgs.length === 0) {
-      overlap.style.display = "none";
-      return;
-    }
-    overlap.style.display = "";
-    overlap.innerHTML = "";
-    const iw = document.createElement("span");
-    iw.className = "gc-banner__icon";
-    iw.appendChild(icon("warn", 20));
-    overlap.appendChild(iw);
-    const body = document.createElement("div");
-    body.className = "gc-banner__body flex-1 flex flex-col gap-1";
-    const title = document.createElement("div");
-    title.className = "gc-banner__title";
-    title.textContent = "수정 겹침 경고";
-    body.appendChild(title);
-    for (const m of msgs) {
-      const div = document.createElement("div");
-      div.textContent = m;
-      body.appendChild(div);
-    }
-    overlap.appendChild(body);
+  }
+
+  function renderChangeMapSection() {
+    changeMapHost.innerHTML = "";
+    const card = renderChangeMap(branches);
+    if (card) changeMapHost.appendChild(card);
   }
 
   function fileKindColor(kind: string): string {
@@ -429,7 +453,7 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
           );
           const isManager = !!me && me.email.toLowerCase() === managerEmail.toLowerCase();
           blocked = !!me && !isManager && !isAdmin;
-          if (blocked || isManager || isAdmin) {
+          if (blocked) {
             blockHint = `${name}님이 ${base}의 병합 관리자입니다. 병합은 관리자만 할 수 있습니다.`;
           }
         }
@@ -437,10 +461,11 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
       if (blocked) {
         btn.disabled = true;
         btn.title = blockHint;
-      } else if (blockHint) {
-        // 관리자/본인인 경우 힌트만 보여 준다.
+        // 잠긴 이유는 툴팁만으로는 안 보인다 — 이 카드에서 왜 못 누르는지
+        // 한 줄로 말해 준다. 반대로 내가 관리자일 때는 버튼이 눌리는 것 자체가
+        // 답이므로, 카드마다 같은 문장을 반복하지 않는다 (상단에 한 번만 표시).
         const hint = document.createElement("div");
-        hint.className = "text-display-xs text-[color:var(--color-ink-muted)]";
+        hint.className = "text-display-xs text-[color:var(--color-ink-muted)] text-right max-w-sm";
         hint.textContent = blockHint;
         action.appendChild(hint);
       }
@@ -458,20 +483,35 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
             await pushMergedBranch();
             await refresh();
           } else if (out.conflicted) {
-            toast(`충돌 ${out.conflicted_files.length}개를 해결해야 합니다.`, "info");
             mergeState = { in_progress: true, conflicted_files: out.conflicted_files };
             knownConflicts = new Set(out.conflicted_files);
-            await loadConflicts();
-            renderBanner();
-            renderPanel();
+            // 대기 목록은 지금 상태를 더 이상 설명하지 않는다 (refresh() 와 같은 규칙).
+            branches = [];
+            list.innerHTML = "";
+            renderChangeMapSection();
+            if (aiAutoResolve) {
+              // 설정에서 미리 켜 둔 자동 해결 — 관리자가 아무것도 누르지 않아도
+              // 저장된 지침대로 AI가 고치고 병합 커밋까지 끝낸다 (시나리오 5).
+              // 충돌 본문은 일부러 읽지 않는다: 해결기가 같은 파일을 덮어쓰는
+              // 중이라 지금 읽어 봐야 곧 낡은 내용이 된다.
+              renderBanner();
+              await runAutoResolveNow(out.conflicted_files.length);
+            } else {
+              toast(`충돌 ${out.conflicted_files.length}개를 해결해야 합니다.`, "info");
+              await loadConflicts();
+              renderBanner();
+              renderPanel();
+            }
           } else {
             toast(out.message || "병합에 실패했습니다.", "error");
           }
         } catch (e) {
           const msg = (e as Error).message ?? String(e);
           if (msg.includes("변경")) {
-            toast(`${msg} — 작업 탭에서 처리하세요.`, "error");
-            location.hash = `#repo/${repo.id}/work`;
+            // 이 앱에는 해시 라우터가 없다 — 예전에는 location.hash 를 바꿔서
+            // 아무 일도 일어나지 않았고, 안내만 하고 그 자리에 남았다.
+            toast(`${msg} — 작업 탭에서 커밋하거나 스태시한 뒤 다시 시도하세요.`, "error");
+            opts.onGoToWork?.();
           } else {
             toast(`병합 실패: ${msg}`, "error");
           }
@@ -623,10 +663,10 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
       autoBtn.addEventListener("click", () => openAutoResolve());
       actionCol.appendChild(autoBtn);
       const hint = document.createElement("div");
-      hint.className = "text-display-sm text-[color:var(--color-ink-muted)] text-right";
+      hint.className = "text-display-sm text-[color:var(--color-ink-muted)] text-right max-w-sm";
       hint.textContent = aiEnabled
-        ? "AI 보조로 충돌을 해결하고 병합 커밋까지 완료합니다."
-        : "규칙 기반(나의 것/상대 것)으로 해결하고 병합 커밋까지 완료합니다.";
+        ? "저장된 지침으로 AI가 해결하고 병합 커밋까지 완료합니다. AI가 못 고친 파일은 아래에 남겨 두니 직접 확인하세요."
+        : "규칙 기반(나의 것/상대 것)으로 한쪽을 골라 해결하고 병합 커밋까지 완료합니다. 고르지 않은 쪽 변경은 사라집니다.";
       actionCol.appendChild(hint);
     }
     head.appendChild(actionCol);
@@ -682,15 +722,15 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
       const note = document.createElement("div");
       note.className = "text-display-sm text-[color:var(--color-ink-muted)]";
       note.textContent = c.detail.is_binary
-        ? "바이너리 파일 — ours 또는 theirs만 선택할 수 있습니다."
-        : "파일이 너무 큽니다 — ours 또는 theirs만 선택할 수 있습니다.";
+        ? "이미지·압축 파일처럼 줄 단위로 비교할 수 없는 파일입니다 — 한쪽을 통째로 골라야 합니다."
+        : "파일이 너무 커서 줄 단위로 비교할 수 없습니다 — 한쪽을 통째로 골라야 합니다.";
       right.appendChild(note);
       const btnRow = document.createElement("div");
       btnRow.className = "flex gap-2";
       for (const side of ["ours", "theirs"] as const) {
         const b = document.createElement("button");
         b.className = "gc-button-secondary";
-        b.textContent = side === "ours" ? "나 것 사용" : "상대 것 사용";
+        b.textContent = side === "ours" ? `내 것 사용 (${base})` : "가져온 것 사용";
         b.addEventListener("click", () => applyResolution({ type: side }));
         btnRow.appendChild(b);
       }
@@ -729,16 +769,18 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
 
     const grid = document.createElement("div");
     grid.className = "grid grid-cols-2 gap-2";
+    // 칩과 버튼은 한국어를 앞에 둔다 — ours/theirs 는 git 문서에서 다시 만날
+    // 때를 위해 괄호로만 남긴다.
     for (const side of [
-      { label: "ours", body: b.ours, ko: "나(현재)" },
-      { label: "theirs", body: b.theirs, ko: "가져옴" },
+      { label: "ours", body: b.ours, ko: `내 것 (${base})` },
+      { label: "theirs", body: b.theirs, ko: "가져온 것" },
     ] as const) {
       const col = document.createElement("div");
       col.className = "flex flex-col gap-1";
       const label = document.createElement("div");
       const chip = document.createElement("span");
       chip.className = `gc-badge gc-badge--${side.label === "ours" ? "success" : "info"} font-mono`;
-      chip.textContent = `${side.label} · ${side.ko}`;
+      chip.textContent = `${side.ko} · ${side.label}`;
       label.appendChild(chip);
       col.appendChild(label);
       const pre = document.createElement("pre");
@@ -747,7 +789,7 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
       col.appendChild(pre);
       const pickBtn = document.createElement("button");
       pickBtn.className = "gc-button-secondary text-display-sm";
-      pickBtn.textContent = side.label === "ours" ? "나 것 선택" : "상대 것 선택";
+      pickBtn.textContent = side.label === "ours" ? "이쪽(내 것) 선택" : "이쪽(가져온 것) 선택";
       pickBtn.addEventListener("click", () => {
         pushEdit(c.edits, idx, side.body);
         renderPanel();
@@ -811,6 +853,62 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
     return block;
   }
 
+  // ── Auto merge without a prompt (설정에서 미리 켜 둔 경우) ───────────────
+  //
+  // 시나리오 5: 병합 관리자는 충돌이 났다는 사실을 알아차리고 버튼을 찾을
+  // 필요가 없다. 설정에 저장해 둔 지침·전략으로 즉시 해결을 돌리고, 결과만
+  // 보고받는다. 실패해도 백업이 남고 MERGE_HEAD가 유지되므로 수동 해결로
+  // 이어갈 수 있다.
+  let autoRunning = false;
+  async function runAutoResolveNow(conflictCount: number) {
+    if (autoRunning) return;
+    autoRunning = true;
+    // 해결 중에는 충돌 편집 패널을 숨긴다 — 파일이 바뀌는 동안 낡은 본문을
+    // 편집하게 두면 사용자가 작업을 잃는다.
+    panel.style.display = "none";
+    showAutoProgress(conflictCount);
+    try {
+      // strategy 인자를 비워 백엔드가 저장된 설정값을 쓰게 한다.
+      const report = await ipc.mergeAutoResolve(repo.id);
+      hideAutoProgress();
+      await afterAutoResolve(report);
+    } catch (e) {
+      hideAutoProgress();
+      toast(
+        `자동 해결 실패: ${(e as Error).message ?? e} — 아래에서 직접 해결하세요.`,
+        "error",
+      );
+      await loadConflicts();
+      renderBanner();
+      renderPanel();
+    } finally {
+      autoRunning = false;
+    }
+  }
+
+  const autoProgress = document.createElement("div");
+  autoProgress.className = "gc-banner gc-banner--info";
+  autoProgress.style.display = "none";
+  // 진행 표시는 변경 지도(큰 카드)보다 위, 병합 배너 바로 아래에 둔다.
+  root.insertBefore(autoProgress, changeMapHost);
+
+  function showAutoProgress(n: number) {
+    autoProgress.style.display = "";
+    autoProgress.innerHTML = "";
+    const iw = document.createElement("span");
+    iw.className = "gc-banner__icon gc-spin";
+    iw.appendChild(icon("sparkles", 20));
+    autoProgress.appendChild(iw);
+    const body = document.createElement("span");
+    body.className = "gc-banner__body flex-1";
+    body.textContent = `충돌 ${n}개 — 저장된 지침으로 AI가 자동 해결 중입니다…`;
+    autoProgress.appendChild(body);
+  }
+  function hideAutoProgress() {
+    autoProgress.style.display = "none";
+    autoProgress.innerHTML = "";
+  }
+
   // ── One-click auto merge ──────────────────────────────────────────────────
   function openAutoResolve() {
     let strategy: "ours" | "theirs" = "theirs";
@@ -838,7 +936,9 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
     strategyWrap.className = "flex flex-col gap-1";
     const strategyLabel = document.createElement("label");
     strategyLabel.className = "text-display-sm";
-    strategyLabel.textContent = "바이너리·대용량 파일 처리";
+    strategyLabel.textContent = aiEnabled
+      ? "바이너리·대용량 파일 처리 (diff를 만들 수 없는 파일)"
+      : "한쪽 선택 기준 (모든 충돌 파일)";
     strategyWrap.appendChild(strategyLabel);
     const strategySel = document.createElement("select");
     strategySel.className = "gc-input";
@@ -857,10 +957,10 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
     wrap.appendChild(strategyWrap);
 
     const note = document.createElement("div");
-    note.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+    note.className = "text-display-sm text-[color:var(--color-ink-muted)] whitespace-pre-line";
     note.textContent = aiEnabled
-      ? "AI 보조가 켜져 있습니다. AI 결과가 부적절하면 규칙 기반으로 대체됩니다."
-      : "AI가 꺼져 있어 규칙 기반으로 처리합니다. 원본은 항상 백업됩니다.";
+      ? "설정에 저장해 둔 해결 지침으로 AI가 고칩니다.\nAI가 쓸 만한 결과를 못 내고 양쪽이 모두 고친 파일이면, 자동으로 한쪽을 고르지 않고 그대로 남겨 둡니다 — 팀원의 커밋이 조용히 사라지지 않게 하기 위한 규칙입니다.\n원본은 항상 백업됩니다."
+      : "AI가 꺼져 있어 규칙 기반으로 처리합니다. 양쪽이 모두 고친 파일도 아래 전략에 따라 한쪽만 남으니, 사라지는 쪽이 있어도 괜찮은지 확인하세요.\n원본은 항상 백업됩니다.";
     wrap.appendChild(note);
 
     m.body.appendChild(wrap);
@@ -933,14 +1033,39 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
     if (report.remaining.length > 0) {
       const lbl = document.createElement("div");
       lbl.className = "text-display-sm font-medium text-[color:var(--color-danger)]";
-      lbl.textContent = "남은 충돌 — 병합 센터에서 처리하세요";
+      lbl.textContent = "직접 확인해야 하는 파일";
       wrap.appendChild(lbl);
+      // 파일 이름만 보여 주면 "오류가 났나?"로 읽힌다. 왜 자동으로 안 고쳤는지
+      // 함께 보여 줘야 다음 행동(직접 병합)이 자연스럽게 이어진다.
+      const reasons = new Map(
+        (report.remainingReasons ?? []).map((r) => [r.path, r.note ?? ""]),
+      );
       for (const p of report.remaining) {
         const row = document.createElement("div");
-        row.className = "font-mono text-display-sm";
-        row.textContent = p;
+        row.className = "flex flex-col gap-0.5";
+        const pathEl = document.createElement("div");
+        pathEl.className = "font-mono text-display-sm";
+        pathEl.textContent = p;
+        row.appendChild(pathEl);
+        const why = reasons.get(p);
+        if (why) {
+          const note = document.createElement("div");
+          note.className = "text-display-xs text-[color:var(--color-ink-muted)]";
+          note.textContent = why;
+          row.appendChild(note);
+        }
         wrap.appendChild(row);
       }
+      const go = document.createElement("button");
+      go.className = "gc-button-primary self-start";
+      go.textContent = "충돌 해결하러 가기";
+      go.addEventListener("click", () => {
+        selectedPath = report.remaining[0] ?? null;
+        m.close();
+        renderPanel();
+        panel.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+      wrap.appendChild(go);
     }
     m.body.appendChild(wrap);
   }
@@ -1051,6 +1176,11 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
       }
       mergeState = await ipc.mergeState(repo.id);
       if (mergeState.in_progress) {
+        // 병합이 진행 중이면 대기 브랜치 목록은 더 이상 사실이 아니다. 예전에는
+        // 병합을 시작한 화면이 그대로 남아 "main(으)로 병합" 버튼이 여전히
+        // 눌렸고, 누르면 git 이 거절해 낯선 오류만 떴다. 지금 할 일은 하나뿐
+        // (이 병합을 끝내거나 중단하기)이므로 목록을 비운다.
+        branches = [];
         // Seed knownConflicts from the live set the first time we observe a
         // merge; later resolutions only shrink it, never grow it.
         for (const p of mergeState.conflicted_files) knownConflicts.add(p);
@@ -1074,9 +1204,12 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
       mergeState = null;
     }
     renderBanner();
-    renderOverlap();
+    renderRoleBadge();
+    renderChangeMapSection();
     if (!mergeState?.in_progress) {
       await renderBranchList();
+    } else {
+      list.innerHTML = "";
     }
     renderPanel();
   }
@@ -1101,6 +1234,7 @@ export async function renderMergeCenter(repo: Repo): Promise<HTMLElement> {
 
   // 계정 전환 시 병합 관리자 게이트를 다시 평가한다.
   window.addEventListener("gc-account-changed", () => {
+    renderRoleBadge();
     if (!mergeState?.in_progress) void renderBranchList();
   });
 

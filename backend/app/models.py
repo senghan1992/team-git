@@ -12,6 +12,44 @@ def _uuid() -> str:
     return uuid.uuid4().hex
 
 
+class User(Base):
+    """
+    A person's login account. This is the source of truth for identities.
+
+    The desktop app used to keep accounts in its own local config file, which
+    meant every machine had a different user list and a teammate's account did
+    not exist until they typed it again. Accounts live here now; the app caches
+    the signed-in user locally only so it can stay logged in while offline.
+
+    Project membership and merge-manager assignment are matched by **email**
+    (see the repo's `.gpconfig`), so email is unique and always lowercased.
+    """
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    username: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    email: Mapped[str] = mapped_column(String(256), nullable=False, unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(256), nullable=False)
+    # "pbkdf2_sha256$<iterations>$<salt hex>$<hash hex>" — see app.auth.
+    password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+
+class UserSession(Base):
+    """
+    An issued login token. Stored hashed so a leaked database cannot be
+    replayed, and kept as a row so logout can actually revoke the token
+    instead of only forgetting it on the client.
+    """
+    __tablename__ = "user_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    last_seen: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+
 class Device(Base):
     """Represents a registered desktop app instance."""
     __tablename__ = "devices"

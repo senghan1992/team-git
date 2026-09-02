@@ -85,6 +85,34 @@ textarea:focus-visible {
 }
 
 /* ── Buttons — glazed plaques ──────────────────────────────────────────── */
+/* 버튼 기본 골격 — primary/secondary 가 공유한다.
+ *
+ * 여기에 두는 이유:
+ *  - font-size 가 없으면 루트(16px)를 물려받아 라벨(13px)·본문(14px)보다 크게
+ *    보인다. 붙이지 않은 곳만 유독 커 보였다 (병합 대상 섹션의 "대상 추가").
+ *    기본을 본문 크기(14px)로 맞춘다.
+ *  - display 가 block 이면 아이콘 + 라벨을 넣은 버튼에서 아이콘이 윗줄로
+ *    넘어간다. 호출부마다 `inline-flex items-center gap-1` 을 기억해야 했고,
+ *    한 곳이라도 빠지면 줄바꿈이 생겼다.
+ *
+ * `@layer components` 안에 두는 것이 중요하다. 이 파일의 나머지 규칙은 레이어
+ * 밖에 있어서 Tailwind 유틸리티(utilities 레이어)보다 항상 이긴다. 그러면
+ * `gc-button-secondary text-display-sm` 처럼 크기를 일부러 줄여 둔 20여 곳이
+ * 조용히 14px 로 돌아가 버린다. components 레이어에 두면 유틸리티가 이겨서
+ * 그런 의도가 그대로 살아 있다.
+ */
+@layer components {
+  .gc-button-primary,
+  .gc-button-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: var(--text-display-md);
+    white-space: nowrap;
+  }
+}
+
 .gc-button-primary {
   position: relative;
   overflow: hidden;
@@ -233,6 +261,14 @@ textarea.gc-input {
 .gc-input::placeholder {
   color: var(--color-ink-muted);
 }
+/* 읽기 전용 항목(예: 마이페이지의 아이디)은 편집 가능한 칸과 구분되어야 한다. */
+.gc-input:disabled,
+.gc-input[readonly] {
+  background: var(--color-surface-strong);
+  color: var(--color-ink-muted);
+  cursor: not-allowed;
+}
+
 .gc-input:focus {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 3px rgba(44, 75, 143, 0.14);
@@ -1045,6 +1081,101 @@ select.gc-input--ghost:hover {
   flex: 1;
   align-self: stretch;
   min-height: 50vh;
+}
+
+/* Checkbox + label as one hit target — used wherever a setting is a plain
+   on/off with an explanatory line under it. The label column stacks so a
+   description can sit beneath the title without breaking alignment. */
+.gc-check {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+.gc-check > input[type="checkbox"] {
+  margin-top: 3px;
+  flex: none;
+  cursor: pointer;
+}
+.gc-check > span {
+  min-width: 0;
+  gap: 2px;
+}
+
+/* Textarea inherits the input shell but needs its own line-height + resize. */
+textarea.gc-input {
+  line-height: 1.6;
+  resize: vertical;
+  min-height: 96px;
+}
+
+/* 다음 할 일 — 카드 안에서 "지금 눌러야 하는 것" 한 줄.
+   기본은 조용한 점토색 판, 남을 기다리게 하는 일이면 코발트로 올라온다. */
+.gc-todo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-plate);
+  background: var(--color-clay);
+  border: 1px solid var(--color-hairline);
+}
+.gc-todo--urgent {
+  background: rgba(44, 75, 143, 0.06);
+  border-color: rgba(44, 75, 143, 0.28);
+}
+.gc-todo--calm {
+  background: transparent;
+  border-style: dashed;
+}
+
+/* 작은 드롭다운 메뉴 — "열기 ▾" 처럼 버튼 아래에 붙는 목록. */
+.gc-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 30;
+  min-width: 200px;
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-1, 4px);
+  border-radius: var(--radius-plate);
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  box-shadow: 0 8px 24px rgba(28, 50, 96, 0.14);
+}
+.gc-menu__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 7px 10px;
+  border-radius: var(--radius-xs);
+  font-size: var(--text-display-sm);
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+.gc-menu__item:hover {
+  background: var(--color-clay);
+}
+.gc-menu__sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--color-hairline);
+}
+
+/* 위험 구역 — 되돌릴 수 없는 동작(회원 탈퇴 등)을 접어서 맨 아래에 둔다. */
+.gc-danger {
+  padding: var(--space-3);
+  border-radius: var(--radius-plate);
+  border: 1px solid rgba(173, 57, 44, 0.28);
+  background: rgba(173, 57, 44, 0.04);
+}
+.gc-danger > summary {
+  color: var(--color-danger);
+  font-weight: 500;
+}
+.gc-danger > summary::marker {
+  color: var(--color-danger);
 }
 
 @media (prefers-reduced-motion: reduce) {

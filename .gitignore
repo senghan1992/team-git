@@ -24,3 +24,6 @@ __pycache__/
 
 # Local config
 *.local.json
+# Backend venv + local SQLite
+backend/.venv/
+backend/gc_peer.db

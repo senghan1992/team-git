@@ -19,12 +19,24 @@ pub async fn merge_auto_resolve(
     binary_strategy: Option<String>,
 ) -> AppResult<auto::AutoResolveReport> {
     let (target, _) = resolve_target(repo_id)?;
+    let ai_cfg = crate::config_store::load()
+        .map(|c| c.ai)
+        .unwrap_or_default();
+    // Explicit argument wins; otherwise use the strategy the merge manager
+    // pre-configured in Settings, and only then the built-in default.
     let strategy = match binary_strategy {
         Some(s) => auto::SideChoice::from_str(&s)?,
-        None => auto::SideChoice::Theirs,
+        None => auto::SideChoice::from_str(ai_cfg.binary_strategy.trim())
+            .unwrap_or(auto::SideChoice::Theirs),
     };
+    // AI가 켜져 있으면, AI가 실패한 텍스트 파일을 자동으로 한쪽만 남기지
+    // 않는다 — 팀원의 커밋이 조용히 사라진 채 push되는 것을 막는다. AI를 끈
+    // 상태에서 이 기능을 누른 사용자는 "규칙 기반으로 한쪽 골라라"를 명시적으로
+    // 요청한 것이므로 그때는 고른다.
+    let text_fallback = if ai_cfg.enabled { None } else { Some(strategy) };
     let opts = auto::AutoResolveOptions {
         binary_strategy: strategy,
+        text_fallback,
     };
     // Capture the runtime handle before moving into the blocking task.
     let handle = tokio::runtime::Handle::current();

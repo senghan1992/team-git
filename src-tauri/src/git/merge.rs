@@ -313,10 +313,7 @@ pub fn start_merge(
         .unwrap_or(branch_ref)
         .to_string();
     let commit_msg = format!("{short} 브렌치 병합");
-    let merge = run_at_target(
-        target,
-        ["merge", "--no-ff", "-m", &commit_msg, branch_ref],
-    )?;
+    let merge = run_at_target(target, ["merge", "--no-ff", "-m", &commit_msg, branch_ref])?;
     if merge.ok() {
         return Ok(MergeOutcome {
             ok: true,

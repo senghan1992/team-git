@@ -355,6 +355,64 @@ pub async fn peer_list_members(project_id: String) -> AppResult<Vec<peer::Member
     peer::list_members(&cfg.peer.backend_url, &token, &project_id).await
 }
 
+/// 팀 서버에 실제로 연결되는지 확인한다.
+///
+/// 로그인 화면의 "서버 주소"는 예전에 저장만 하고 "저장했습니다"라고 말했다.
+/// 오타 하나 때문에 로그인이 계속 실패하는데 화면은 성공했다고 하니, 원인을
+/// 찾을 방법이 없었다. 저장 직후 여기서 `/healthz` 를 확인해 준다.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BackendCheck {
+    pub ok: bool,
+    pub message: String,
+}
+
+#[tauri::command]
+pub async fn peer_check_backend(url: Option<String>) -> AppResult<BackendCheck> {
+    let candidate = match url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty()) {
+        Some(u) => u,
+        None => crate::config_store::load()?
+            .peer
+            .backend_url
+            .trim()
+            .to_string(),
+    };
+    let base = candidate.trim_end_matches('/').to_string();
+    if base.is_empty() {
+        return Ok(BackendCheck {
+            ok: false,
+            message: "서버 주소가 비어 있습니다.".into(),
+        });
+    }
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return Ok(BackendCheck {
+                ok: false,
+                message: format!("확인할 수 없습니다: {e}"),
+            })
+        }
+    };
+    match client.get(format!("{base}/healthz")).send().await {
+        Ok(r) if r.status().is_success() => Ok(BackendCheck {
+            ok: true,
+            message: "서버에 연결됩니다.".into(),
+        }),
+        Ok(r) => Ok(BackendCheck {
+            ok: false,
+            message: format!("서버가 응답했지만 상태가 정상이 아닙니다 ({}).", r.status()),
+        }),
+        Err(_) => Ok(BackendCheck {
+            ok: false,
+            message:
+                "연결할 수 없습니다. 주소가 맞는지, 서버가 실행 중인지 확인하세요:\n  cd backend && uvicorn app.main:app"
+                    .into(),
+        }),
+    }
+}
+
 /// Remove a pending email invite from a project.
 #[tauri::command]
 pub async fn peer_remove_email_invite(project_id: String, email: String) -> AppResult<()> {

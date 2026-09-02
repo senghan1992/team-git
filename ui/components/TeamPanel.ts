@@ -1,12 +1,65 @@
-import { ipc, ipc_peer, type PeerProjectInfo, type Repo, type RepoLinkSummary } from "../lib/ipc";
+// 알림 화면 — "팀원의 push·병합 소식이 나에게 오게 하는" 곳.
+//
+// 이 화면은 **알림 배달망 설정**이다. 사람의 권한(누가 어느 브랜치로 병합할 수
+// 있는가)은 여기가 아니라 저장소 안에 커밋되는 `.gpconfig`(저장소 → 설정 탭)가
+// 정한다. 예전에는 두 곳에 각각 "팀원" 목록이 있어서 같은 사람을 두 번
+// 등록해야 했고, 어느 쪽이 무엇을 결정하는지 화면만 봐서는 알 수 없었다.
+//
+// 그래서 이렇게 정리했다:
+//   - 기본 화면은 **받은 알림** 하나. (예전엔 프로젝트/만들기/참여하기/알림 4탭)
+//   - 배달망 설정(백엔드 주소·프로젝트·수신자)은 접히는 섹션 하나로 내렸다.
+//   - 수신자는 `.gpconfig` 구성원에서 **동기화** 버튼으로 가져온다 — 이메일을
+//     두 번 입력하지 않는다.
+//   - 저장소는 체크박스로 켜고 끈다 (드롭다운 + 연결/해제 버튼 대신).
+import {
+  ipc,
+  ipc_peer,
+  type MemberInfo,
+  type PeerProjectInfo,
+  type Repo,
+  type RepoLinkSummary,
+} from "../lib/ipc";
 import { openModal, confirmDialog } from "./Modal";
 import { toast } from "./Toast";
 import { icon } from "./Icon";
-import { renderPageLoading } from "./Busy";
+import { setBusy } from "./Busy";
 import { renderInboxList } from "./TeamInbox";
+import { getSession } from "../lib/session";
+import { openAccountModal, openRegisterModal } from "./AccountModal";
 import type { Page } from "./Sidebar";
 
-export type TeamTab = "projects" | "create" | "join" | "inbox";
+/** 로그아웃 상태에서 이 화면을 열었을 때 — 무엇이 필요한지 한 장으로. */
+function signInInvite(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "gc-card flex flex-col items-start gap-3 max-w-xl";
+  const title = document.createElement("div");
+  title.className = "text-display-lg font-medium";
+  title.textContent = "알림을 받으려면 로그인이 필요합니다";
+  box.appendChild(title);
+  const desc = document.createElement("div");
+  desc.className = "text-display-sm text-[color:var(--color-ink-muted)] whitespace-pre-line";
+  desc.textContent =
+    "팀원이 브랜치를 push했을 때 알림을 받으려면 누가 누구인지 서버가 알아야 합니다.\n" +
+    "커밋·푸시·병합·충돌 해결은 로그인 없이도 그대로 동작하니, 혼자 쓰는 중이라면 이 화면은 건너뛰어도 됩니다.";
+  box.appendChild(desc);
+  const row = document.createElement("div");
+  row.className = "flex gap-2";
+  const login = document.createElement("button");
+  login.className = "gc-button-primary";
+  login.textContent = "로그인";
+  login.addEventListener("click", () => openAccountModal());
+  row.appendChild(login);
+  const reg = document.createElement("button");
+  reg.className = "gc-button-secondary";
+  reg.textContent = "계정 만들기";
+  reg.addEventListener("click", () => openRegisterModal());
+  row.appendChild(reg);
+  box.appendChild(row);
+  return box;
+}
+
+/** 접히는 "알림 설정" 섹션이 열려 있는지. 화면을 다시 그려도 유지된다. */
+export type TeamTab = "inbox" | "settings";
 
 export interface TeamPanelOpts {
   unread?: number;
@@ -19,407 +72,564 @@ export async function renderTeamPanel(
   opts: TeamPanelOpts = {},
 ): Promise<HTMLElement> {
   const wrap = document.createElement("div");
-  wrap.className = "flex flex-col h-full";
+  wrap.className = "flex-1 overflow-y-auto p-8 flex flex-col gap-6";
 
-  const tabs: { id: TeamTab; label: string }[] = [
-    { id: "projects", label: "프로젝트" },
-    { id: "create", label: "만들기" },
-    { id: "join", label: "참여하기" },
-    { id: "inbox", label: "알림" },
-  ];
-
-  wrap.innerHTML = `
-    <div class="px-6 pt-6 pb-4">
-      <div class="gc-tabs">
-        ${tabs.map((t) => `
-          <button data-tab="${t.id}" class="gc-tab ${activeTab === t.id ? "is-active" : ""}">
-            ${t.label}${t.id === "inbox" && (opts.unread ?? 0) > 0 ? `<span class="gc-badge gc-badge--danger">${String(opts.unread)}</span>` : ""}
-          </button>
-        `).join("")}
-      </div>
-    </div>
-    <div id="panel-body" class="flex-1 overflow-y-auto p-6"></div>
-  `;
-
-  for (const t of tabs) {
-    const btn = wrap.querySelector<HTMLButtonElement>(`[data-tab="${t.id}"]`)!;
-    btn.addEventListener("click", () => onTab(t.id));
+  // 로그인하지 않은 상태로도 앱을 쓸 수 있으므로, 이 화면은 "왜 로그인이
+  // 필요한지"를 설명하는 자리가 된다. 빈 목록이나 오류를 보여 주면 사용자는
+  // 기능이 고장 난 줄 안다.
+  if (!getSession()) {
+    wrap.appendChild(signInInvite());
+    return wrap;
   }
 
-  const body = wrap.querySelector<HTMLDivElement>("#panel-body")!;
-  body.appendChild(await renderTab(activeTab, onTab, opts));
+  // ── 헤더 ────────────────────────────────────────────────────────────────
+  const head = document.createElement("div");
+  head.className = "gc-page-head";
+  const title = document.createElement("div");
+  title.className = "gc-page-head__title";
+  title.textContent = "알림";
+  head.appendChild(title);
+  const sub = document.createElement("div");
+  sub.className = "gc-page-head__sub";
+  sub.textContent =
+    "팀원이 브랜치를 push하거나 병합이 반영되면 여기로 옵니다. 병합 권한은 저장소 → 설정 탭에서 정합니다.";
+  head.appendChild(sub);
+  wrap.appendChild(head);
+
+  // ── 받은 알림 ───────────────────────────────────────────────────────────
+  wrap.appendChild(await renderInboxList(opts.onNav ?? (() => {})));
+
+  // ── 알림 설정 (접힘) ────────────────────────────────────────────────────
+  const open = activeTab === "settings";
+  const disclosure = document.createElement("section");
+  disclosure.className = "gc-card flex flex-col gap-3";
+
+  const toggle = document.createElement("button");
+  toggle.className = "flex items-center gap-2 text-left w-full";
+  const chev = document.createElement("span");
+  chev.className = "text-[color:var(--color-ink-muted)] transition-transform";
+  chev.style.transform = open ? "rotate(90deg)" : "none";
+  chev.appendChild(icon("arrow-right", 14));
+  toggle.appendChild(chev);
+  const toggleLabel = document.createElement("span");
+  toggleLabel.className = "text-display-md font-medium flex-1";
+  toggleLabel.textContent = "알림 설정";
+  toggle.appendChild(toggleLabel);
+  const toggleHint = document.createElement("span");
+  toggleHint.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+  toggleHint.textContent = "누가 어떤 저장소의 소식을 받을지";
+  toggle.appendChild(toggleHint);
+  toggle.addEventListener("click", () => onTab(open ? "inbox" : "settings"));
+  disclosure.appendChild(toggle);
+
+  if (open) {
+    disclosure.appendChild(await renderNotifySettings());
+  }
+  wrap.appendChild(disclosure);
 
   return wrap;
 }
 
-async function renderTab(
-  tab: TeamTab,
-  onTab: (t: TeamTab) => void,
-  opts: TeamPanelOpts = {},
-): Promise<HTMLElement> {
-  if (tab === "projects") return renderProjectsTab(onTab);
-  if (tab === "create") return renderCreateTab();
-  if (tab === "join") return renderJoinTab();
-  return renderInboxList(opts.onNav ?? (() => {}));
-}
+// ─── 알림 설정 본문 ──────────────────────────────────────────────────────────
 
-// ─── Projects tab ────────────────────────────────────────────────────────────
-
-async function renderProjectsTab(onTab: (t: TeamTab) => void): Promise<HTMLElement> {
+async function renderNotifySettings(): Promise<HTMLElement> {
   const el = document.createElement("div");
-  el.className = "flex flex-col gap-4";
+  el.className = "flex flex-col gap-4 pt-1";
 
-  const pageHead = document.createElement("div");
-  pageHead.className = "gc-page-head";
-  const h = document.createElement("div");
-  h.className = "gc-page-head__title";
-  h.textContent = "팀";
-  pageHead.appendChild(h);
-  const s = document.createElement("div");
-  s.className = "gc-page-head__sub";
-  s.textContent = "팀 프로젝트를 만들고 공유하세요.";
-  pageHead.appendChild(s);
-  el.appendChild(pageHead);
-
-  let projects: PeerProjectInfo[] = [];
+  let projects: PeerProjectInfo[];
   try {
     projects = await ipc_peer.listProjects();
   } catch {
-    const banner = document.createElement("div");
-    banner.className = "gc-banner gc-banner--warning";
-    const iw = document.createElement("span");
-    iw.className = "gc-banner__icon";
-    iw.appendChild(icon("users", 20));
-    banner.appendChild(iw);
-    const inner = document.createElement("div");
-    inner.className = "flex flex-col gap-3 flex-1";
-    const t = document.createElement("div");
-    t.className = "gc-banner__title";
-    t.textContent = "피어 백엔드에 연결할 수 없습니다";
-    inner.appendChild(t);
-    const d = document.createElement("div");
-    d.className = "gc-banner__body text-display-sm";
-    d.textContent = "팀 프로젝트 공유·알림은 백엔드 연결이 필요합니다.";
-    inner.appendChild(d);
-    const form = document.createElement("form");
-    form.className = "flex gap-2";
-    form.innerHTML = `
-      <input id="peer-backend-url" class="gc-input" type="text" placeholder="http://127.0.0.1:8000" />
-      <button type="submit" class="gc-button-primary">연결</button>
-    `;
-    const errBox = document.createElement("div");
-    errBox.className = "text-display-sm text-[color:var(--color-danger)]";
-    errBox.style.display = "none";
-    const hint = document.createElement("div");
-    hint.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-    form.appendChild(errBox);
-    hint.style.display = "none";
-    hint.textContent = "백엔드 주소를 입력하세요.";
-    inner.appendChild(form);
-    inner.appendChild(hint);
-    banner.appendChild(inner);
-    el.appendChild(banner);
-
-    form.addEventListener("submit", async (ev) => {
-      ev.preventDefault();
-      const url = (form.querySelector<HTMLInputElement>("#peer-backend-url")!).value.trim();
-      errBox.style.display = "none";
-      hint.style.display = "none";
-      if (!url) {
-        hint.style.display = "block";
-        return;
-      }
-      try {
-        await ipc_peer.setBackendUrl(url);
-        onTab("projects");
-      } catch (e) {
-        errBox.textContent = `연결 실패: ${(e as Error).message ?? e}`;
-        errBox.style.display = "block";
-      }
-    });
+    el.appendChild(renderBackendSetup());
     return el;
   }
 
   if (projects.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "gc-empty";
-    const iw = document.createElement("span");
-    iw.className = "gc-empty__icon";
-    iw.appendChild(icon("users", 32));
-    empty.appendChild(iw);
-    const t = document.createElement("div");
-    t.className = "gc-empty__title";
-    t.textContent = "참여 중인 프로젝트가 없습니다";
-    empty.appendChild(t);
-    const d = document.createElement("div");
-    d.className = "gc-empty__desc";
-    d.textContent = "새 프로젝트를 만들거나 참여 코드로 합류하세요.";
-    empty.appendChild(d);
-    const btns = document.createElement("div");
-    btns.className = "flex gap-2";
-    const mk = document.createElement("button");
-    mk.className = "gc-button-secondary";
-    mk.textContent = "프로젝트 만들기";
-    mk.addEventListener("click", () => onTab("create"));
-    const jn = document.createElement("button");
-    jn.className = "gc-button-secondary";
-    jn.textContent = "코드로 참여하기";
-    jn.addEventListener("click", () => onTab("join"));
-    btns.appendChild(mk);
-    btns.appendChild(jn);
-    empty.appendChild(btns);
-    el.appendChild(empty);
+    el.appendChild(renderNoProject());
     return el;
   }
 
-  const grid = document.createElement("div");
-  grid.className = "flex flex-col gap-4";
   for (const p of projects) {
-    const card = await projectCard(p);
-    grid.appendChild(card);
+    el.appendChild(await renderProjectBlock(p));
   }
-  el.appendChild(grid);
-
   return el;
 }
 
-async function projectCard(p: PeerProjectInfo): Promise<HTMLElement> {
-  const card = document.createElement("div");
-  card.className = "gc-card flex flex-col gap-3";
+/** 백엔드에 연결할 수 없을 때 — 무엇이 안 되는지와 무엇을 하면 되는지 한 곳에. */
+function renderBackendSetup(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "flex flex-col gap-3";
 
-  const header = document.createElement("div");
-  header.className = "flex items-start justify-between gap-3";
-  header.innerHTML = `
-    <div>
-      <div class="text-display-md font-medium">${escape(p.display_name)}</div>
-      <div class="text-display-sm text-[color:var(--color-ink-muted)] mt-1">${p.role}</div>
-    </div>
-    <div class="text-display-sm font-mono text-[color:var(--color-ink-muted)]">${formatCode(p.join_code)}</div>
-  `;
-  card.appendChild(header);
+  const explain = document.createElement("div");
+  explain.className = "text-display-sm text-[color:var(--color-ink-muted)] whitespace-pre-line";
+  explain.textContent =
+    "알림을 주고받으려면 팀이 공유하는 알림 서버가 필요합니다. 서버 없이도 커밋·푸시·병합은 모두 그대로 동작하고, 알림만 오지 않습니다.\n" +
+    "서버는 이 저장소의 backend/ 를 띄우면 됩니다:  cd backend && uvicorn app.main:app";
+  box.appendChild(explain);
 
-  const actions = document.createElement("div");
-  actions.className = "flex gap-2";
-  actions.innerHTML = `
-    <button class="gc-button-secondary text-display-sm" data-copy>코드 복사</button>
-    <button class="gc-button-secondary text-display-sm text-[color:var(--color-danger)]" data-leave>탈퇴</button>
-  `;
-  actions.querySelector<HTMLButtonElement>("[data-copy]")!.addEventListener("click", async () => {
+  const form = document.createElement("form");
+  form.className = "flex gap-2";
+  const input = document.createElement("input");
+  input.className = "gc-input flex-1";
+  input.type = "text";
+  input.placeholder = "http://127.0.0.1:8000";
+  form.appendChild(input);
+  const submit = document.createElement("button");
+  submit.type = "submit";
+  submit.className = "gc-button-primary shrink-0";
+  submit.textContent = "연결";
+  form.appendChild(submit);
+  box.appendChild(form);
+
+  const err = document.createElement("div");
+  err.className = "text-display-sm text-[color:var(--color-danger)]";
+  err.style.display = "none";
+  box.appendChild(err);
+
+  // 저장된 주소를 채워 준다 — 대개 오타 하나를 고치는 상황이다.
+  void ipc_peer
+    .getConfig()
+    .then((c) => {
+      if (c.backend_url) input.value = c.backend_url;
+    })
+    .catch(() => undefined);
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const url = input.value.trim();
+    err.style.display = "none";
+    if (!url) {
+      err.textContent = "알림 서버 주소를 입력하세요.";
+      err.style.display = "";
+      return;
+    }
+    setBusy(submit, true, "연결 중…");
+    try {
+      await ipc_peer.setBackendUrl(url);
+      await ipc_peer.listProjects();
+      toast("알림 서버에 연결했습니다.", "success");
+      window.dispatchEvent(new Event("gc-account-changed"));
+    } catch (e) {
+      err.textContent = `연결 실패: ${(e as Error).message ?? e}`;
+      err.style.display = "";
+    } finally {
+      setBusy(submit, false);
+    }
+  });
+
+  return box;
+}
+
+/** 서버는 붙었지만 아직 팀 프로젝트가 없을 때. */
+function renderNoProject(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "flex flex-col gap-3";
+
+  const desc = document.createElement("div");
+  desc.className = "text-display-sm text-[color:var(--color-ink-muted)] whitespace-pre-line";
+  desc.textContent =
+    "알림을 받을 팀을 하나 만들고, 참여 코드를 팀원에게 알려 주세요.\n" +
+    "팀원은 그 코드로 합류하면 서로의 push 소식을 받습니다.";
+  box.appendChild(desc);
+
+  const row = document.createElement("div");
+  row.className = "flex gap-2";
+  const mk = document.createElement("button");
+  mk.className = "gc-button-primary";
+  mk.textContent = "팀 만들기";
+  mk.addEventListener("click", () => openCreateModal());
+  row.appendChild(mk);
+  const jn = document.createElement("button");
+  jn.className = "gc-button-secondary";
+  jn.textContent = "참여 코드로 합류";
+  jn.addEventListener("click", () => openJoinModal());
+  row.appendChild(jn);
+  box.appendChild(row);
+
+  return box;
+}
+
+// ─── 프로젝트 한 덩어리 ──────────────────────────────────────────────────────
+
+async function renderProjectBlock(p: PeerProjectInfo): Promise<HTMLElement> {
+  const box = document.createElement("div");
+  box.className = "flex flex-col gap-4";
+
+  // ── 팀 이름 + 참여 코드 ─────────────────────────────────────────────────
+  const head = document.createElement("div");
+  head.className = "flex items-center gap-3 flex-wrap";
+  const name = document.createElement("span");
+  name.className = "text-display-md font-medium";
+  name.textContent = p.display_name;
+  head.appendChild(name);
+  const codeChip = document.createElement("button");
+  codeChip.className = "gc-badge gc-badge--muted font-mono inline-flex items-center gap-1";
+  codeChip.title = "참여 코드 복사";
+  codeChip.textContent = p.join_code;
+  codeChip.addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(p.join_code);
-      toast("참여 코드를 클립보드에 복사했습니다", "info");
+      toast("참여 코드를 복사했습니다. 팀원에게 알려 주세요.", "info");
     } catch {
-      toast("복사 실패", "error");
+      toast(`복사 실패 — 코드: ${p.join_code}`, "error");
     }
   });
-  actions.querySelector<HTMLButtonElement>("[data-leave]")!.addEventListener("click", async () => {
-    const confirmed = await confirmDialog({
-      title: "프로젝트 탈퇴",
-      message: `"${p.display_name}" 프로젝트에서 탈퇴하시겠습니까?`,
-      confirmLabel: "탈퇴",
+  head.appendChild(codeChip);
+  const leave = document.createElement("button");
+  leave.className = "gc-button-secondary text-display-sm ml-auto";
+  leave.textContent = "팀 나가기";
+  leave.addEventListener("click", async () => {
+    const ok = await confirmDialog({
+      title: "팀 나가기",
+      message: `"${p.display_name}"에서 나가면 팀원의 push 알림을 더 이상 받지 않습니다.\n저장소와 커밋에는 영향이 없습니다.`,
+      confirmLabel: "나가기",
       destructive: true,
     });
-    if (!confirmed) return;
+    if (!ok) return;
     try {
       await ipc_peer.leaveProject(p.id);
-      toast("프로젝트를 탈퇴했습니다", "info");
+      toast("팀에서 나갔습니다.", "info");
+      window.dispatchEvent(new Event("gc-account-changed"));
     } catch (e) {
-      toast(`탈퇴 실패: ${(e as Error).message}`, "error");
+      toast(`실패: ${(e as Error).message}`, "error");
     }
   });
-  card.appendChild(actions);
+  head.appendChild(leave);
+  box.appendChild(head);
 
-  // ── 연결된 저장소 — 프로젝트에 내 저장소를 묶는다 (push 알림 수신 대상) ──
-  const repoSection = document.createElement("div");
-  repoSection.className = "flex flex-col gap-2 border-t border-[color:var(--color-hairline)] pt-3";
-  const repoTitle = document.createElement("div");
-  repoTitle.className = "text-display-sm font-medium";
-  repoTitle.textContent = "연결된 저장소";
-  repoSection.appendChild(repoTitle);
-  const repoDesc = document.createElement("div");
-  repoDesc.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-  repoDesc.textContent = "팀원 push·병합 알림을 받을 내 저장소를 연결하세요.";
-  repoSection.appendChild(repoDesc);
-  const repoList = document.createElement("div");
-  repoList.className = "flex flex-col gap-1";
-  repoSection.appendChild(repoList);
-  const linkRow = document.createElement("div");
-  linkRow.className = "flex items-center gap-2";
-  const linkSel = document.createElement("select");
-  linkSel.className = "gc-input flex-1 min-w-0 text-display-sm";
-  linkRow.appendChild(linkSel);
-  const linkBtn = document.createElement("button");
-  linkBtn.className = "gc-button-secondary text-display-sm shrink-0";
-  linkBtn.textContent = "연결";
-  linkBtn.addEventListener("click", async () => {
-    const rid = linkSel.value;
-    if (!rid) return;
-    linkBtn.disabled = true;
-    try {
-      await ipc_peer.linkRepo(rid, p.id);
-      toast("저장소를 프로젝트에 연결했습니다.", "success");
-      await refreshRepos();
-    } catch (e) {
-      toast(`연결 실패: ${(e as Error).message}`, "error");
-    } finally {
-      linkBtn.disabled = false;
-    }
-  });
-  linkRow.appendChild(linkBtn);
-  repoSection.appendChild(linkRow);
+  // ── 알림 받을 저장소 — 체크박스 하나로 켜고 끈다 ────────────────────────
+  box.appendChild(await renderRepoToggles(p));
 
-  async function refreshRepos() {
+  // ── 수신자 ──────────────────────────────────────────────────────────────
+  box.appendChild(await renderRecipients(p));
+
+  return box;
+}
+
+/**
+ * 등록된 저장소를 체크박스로 나열한다. 체크 = 이 팀의 알림 대상.
+ *
+ * 예전에는 "저장소 선택" 드롭다운 + [연결] 버튼 + 목록 + [연결 해제] 버튼이
+ * 따로 있었다. 실제로 필요한 것은 켜짐/꺼짐 하나뿐이다.
+ */
+async function renderRepoToggles(p: PeerProjectInfo): Promise<HTMLElement> {
+  const box = document.createElement("div");
+  box.className = "flex flex-col gap-2";
+
+  const label = document.createElement("div");
+  label.className = "text-display-sm font-medium";
+  label.textContent = "알림 받을 저장소";
+  box.appendChild(label);
+
+  const hint = document.createElement("div");
+  hint.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+  hint.textContent = "켜 둔 저장소에 push가 생기면 팀원에게 알림이 갑니다.";
+  box.appendChild(hint);
+
+  const list = document.createElement("div");
+  list.className = "flex flex-col gap-1.5";
+  box.appendChild(list);
+
+  async function paint() {
     const [linked, all] = await Promise.all([
       ipc_peer.reposForProject(p.id).catch(() => [] as RepoLinkSummary[]),
       ipc.listRepositories().catch(() => [] as Repo[]),
     ]);
-    repoList.innerHTML = "";
-    if (linked.length === 0) {
+    const linkedIds = new Set(linked.map((l) => l.repo_id));
+    list.innerHTML = "";
+    if (all.length === 0) {
       const empty = document.createElement("div");
       empty.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-      empty.textContent = "연결된 저장소가 없습니다.";
-      repoList.appendChild(empty);
-    } else {
-      for (const l of linked) {
-        const row = document.createElement("div");
-        row.className = "flex items-center gap-2 text-display-sm";
-        const name = document.createElement("span");
-        name.className = "flex-1 min-w-0 truncate";
-        name.textContent = l.display_name;
-        name.title = l.path;
-        row.appendChild(name);
-        const unlink = document.createElement("button");
-        unlink.className = "gc-button-secondary text-display-sm text-[color:var(--color-danger)] shrink-0";
-        unlink.textContent = "연결 해제";
-        unlink.addEventListener("click", async () => {
-          const confirmed = await confirmDialog({
-            title: "저장소 연결 해제",
-            message: `"${l.display_name}"을(를) 프로젝트에서 연결 해제하시겠습니까?`,
-            confirmLabel: "연결 해제",
-            destructive: true,
-          });
-          if (!confirmed) return;
-          try {
-            await ipc_peer.unlinkRepo(l.repo_id, p.id);
-            toast("저장소 연결을 해제했습니다.", "success");
-            await refreshRepos();
-          } catch (e) {
-            toast(`연결 해제 실패: ${(e as Error).message}`, "error");
-          }
-        });
-        row.appendChild(unlink);
-        repoList.appendChild(row);
-      }
+      empty.textContent = "등록된 저장소가 없습니다. 저장소 화면에서 먼저 추가하세요.";
+      list.appendChild(empty);
+      return;
     }
-    // 연결되지 않은 저장소만 선택지로 보여준다.
-    linkSel.innerHTML = `<option value="">저장소 선택…</option>`;
-    const linkedIds = new Set(linked.map((l) => l.repo_id));
     for (const r of all) {
-      if (linkedIds.has(r.id)) continue;
-      const opt = document.createElement("option");
-      opt.value = r.id;
-      opt.textContent = r.display_name;
-      linkSel.appendChild(opt);
-    }
-  }
-  await refreshRepos();
-  card.appendChild(repoSection);
-
-  // ── Invite button ─────────────────────────────────────────────────────
-  const inviteSection = document.createElement("div");
-  inviteSection.className = "flex flex-col gap-2 border-t border-[color:var(--color-hairline)] pt-3";
-
-  const inviteTitle = document.createElement("div");
-  inviteTitle.className = "text-display-sm font-medium";
-  inviteTitle.textContent = "팀원 추가";
-  inviteSection.appendChild(inviteTitle);
-
-  const addBtn = document.createElement("button");
-  addBtn.className = "gc-button-primary self-start text-display-sm";
-  addBtn.textContent = "팀원 초대";
-  addBtn.addEventListener("click", () => openInviteModal(p.id, refreshMembers));
-  inviteSection.appendChild(addBtn);
-
-  // ── Member list ───────────────────────────────────────────────────────
-  const memberList = document.createElement("div");
-  memberList.className = "flex flex-col gap-1";
-
-  async function refreshMembers() {
-    memberList.innerHTML = "";
-    memberList.appendChild(renderPageLoading("팀원 목록 불러오는 중…"));
-    try {
-      const members = await ipc_peer.listMembers(p.id);
-      memberList.innerHTML = "";
-      if (members.length === 0) {
-        memberList.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)]">아직 팀원이 없습니다.</div>`;
-        return;
-      }
-      for (const m of members) {
-        const row = document.createElement("div");
-        row.className = "flex items-center gap-2 text-display-sm";
-        const label = m.email
-          ? `${m.email}${m.name ? ` (${m.name})` : ""} — ${m.role}`
-          : `${m.name ?? m.device_id} — ${m.role}`;
-        row.innerHTML = `
-          <span class="flex-1">${escape(label)}</span>
-          ${m.email ? `<button class="gc-button-secondary text-display-sm text-[color:var(--color-danger)]" data-remove>취소</button>` : ""}
-        `;
-        if (m.email) {
-          row.querySelector<HTMLButtonElement>("[data-remove]")!.addEventListener("click", async () => {
-            const confirmed = await confirmDialog({
-              title: "초대 취소",
-              message: ` "${m.email}" 초대를 취소하시겠습니까?`,
-              confirmLabel: "취소",
-              destructive: true,
-            });
-            if (!confirmed) return;
-            try {
-              await ipc_peer.removeEmailInvite(p.id, m.email!);
-              refreshMembers();
-            } catch (e) {
-              toast(`취소 실패: ${(e as Error).message}`, "error");
-            }
-          });
+      const row = document.createElement("label");
+      row.className = "gc-check";
+      const box2 = document.createElement("input");
+      box2.type = "checkbox";
+      box2.checked = linkedIds.has(r.id);
+      const text = document.createElement("span");
+      text.className = "flex flex-col";
+      const nm = document.createElement("span");
+      nm.className = "text-display-sm";
+      nm.textContent = r.display_name;
+      text.appendChild(nm);
+      const pth = document.createElement("span");
+      pth.className = "text-display-xs text-[color:var(--color-ink-muted)] truncate max-w-md";
+      pth.textContent = r.path;
+      text.appendChild(pth);
+      box2.addEventListener("change", async () => {
+        box2.disabled = true;
+        try {
+          if (box2.checked) await ipc_peer.linkRepo(r.id, p.id);
+          else await ipc_peer.unlinkRepo(r.id, p.id);
+        } catch (e) {
+          box2.checked = !box2.checked;
+          toast(`변경 실패: ${(e as Error).message}`, "error");
+        } finally {
+          box2.disabled = false;
         }
-        memberList.appendChild(row);
-      }
-    } catch (e) {
-      memberList.innerHTML = `<div class="text-display-sm text-[color:var(--color-danger)]">팀원 목록 로딩 실패</div>`;
+      });
+      row.appendChild(box2);
+      row.appendChild(text);
+      list.appendChild(row);
     }
   }
-
-  await refreshMembers();
-
-  inviteSection.appendChild(memberList);
-  card.appendChild(inviteSection);
-
-  return card;
+  await paint();
+  return box;
 }
 
-function openInviteModal(projectId: string, onSuccess: () => void): void {
+/**
+ * 알림 수신자. `.gpconfig` 구성원을 그대로 가져오는 동기화 버튼이 핵심 —
+ * 사람 목록의 원본은 언제나 `.gpconfig` 한 곳이다.
+ */
+async function renderRecipients(p: PeerProjectInfo): Promise<HTMLElement> {
+  const box = document.createElement("div");
+  box.className = "flex flex-col gap-2";
+
+  const label = document.createElement("div");
+  label.className = "text-display-sm font-medium";
+  label.textContent = "알림 수신자";
+  box.appendChild(label);
+
+  const hint = document.createElement("div");
+  hint.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+  hint.textContent =
+    "사람 목록의 원본은 저장소 → 설정 탭의 구성원(.gpconfig)입니다. 여기서는 그 목록을 알림 서버에 반영만 합니다.";
+  box.appendChild(hint);
+
+  const list = document.createElement("div");
+  list.className = "flex flex-col gap-1";
+  box.appendChild(list);
+
+  const row = document.createElement("div");
+  row.className = "flex gap-2 flex-wrap";
+  const syncBtn = document.createElement("button");
+  syncBtn.className = "gc-button-primary text-display-sm";
+  syncBtn.textContent = "구성원 동기화";
+  row.appendChild(syncBtn);
+  const manualBtn = document.createElement("button");
+  manualBtn.className = "gc-button-secondary text-display-sm";
+  manualBtn.textContent = "직접 추가";
+  row.appendChild(manualBtn);
+  box.appendChild(row);
+
+  async function paint() {
+    list.innerHTML = "";
+    let members: MemberInfo[] = [];
+    try {
+      members = await ipc_peer.listMembers(p.id);
+    } catch {
+      list.innerHTML = `<div class="text-display-sm text-[color:var(--color-danger)]">수신자 목록을 불러올 수 없습니다.</div>`;
+      return;
+    }
+    if (members.length === 0) {
+      list.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)]">아직 수신자가 없습니다. 아래 ‘구성원 동기화’를 누르세요.</div>`;
+      return;
+    }
+    for (const m of members) {
+      const r = document.createElement("div");
+      r.className = "flex items-center gap-2 text-display-sm";
+      const who = document.createElement("span");
+      who.className = "flex-1 min-w-0 truncate";
+      who.textContent = m.email
+        ? `${m.email}${m.name ? ` · ${m.name}` : ""}`
+        : `${m.name ?? m.device_id ?? "(알 수 없음)"}`;
+      r.appendChild(who);
+      // joined_at 이 비어 있으면 초대만 된 상태 — 아직 이 앱으로 합류하지 않았다.
+      if (!m.joined_at) {
+        const tag = document.createElement("span");
+        tag.className = "gc-badge gc-badge--muted shrink-0";
+        tag.textContent = "미합류";
+        tag.title = "초대했지만 아직 이 앱으로 합류하지 않았습니다.";
+        r.appendChild(tag);
+      }
+      if (m.email) {
+        const del = document.createElement("button");
+        del.className = "gc-btn-sm gc-btn-sm--danger shrink-0";
+        del.textContent = "제거";
+        del.addEventListener("click", async () => {
+          const ok = await confirmDialog({
+            title: "수신자 제거",
+            message: `${m.email} 에게 더 이상 알림을 보내지 않습니다.`,
+            confirmLabel: "제거",
+            destructive: true,
+          });
+          if (!ok) return;
+          try {
+            await ipc_peer.removeEmailInvite(p.id, m.email!);
+            await paint();
+          } catch (e) {
+            toast(`제거 실패: ${(e as Error).message}`, "error");
+          }
+        });
+        r.appendChild(del);
+      }
+      list.appendChild(r);
+    }
+  }
+
+  syncBtn.addEventListener("click", async () => {
+    setBusy(syncBtn, true, "동기화 중…");
+    try {
+      const result = await syncMembersFromGpconfig(p.id);
+      if (result.total === 0) {
+        toast(
+          "이 팀에 연결된 저장소의 .gpconfig 에 구성원이 없습니다. 저장소 → 설정 탭에서 먼저 구성원을 등록하세요.",
+          "info",
+        );
+      } else {
+        toast(
+          `구성원 ${result.total}명 중 ${result.added}명을 수신자로 추가했습니다.`,
+          "success",
+        );
+      }
+      await paint();
+    } catch (e) {
+      toast(`동기화 실패: ${(e as Error).message ?? e}`, "error");
+    } finally {
+      setBusy(syncBtn, false);
+    }
+  });
+
+  manualBtn.addEventListener("click", () => openInviteModal(p.id, paint));
+
+  await paint();
+  return box;
+}
+
+/**
+ * 이 팀에 연결된 저장소들의 `.gpconfig` 구성원을 알림 수신자로 등록한다.
+ * 이미 수신자인 사람은 건너뛴다.
+ */
+async function syncMembersFromGpconfig(
+  projectId: string,
+): Promise<{ total: number; added: number }> {
+  const linked = await ipc_peer.reposForProject(projectId);
+  const wanted = new Map<string, { email: string; name: string; role: string }>();
+  for (const l of linked) {
+    const cfg = await ipc.projectConfigGet(l.repo_id).catch(() => null);
+    for (const m of cfg?.config?.members ?? []) {
+      const email = m.email.trim().toLowerCase();
+      if (!email) continue;
+      if (!wanted.has(email)) wanted.set(email, { email, name: m.name, role: m.role });
+    }
+  }
+  const existing = new Set(
+    (await ipc_peer.listMembers(projectId).catch(() => [] as MemberInfo[]))
+      .map((m) => m.email?.trim().toLowerCase())
+      .filter((e): e is string => !!e),
+  );
+  let added = 0;
+  for (const m of wanted.values()) {
+    if (existing.has(m.email)) continue;
+    // 한 명이 실패해도 나머지는 계속 등록한다 — 부분 성공이 전부 실패보다 낫다.
+    try {
+      await ipc_peer.inviteByEmail(projectId, m.email, m.name || null, m.role || "member");
+      added += 1;
+    } catch {
+      /* 다음 사람으로 */
+    }
+  }
+  return { total: wanted.size, added };
+}
+
+// ─── 모달 ────────────────────────────────────────────────────────────────────
+
+function openCreateModal(): void {
   const m = openModal({
-    title: "팀원 초대",
-    submitLabel: "초대",
+    title: "팀 만들기",
+    description: "알림을 주고받을 팀입니다. 만들면 팀원에게 알려 줄 참여 코드가 나옵니다.",
+    submitLabel: "만들기",
     onSubmit: async (close) => {
-      const email = (m.body.querySelector<HTMLInputElement>("#invite-email")!).value.trim();
-      const name = (m.body.querySelector<HTMLInputElement>("#invite-name")!).value.trim();
-      const role = (m.body.querySelector<HTMLSelectElement>("#invite-role")!).value;
-      if (!email) { m.setError("이메일을 입력하세요."); return; }
+      const name = (m.body.querySelector<HTMLInputElement>("#team-name")!).value.trim();
+      if (!name) {
+        m.setError("팀 이름을 입력하세요.");
+        return;
+      }
       m.setSubmitting(true);
       m.setError(null);
       try {
-        await ipc_peer.inviteByEmail(projectId, email, name || null, role);
-        toast("초대 완료", "success");
-        onSuccess();
+        const created = await ipc_peer.createProject(name, null);
         close();
+        toast(`팀 "${created.display_name}" 생성 — 참여 코드 ${created.join_code}`, "success");
+        window.dispatchEvent(new Event("gc-account-changed"));
       } catch (e) {
-        m.setError(`초대 실패: ${(e as Error).message ?? e}`);
-      } finally {
+        m.setError(`실패: ${(e as Error).message ?? e}`);
         m.setSubmitting(false);
       }
     },
   });
+  m.body.innerHTML = `
+    <div class="flex flex-col gap-1">
+      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="team-name">팀 이름</label>
+      <input id="team-name" class="gc-input" type="text" placeholder="예: 결제팀" />
+    </div>
+  `;
+  m.body.querySelector<HTMLInputElement>("#team-name")!.focus();
+}
 
+function openJoinModal(): void {
+  const m = openModal({
+    title: "참여 코드로 합류",
+    description: "팀을 만든 사람에게 받은 참여 코드를 입력하세요.",
+    submitLabel: "합류",
+    onSubmit: async (close) => {
+      const code = (m.body.querySelector<HTMLInputElement>("#join-code")!).value.trim();
+      if (!code) {
+        m.setError("참여 코드를 입력하세요.");
+        return;
+      }
+      m.setSubmitting(true);
+      m.setError(null);
+      try {
+        const joined = await ipc_peer.joinProject(code, null);
+        close();
+        toast(`"${joined.display_name}" 팀에 합류했습니다.`, "success");
+        window.dispatchEvent(new Event("gc-account-changed"));
+      } catch (e) {
+        m.setError(`합류 실패: ${(e as Error).message ?? e}`);
+        m.setSubmitting(false);
+      }
+    },
+  });
+  m.body.innerHTML = `
+    <div class="flex flex-col gap-1">
+      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="join-code">참여 코드</label>
+      <input id="join-code" class="gc-input font-mono" type="text" placeholder="TEAM-0001" autocomplete="off" />
+    </div>
+  `;
+  m.body.querySelector<HTMLInputElement>("#join-code")!.focus();
+}
+
+function openInviteModal(projectId: string, onDone: () => void | Promise<void>): void {
+  const m = openModal({
+    title: "수신자 직접 추가",
+    description:
+      "보통은 ‘구성원 동기화’로 충분합니다. .gpconfig 에 없는 사람에게만 알림을 보낼 때 씁니다.",
+    submitLabel: "추가",
+    onSubmit: async (close) => {
+      const email = (m.body.querySelector<HTMLInputElement>("#invite-email")!).value.trim();
+      const name = (m.body.querySelector<HTMLInputElement>("#invite-name")!).value.trim();
+      if (!email) {
+        m.setError("이메일을 입력하세요.");
+        return;
+      }
+      m.setSubmitting(true);
+      m.setError(null);
+      try {
+        await ipc_peer.inviteByEmail(projectId, email, name || null, "member");
+        close();
+        toast("수신자를 추가했습니다.", "success");
+        await onDone();
+      } catch (e) {
+        m.setError(`추가 실패: ${(e as Error).message ?? e}`);
+        m.setSubmitting(false);
+      }
+    },
+  });
   m.body.innerHTML = `
     <div class="flex flex-col gap-1">
       <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="invite-email">이메일 <span class="text-[color:var(--color-danger)]">*</span></label>
@@ -429,153 +639,6 @@ function openInviteModal(projectId: string, onSuccess: () => void): void {
       <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="invite-name">이름 (선택)</label>
       <input id="invite-name" class="gc-input" type="text" placeholder="홍길동" />
     </div>
-    <div class="flex flex-col gap-1">
-      <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="invite-role">역할</label>
-      <select id="invite-role" class="gc-input">
-        <option value="member">member</option>
-        <option value="admin">admin</option>
-      </select>
-    </div>
   `;
-}
-
-// ─── Create tab ──────────────────────────────────────────────────────────────
-
-async function renderCreateTab(): Promise<HTMLElement> {
-  const el = document.createElement("div");
-  el.className = "flex flex-col gap-4";
-
-  const header = document.createElement("div");
-  header.className = "flex items-center justify-between";
-  header.innerHTML = `<div class="text-display-md font-medium">팀 프로젝트 만들기</div>`;
-  el.appendChild(header);
-
-  const emptyCard = document.createElement("div");
-  emptyCard.className = "gc-card text-center py-8";
-  emptyCard.innerHTML = `
-    <div class="text-display-sm text-[color:var(--color-ink-muted)] mb-4">아직 프로젝트가 없습니다.</div>
-    <button class="gc-button-primary" id="btn-create-project">+ 새 프로젝트</button>
-  `;
-  el.appendChild(emptyCard);
-
-  const status = document.createElement("div");
-  status.className = "text-display-sm";
-  el.appendChild(status);
-
-  emptyCard.querySelector<HTMLButtonElement>("#btn-create-project")!.addEventListener("click", () => {
-    const m = openModal({
-      title: "팀 프로젝트 만들기",
-      submitLabel: "만들기",
-      onSubmit: async (close) => {
-        const name = (m.body.querySelector<HTMLInputElement>("#proj-name")!).value.trim();
-        if (!name) { m.setError("프로젝트 이름을 입력하세요."); return; }
-        m.setSubmitting(true);
-        m.setError(null);
-        try {
-          const repoId = (m.body.querySelector<HTMLSelectElement>("#repo-select")!).value || null;
-          const info = await ipc_peer.createProject(name, repoId);
-          toast(`프로젝트 "${info.display_name}"이(가) 생성되었습니다. 참여 코드: ${formatCode(info.join_code)}`, "info");
-          close();
-        } catch (e) {
-          m.setError(`생성 실패: ${(e as Error).message ?? e}`);
-        } finally {
-          m.setSubmitting(false);
-        }
-      },
-    });
-
-    m.body.innerHTML = `
-      <div class="flex flex-col gap-1">
-        <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="proj-name">프로젝트 이름 <span class="text-[color:var(--color-danger)]">*</span></label>
-        <input id="proj-name" class="gc-input" type="text" placeholder="내 프로젝트" />
-      </div>
-      <div class="flex flex-col gap-1">
-        <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="repo-select">저장소 선택</label>
-      </div>
-    `;
-    buildRepoSelect(m.body, "proj-name", "repo-select");
-  });
-
-  return el;
-}
-
-// ─── Join tab ────────────────────────────────────────────────────────────────
-
-async function renderJoinTab(): Promise<HTMLElement> {
-  const el = document.createElement("div");
-  el.className = "flex flex-col gap-4";
-
-  const header = document.createElement("div");
-  header.className = "flex items-center justify-between";
-  header.innerHTML = `<div class="text-display-md font-medium">팀 프로젝트 참여</div>`;
-  el.appendChild(header);
-
-  const emptyCard = document.createElement("div");
-  emptyCard.className = "gc-card text-center py-8";
-  emptyCard.innerHTML = `
-    <div class="text-display-sm text-[color:var(--color-ink-muted)] mb-4">참여 코드를 입력하여 팀 프로젝트에 합류하세요.</div>
-    <button class="gc-button-primary" id="btn-join-project">참여 코드로 합치기</button>
-  `;
-  el.appendChild(emptyCard);
-
-  emptyCard.querySelector<HTMLButtonElement>("#btn-join-project")!.addEventListener("click", () => {
-    const m = openModal({
-      title: "팀 프로젝트 참여",
-      submitLabel: "참여하기",
-      onSubmit: async (close) => {
-        let code = (m.body.querySelector<HTMLInputElement>("#join-code")!).value.trim().replace("-", "").toUpperCase();
-        if (code.length !== 8) { m.setError("8자리 참여 코드를 입력하세요."); return; }
-        m.setSubmitting(true);
-        m.setError(null);
-        try {
-          const repoId = (m.body.querySelector<HTMLSelectElement>("#repo-select")!).value || null;
-          const info = await ipc_peer.joinProject(code, repoId);
-          toast(`"${info.display_name}"에 참여했습니다!`, "info");
-          close();
-        } catch (e) {
-          m.setError(`참여 실패: ${(e as Error).message ?? e}`);
-        } finally {
-          m.setSubmitting(false);
-        }
-      },
-    });
-
-    m.body.innerHTML = `
-      <div class="flex flex-col gap-1">
-        <label class="text-display-sm text-[color:var(--color-ink-muted)]" for="join-code">참여 코드 <span class="text-[color:var(--color-danger)]">*</span></label>
-        <input id="join-code" class="gc-input font-mono" type="text" placeholder="ABCD-1234" maxlength="9" />
-      </div>
-    `;
-    buildRepoSelect(m.body, "join-code", "repo-select");
-  });
-
-  return el;
-}
-
-// ─── Shared helpers ─────────────────────────────────────────────────────────
-
-async function buildRepoSelect(container: HTMLElement, _focusId: string, selectId: string): Promise<void> {
-  const repoSelect = document.createElement("select");
-  repoSelect.id = selectId;
-  repoSelect.className = "gc-input";
-  repoSelect.innerHTML = `<option value="">저장소 선택 안 함</option>`;
-  container.appendChild(repoSelect); // append immediately so querySelector finds it
-  try {
-    const repos = await ipc.listRepositories();
-    for (const r of repos) {
-      const opt = document.createElement("option");
-      opt.value = r.id;
-      opt.textContent = r.display_name;
-      repoSelect.appendChild(opt);
-    }
-  } catch { /* repos unavailable */ }
-}
-
-function formatCode(code: string): string {
-  if (code.length === 8) return `${code.slice(0, 4)}-${code.slice(4)}`;
-  return code;
-}
-
-function escape(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  m.body.querySelector<HTMLInputElement>("#invite-email")!.focus();
 }

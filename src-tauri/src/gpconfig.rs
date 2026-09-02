@@ -84,6 +84,48 @@ pub fn read_config(target: &Target) -> AppResult<(ProjectConfig, bool)> {
     Ok((normalize(cfg), true))
 }
 
+/// Read the **team's** `.gpconfig`, not just whatever the checked-out branch
+/// happens to contain.
+///
+/// `.gpconfig` lives inside the repo, so a member working on their own branch
+/// often has no copy of it at all — the branch was cut before the config was
+/// committed, or simply hasn't been synced. Reading only the working tree there
+/// yields "no config", which the UI reads as "no merge manager assigned, anyone
+/// may merge" and shows a team member the manager's job. So when the working
+/// tree has no copy, fall back to the merge branch's committed copy
+/// (`<remote>/<base>` first, then a local `<base>`).
+///
+/// The working tree still wins when present, so edits in the 설정 tab stay
+/// visible before they are committed.
+pub fn read_config_effective(
+    target: &Target,
+    base_branch: &str,
+    remote: &str,
+) -> AppResult<(ProjectConfig, bool)> {
+    let (cfg, exists) = read_config(target)?;
+    if exists {
+        return Ok((cfg, true));
+    }
+    let base = base_branch.trim();
+    if base.is_empty() {
+        return Ok((cfg, false));
+    }
+    for rev in [format!("{remote}/{base}"), base.to_string()] {
+        let spec = format!("{rev}:{GPCONFIG_FILE}");
+        let out = run_at_target(target, ["show", &spec])?;
+        if !out.ok() || out.stdout.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<ProjectConfig>(out.stdout.trim()) {
+            Ok(parsed) => return Ok((normalize(parsed), true)),
+            // 커밋된 설정이 깨져 있으면 조용히 무시하고 다음 후보를 본다 —
+            // 설정 파일 하나 때문에 앱 전체가 막히면 안 된다.
+            Err(_) => continue,
+        }
+    }
+    Ok((cfg, false))
+}
+
 /// Write `.gpconfig` (pretty JSON) into the repo working tree.
 pub fn save_config(target: &Target, cfg: &ProjectConfig) -> AppResult<ProjectConfig> {
     let cfg = normalize(cfg.clone());
@@ -167,6 +209,33 @@ pub fn merge_targets_of(cfg: &ProjectConfig, fallback: &str) -> Vec<String> {
     } else {
         vec![fallback.trim().to_string()]
     }
+}
+
+/// `branch`가 이 프로젝트의 병합 대상 브랜치인지 판정한다 (순수 함수).
+///
+/// 우선순위는 `merge_targets` → `default_base_branch` → `registered_default`.
+/// `exists`는 `.gpconfig` 파일이 실제로 있는지 — 없으면 `default_base_branch`가
+/// 기본값(빈 문자열)이므로 앱에 등록된 기본 브랜치로 판정해야 한다.
+///
+/// pre-push hook이 "이 푸시가 팀원 전체에게 동기화 알림을 보내야 하는
+/// 푸시인가"를 정하는 데 쓴다. 병합 브랜치가 main이 아닌 팀(develop,
+/// release/1.0 …)에서도 알림이 정확히 가야 하기 때문에 하드코딩하지 않는다.
+pub fn is_merge_target(
+    cfg: &ProjectConfig,
+    exists: bool,
+    registered_default: &str,
+    branch: &str,
+) -> bool {
+    let branch = branch.trim();
+    if branch.is_empty() {
+        return false;
+    }
+    let fallback = if exists && !cfg.default_base_branch.trim().is_empty() {
+        cfg.default_base_branch.trim().to_string()
+    } else {
+        registered_default.trim().to_string()
+    };
+    merge_targets_of(cfg, &fallback).iter().any(|t| t == branch)
 }
 
 /// Member lookup helper for the UI layer.
@@ -271,6 +340,110 @@ mod tests {
             merge_targets_of(&with_targets, "develop"),
             vec!["main", "release/2.0"]
         );
+    }
+
+    #[test]
+    fn is_merge_target_uses_config_then_registered_default() {
+        let empty = ProjectConfig::default();
+        // .gpconfig가 없으면 앱에 등록된 기본 브랜치만 병합 브랜치다.
+        assert!(is_merge_target(&empty, false, "develop", "develop"));
+        assert!(!is_merge_target(&empty, false, "develop", "main"));
+        assert!(!is_merge_target(&empty, false, "develop", "feature/x"));
+
+        // merge_targets가 있으면 그 목록이 전부다 — main이 없어도 된다.
+        let cfg = ProjectConfig {
+            default_base_branch: "develop".into(),
+            merge_targets: vec!["develop".into(), "release/1.0".into()],
+            ..ProjectConfig::default()
+        };
+        assert!(is_merge_target(&cfg, true, "main", "develop"));
+        assert!(is_merge_target(&cfg, true, "main", "release/1.0"));
+        assert!(
+            !is_merge_target(&cfg, true, "main", "main"),
+            "목록에 없는 브랜치는 병합 브랜치가 아니다"
+        );
+
+        // merge_targets가 비어 있으면 default_base_branch가 대상.
+        let only_base = ProjectConfig {
+            default_base_branch: "develop".into(),
+            ..ProjectConfig::default()
+        };
+        assert!(is_merge_target(&only_base, true, "main", "develop"));
+        assert!(!is_merge_target(&only_base, true, "main", "main"));
+
+        // 빈 브랜치 이름은 절대 병합 브랜치로 보지 않는다.
+        assert!(!is_merge_target(&cfg, true, "main", "  "));
+    }
+
+    /// 팀원이 자기 브랜치에 있으면 `.gpconfig` 사본이 없을 수 있다. 그때도
+    /// 병합 브랜치에 커밋된 팀 규칙을 읽어야 한다 — 못 읽으면 "관리자 미지정"
+    /// 으로 오인되어 팀원에게 관리자 화면이 뜬다.
+    #[test]
+    fn read_config_effective_falls_back_to_the_merge_branch_copy() {
+        fn git(dir: &std::path::Path, args: &[&str]) {
+            let out = std::process::Command::new("git")
+                .current_dir(dir)
+                .env("LC_ALL", "C.UTF-8")
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-b", "main"]);
+        git(&repo, &["config", "user.email", "t@example.com"]);
+        git(&repo, &["config", "user.name", "T"]);
+        git(&repo, &["config", "commit.gpgsign", "false"]);
+
+        // main 에만 .gpconfig 를 커밋한다.
+        std::fs::write(
+            repo.join(GPCONFIG_FILE),
+            br#"{"default_base_branch":"main","members":[{"id":"1","name":"Lead","email":"lead@x.com","role":"admin"}],"merge_managers":{"main":"lead@x.com"},"merge_targets":["main"]}"#,
+        )
+        .unwrap();
+        std::fs::write(repo.join("README.md"), b"x").unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-m", "init"]);
+
+        let target = Target::Local(repo.clone());
+        // main 위: 워킹 트리에 파일이 있으므로 그대로 읽힌다.
+        let (cfg, exists) = read_config_effective(&target, "main", "origin").unwrap();
+        assert!(exists);
+        assert_eq!(
+            cfg.merge_managers.get("main").map(String::as_str),
+            Some("lead@x.com")
+        );
+
+        // .gpconfig 가 생기기 전에 갈라진 브랜치를 흉내낸다: 파일을 지운 커밋.
+        git(&repo, &["checkout", "-b", "feature/mine"]);
+        std::fs::remove_file(repo.join(GPCONFIG_FILE)).unwrap();
+        git(&repo, &["add", "-A"]);
+        git(&repo, &["commit", "-m", "no config here"]);
+
+        // 워킹 트리에는 없다 — read_config 는 못 찾는다.
+        let (_, plain_exists) = read_config(&target).unwrap();
+        assert!(!plain_exists, "워킹 트리에는 .gpconfig 가 없어야 한다");
+
+        // 그래도 main 에 커밋된 규칙은 읽혀야 한다.
+        let (cfg, exists) = read_config_effective(&target, "main", "origin").unwrap();
+        assert!(exists, "병합 브랜치의 커밋된 설정을 찾아야 한다");
+        assert_eq!(
+            cfg.merge_managers.get("main").map(String::as_str),
+            Some("lead@x.com"),
+            "팀원도 병합 관리자가 누구인지 알 수 있어야 한다"
+        );
+        assert!(is_merge_target(&cfg, exists, "main", "main"));
+
+        // 어디에도 없으면 exists=false (기존 동작 유지).
+        let (_, none) = read_config_effective(&target, "does-not-exist", "origin").unwrap();
+        assert!(!none);
     }
 
     #[test]

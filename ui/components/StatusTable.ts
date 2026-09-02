@@ -3,15 +3,32 @@ import type { FileChange } from "../lib/ipc";
 
 export type { FileChange };
 
+// git 용어를 그대로 옮기지 않는다. "미추적(untracked)" 은 git 을 아는 사람에게만
+// 통하는 말이고, 화면에서 실제로 뜻하는 것은 "아직 git 이 모르는 새 파일" 이다.
 const KIND_LABELS: Record<string, string> = {
   added: "추가",
   modified: "수정",
   deleted: "삭제",
   renamed: "이름변경",
   copied: "복사됨",
-  untracked: "미추적",
+  untracked: "새 파일",
   conflicted: "충돌",
 };
+
+/** 상태별 한 줄 설명 — 배지에 마우스를 올렸을 때 뜻을 알 수 있게. */
+const KIND_HINTS: Record<string, string> = {
+  added: "커밋에 포함되도록 표시된 파일입니다.",
+  modified: "내용이 바뀐 파일입니다.",
+  deleted: "지워진 파일입니다. 커밋하면 저장소에서도 사라집니다.",
+  renamed: "이름이 바뀐 파일입니다.",
+  copied: "다른 파일에서 복사된 파일입니다.",
+  untracked: "git 이 아직 모르는 새 파일입니다. 커밋하면 저장소에 들어갑니다.",
+  conflicted: "병합 충돌이 남아 있습니다. 병합 탭에서 해결해야 합니다.",
+};
+
+export function kindHint(kind: string): string {
+  return KIND_HINTS[kind] ?? "";
+}
 
 export function kindLabel(kind: string): string {
   return KIND_LABELS[kind] ?? kind;
@@ -49,7 +66,7 @@ export function renderStatusTable(
       <td class="py-1"></td>
       <td class="py-1 font-mono truncate max-w-xs" title="${f.path}">${f.path}</td>
       <td class="py-1 text-right">
-        <span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${badgeClass(f.kind)}">${kindLabel(f.kind)}</span>
+        <span class="inline-block px-2 py-0.5 rounded text-xs font-medium ${badgeClass(f.kind)}" title="${kindHint(f.kind)}">${kindLabel(f.kind)}</span>
       </td>
     `;
     tr.querySelector("td:first-child")!.appendChild(checkbox);

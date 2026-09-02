@@ -497,17 +497,58 @@ impl GitOutput {
     }
 }
 
+/// `~` 또는 `~/…` 를 사용자 홈으로 펼친다.
+///
+/// 사람들은 경로를 손으로 칠 때 습관적으로 `~` 를 쓴다. 예전에는 그대로
+/// 넘겨서 "경로가 없습니다"로 끝났고, 게다가 SSH 키 경로 placeholder 는
+/// `~/.ssh/id_ed25519` 였으니 한쪽은 되고 한쪽은 안 되는 셈이었다.
+pub fn expand_tilde(input: &str) -> String {
+    let trimmed = input.trim();
+    if trimmed == "~" {
+        return dirs::home_dir()
+            .map(|h| h.to_string_lossy().into_owned())
+            .unwrap_or_else(|| trimmed.to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("~/") {
+        if let Some(home) = dirs::home_dir() {
+            return home.join(rest).to_string_lossy().into_owned();
+        }
+    }
+    trimmed.to_string()
+}
+
+/// 입력한 경로를 검증한다. 실패 이유마다 다른 한국어 메시지를 준다 —
+/// "없는 경로"와 "git 저장소가 아님"은 사용자가 해야 할 일이 전혀 다르다.
 pub fn resolve_repo_path(input: &str) -> AppResult<std::path::PathBuf> {
-    let p = std::path::PathBuf::from(input);
+    let expanded = expand_tilde(input);
+    let p = std::path::PathBuf::from(&expanded);
+    if expanded.is_empty() {
+        return Err(AppError::RepoNotFound(
+            "저장소 폴더 경로를 입력하세요.".into(),
+        ));
+    }
     if !p.exists() {
         return Err(AppError::RepoNotFound(format!(
-            "path does not exist: {input}"
+            "그 경로에 폴더가 없습니다: {expanded}\n경로를 다시 확인하세요. 전체 경로(예: /home/이름/projects/my-app)로 입력해야 합니다."
         )));
     }
-    let git_dir = p.join(".git");
-    if !git_dir.exists() {
+    if !p.is_dir() {
         return Err(AppError::RepoNotFound(format!(
-            "no .git directory at {input}"
+            "폴더가 아니라 파일입니다: {expanded}\n저장소 폴더 자체를 고르세요."
+        )));
+    }
+    if !p.join(".git").exists() {
+        // 상위 폴더가 저장소인 흔한 실수(하위 폴더를 고름)를 잡아 준다.
+        let hint = p
+            .ancestors()
+            .skip(1)
+            .find(|a| a.join(".git").exists())
+            .map(|a| format!("\n혹시 이 폴더를 찾으셨나요? {}", a.display()))
+            .unwrap_or_else(|| {
+                "\ngit clone 으로 받은 폴더를 고르거나, 이 폴더를 저장소로 만들려면 아래 ‘git 저장소로 만들기’를 쓰세요.".to_string()
+            });
+        return Err(AppError::RepoNotFound(format!(
+            "이 폴더는 git 저장소가 아닙니다 (.git 이 없습니다): {expanded}{hint}"
         )));
     }
     Ok(p)

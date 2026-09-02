@@ -13,7 +13,8 @@
 //   create_branch, checkout_branch, fetch_repo,
 //   list_pending_branches, start_merge, merge_state, conflict_detail,
 //   resolve_conflict, abort_merge, complete_merge, get_ai_config,
-//   set_ai_config, ai_suggest_resolution, get_ssh_profile, set_ssh_profile,
+//   set_ai_config, ai_default_prompt, ai_suggest_resolution,
+//   get_ssh_profile, set_ssh_profile,
 //   test_ssh_connection, browse_ssh_dir, list_external_tools, set_external_tool, remove_external_tool,
 //   open_external_tool,
 //   account_register, account_list, account_delete, account_login, account_logout,
@@ -24,7 +25,7 @@
 // because they require the FastAPI backend to be running.
 
 import type { Plugin, ViteDevServer } from "vite";
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -54,14 +55,24 @@ interface AiConfigRecord {
   base_url: string;
   api_key: string;
   model: string;
+  /** 병합 관리자가 미리 저장하는 해결 지침. 빈 값이면 기본 프롬프트. */
+  system_prompt?: string;
+  /** 충돌이 나면 버튼을 누르지 않고 곧바로 자동 해결한다. */
+  auto_resolve?: boolean;
+  /** 바이너리·대용량 파일 처리: "theirs" | "ours" */
+  binary_strategy?: string;
 }
 
+/** Rust `ai::DEFAULT_SYSTEM_PROMPT`와 동일한 문구 — 미리보기에서 같은 값을 보여 준다. */
+const DEFAULT_AI_PROMPT =
+  "git 병합에 실패한 상태입니다. ours(현재 브랜치)와 theirs(병합 대상 브랜치) 양쪽에서 수정한 기능들이 서로 영향받지 않도록 모두 반영하는 최종 코드를 제안하세요. 기능이 깨지지 않게 import/선언 누락, 중복 정의, 끊긴 호출부가 없어야 합니다. 판단 근거 주석 없이 코드만 반환하세요. 직접적인 결합이 불가능하면 양쪽 의도를 모두 만족하는 대안 코드를 제시하세요.";
+
+/** 서버 `/auth` 의 UserPublic 과 같은 모양 — 비밀번호는 오지 않는다. */
 interface AccountRecord {
   id: string;
   name: string;
   email: string;
-  username?: string | null;
-  password_hash?: string | null;
+  username: string;
   created_at: string;
 }
 
@@ -135,16 +146,24 @@ function normalizeProjectConfig(cfg: ProjectConfigRecord): ProjectConfigRecord {
   return out;
 }
 
+interface ExternalToolRecord {
+  id: string;
+  label: string;
+  command_template: string;
+  args_template: string;
+  enabled: boolean;
+}
+
 interface AppSettings {
   schema_version: number;
   repositories: RepoRecord[];
   projects?: unknown[];
-  external_tools?: unknown[];
+  external_tools?: ExternalToolRecord[];
   ssh_profile?: Record<string, unknown>;
   peer?: Record<string, unknown>;
   ai?: AiConfigRecord;
-  accounts?: AccountRecord[];
-  active_account_id?: string | null;
+  /** Rust 와 같은 자리 — 지금 로그인한 사람과 토큰. */
+  session?: { user: AccountRecord; token: string } | null;
   push_credentials?: Record<string, PushCredentialRecord>;
 }
 
@@ -160,7 +179,7 @@ function configPath(): string {
 function loadSettings(): AppSettings {
   const p = configPath();
   if (!existsSync(p)) {
-    const empty: AppSettings = { schema_version: 8, repositories: [] };
+    const empty: AppSettings = { schema_version: 9, repositories: [] };
     mkdirSync(join(homedir(), ".config", APP_DIR), { recursive: true });
     writeFileSync(p, JSON.stringify(empty, null, 2));
     return empty;
@@ -169,10 +188,7 @@ function loadSettings(): AppSettings {
   try {
     s = JSON.parse(readFileSync(p, "utf8")) as AppSettings;
   } catch {
-    s = { schema_version: 8, repositories: [] };
-  }
-  if (ensureSeedAccounts(s)) {
-    saveSettings(s);
+    s = { schema_version: 9, repositories: [] };
   }
   return s;
 }
@@ -181,33 +197,79 @@ function saveSettings(s: AppSettings): void {
   writeFileSync(configPath(), JSON.stringify(s, null, 2));
 }
 
-// ── 로그인 (Rust config_store와 동일한 해시/시드 계정) ───────────────
+// ── 로그인 (팀 서버의 /auth 를 그대로 호출) ───────────────────────────
+//
+// 예전에는 여기서 SHA-256 해시와 시드 계정(test/test)을 흉내 냈다. 계정이
+// 서버로 옮겨간 뒤에는 흉내를 낼 이유가 없다 — 미리보기에서 가입한 계정이
+// 데스크톱 앱에서도 그대로 로그인되어야 한다.
 
-function hashPassword(username: string, password: string): string {
-  return createHash("sha256").update(`git-companion::${username}:${password}`).digest("hex");
+/** 설정에 저장된 팀 서버 주소. 없으면 사용자에게 알려 줄 메시지와 함께 실패. */
+function backendUrl(): string {
+  const url = String((loadSettings().peer as { backend_url?: string } | undefined)?.backend_url ?? "").trim();
+  if (!url) {
+    throw new Error(
+      "팀 서버 주소가 설정되지 않았습니다. 로그인 화면의 ‘서버 주소’에 입력하세요 (예: http://127.0.0.1:8000).",
+    );
+  }
+  return url.replace(/\/+$/, "");
 }
 
-const SEED_ACCOUNTS: Array<[string, string, string, string]> = [
-  ["test", "test", "테스트 1", "test@example.com"],
-  ["test2", "test2", "테스트 2", "test2@example.com"],
-];
-
-function ensureSeedAccounts(s: AppSettings): boolean {
-  let changed = false;
-  for (const [username, password, name, email] of SEED_ACCOUNTS) {
-    if (s.accounts?.some((a) => (a.username ?? "").toLowerCase() === username)) continue;
-    s.accounts ??= [];
-    s.accounts.push({
-      id: hashPassword(username, "seed-" + username).slice(0, 8) + "-" + randomUUID(),
-      name,
-      email,
-      username,
-      password_hash: hashPassword(username, password),
-      created_at: new Date().toISOString(),
+/**
+ * `/auth/*` 호출. 실패하면 FastAPI 의 `detail` 문구를 그대로 올린다 —
+ * 상태 코드만 보여 주면 어느 항목이 문제인지 알 수 없다.
+ */
+async function authProxy(
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+  token?: string,
+): Promise<unknown> {
+  const base = backendUrl();
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (token) headers.authorization = `Bearer ${token}`;
+  let resp: Response;
+  try {
+    resp = await fetch(`${base}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
-    changed = true;
+  } catch (e) {
+    throw new Error(
+      `팀 서버에 연결할 수 없습니다 (${base}). 서버가 실행 중인지 확인하세요: cd backend && uvicorn app.main:app`,
+    );
   }
-  return changed;
+  if (!resp.ok) {
+    let detail = "";
+    try {
+      const j = (await resp.json()) as { detail?: unknown };
+      if (typeof j.detail === "string") detail = j.detail;
+      else if (Array.isArray(j.detail)) {
+        detail = String((j.detail[0] as { msg?: string } | undefined)?.msg ?? "");
+      }
+    } catch {
+      /* 본문이 JSON 이 아니면 상태 코드만 쓴다 */
+    }
+    throw new Error(detail || `요청 실패 (${resp.status})`);
+  }
+  if (resp.status === 204) return null;
+  return resp.json();
+}
+
+/** register/login 응답을 설정 파일의 세션으로 저장한다. */
+function saveSessionFromAuth(result: unknown): AccountRecord {
+  const auth = result as { user: AccountRecord; token: string };
+  const s = loadSettings();
+  s.session = { user: auth.user, token: auth.token };
+  saveSettings(s);
+  return auth.user;
+}
+
+function requireSessionToken(s: AppSettings): string {
+  const token = s.session?.token;
+  if (!token) throw new Error("로그인이 필요합니다.");
+  return token;
 }
 
 function findRepo(s: AppSettings, id: string): RepoRecord | undefined {
@@ -469,20 +531,22 @@ function repoById(id: string): RepoRecord | { error: string } {
   return r;
 }
 
+// `Promise.withResolvers` 는 Node 22+ 에서만 쓸 수 있다. README가 요구하는
+// Node 20 에서도 미리보기가 동작해야 하므로 평범한 Promise 로 쓴다.
 function readBody(req: IncomingMessage): Promise<unknown> {
-  const { promise, resolve, reject } = Promise.withResolvers<unknown>();
-  const chunks: Buffer[] = [];
-  req.on("data", (c: Buffer) => chunks.push(c));
-  req.on("end", () => {
-    const raw = Buffer.concat(chunks).toString("utf8");
-    try {
-      resolve(raw ? JSON.parse(raw) : {});
-    } catch (e) {
-      reject(e);
-    }
+  return new Promise<unknown>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      try {
+        resolve(raw ? JSON.parse(raw) : {});
+      } catch (e) {
+        reject(e);
+      }
+    });
+    req.on("error", reject);
   });
-  req.on("error", reject);
-  return promise;
 }
 
 // ── response helpers ────────────────────────────────────────────────────────
@@ -493,6 +557,175 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+
+/**
+ * 현재 브랜치 이름.
+ *
+ * `rev-parse --abbrev-ref HEAD` 는 **커밋이 하나도 없는 저장소**에서
+ * fatal 과 함께 "HEAD" 를 내놓는다. 방금 `git init` 한 사람에게 브랜치가
+ * "HEAD" 로 보이는 셈이다. `symbolic-ref` 는 그 상태에서도 실제 이름(main)을
+ * 준다. (Rust 는 `status --porcelain=v2 --branch` 를 써서 원래 옳았다.)
+ */
+function currentBranch(t: GitTarget): string {
+  const sym = tgGit(t, ["symbolic-ref", "--short", "HEAD"]);
+  if (sym.ok && sym.stdout.trim()) return sym.stdout.trim();
+  const rp = tgGit(t, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  return rp.ok ? rp.stdout.trim() : "";
+}
+
+// ── 오류 문구 / 경로 (Rust 쪽과 같은 규칙) ────────────────────────────────
+//
+// 처음 git 을 쓰는 사람이 실제로 마주치는 실패들이다. 여기서 흉내를 내지
+// 않으면 미리보기에서는 친절한 문구가, 실제 앱에서는 영어 fatal 이 뜨거나
+// (혹은 그 반대로) 어긋난다. Rust: `git/ops.rs`, `git/mod.rs`.
+
+/** `~`, `~/…` 를 홈으로 펼친다. */
+function expandTilde(input: string): string {
+  const t = input.trim();
+  if (t === "~") return homedir();
+  if (t.startsWith("~/")) return join(homedir(), t.slice(2));
+  return t;
+}
+
+/** 커밋 실패 이유를 사람 말로. git 은 "nothing to commit" 을 stdout 에 쓴다. */
+function explainCommitFailure(stdout: string, stderr: string): string {
+  const all = `${stdout}\n${stderr}`;
+  if (
+    all.includes("nothing to commit") ||
+    all.includes("no changes added to commit") ||
+    all.includes("nothing added to commit")
+  ) {
+    return "커밋할 변경이 없습니다. 파일을 수정한 뒤 다시 커밋하세요.";
+  }
+  if (all.includes("empty commit message") || all.includes("Aborting commit due to empty")) {
+    return "커밋 메시지를 입력하세요.";
+  }
+  if (all.includes("Please tell me who you are") || all.includes("unable to auto-detect email")) {
+    return 'git 사용자 정보가 없어 커밋할 수 없습니다. 터미널에서 한 번 설정하세요:\n  git config --global user.name "이름"\n  git config --global user.email "메일@example.com"';
+  }
+  if (all.includes("index.lock")) {
+    return "다른 git 작업이 진행 중입니다(.git/index.lock). 잠시 후 다시 시도하세요.";
+  }
+  if (all.includes("unmerged") || all.includes("Unmerged paths")) {
+    return "해결하지 않은 충돌이 남아 있습니다. 병합 탭에서 먼저 마무리하세요.";
+  }
+  const raw = stderr.trim() || stdout.trim();
+  return raw || "알 수 없는 이유로 커밋에 실패했습니다.";
+}
+
+/** git 의 영어 오류를 사람 말로. 구체적인 원인을 먼저 검사한다. */
+function friendlyGitError(stderr: string): string {
+  const t = stderr.trim();
+  if (t.includes("does not appear to be a git repository") || t.includes("No such remote")) {
+    return "이 저장소에는 원격(origin)이 없어서 푸시할 곳이 없습니다.\n터미널에서 원격을 한 번 등록하세요:\n  git remote add origin <저장소 주소>";
+  }
+  if (t.includes("src refspec") && t.includes("does not match any")) {
+    return "푸시할 커밋이 없습니다. 먼저 커밋한 뒤 다시 시도하세요.";
+  }
+  if (t.includes("has no upstream branch") || t.includes("no upstream configured")) {
+    return "이 브랜치는 아직 원격에 없습니다. 앱이 자동으로 만들어 주니 다시 시도하세요.";
+  }
+  if (t.includes("Repository not found") || t.includes("repository does not exist")) {
+    return "원격에서 저장소를 찾을 수 없습니다. 저장소 주소와 접근 권한을 확인하세요.";
+  }
+  if (t.includes("non-fast-forward") || t.includes("updates were rejected")) {
+    return "푸시 거부됨: 원격 브랜치가 로컬보다 앞서 있습니다. 먼저 ‘동기화’로 최신 내용을 받은 뒤 다시 푸시하세요.";
+  }
+  if (t.includes("failed to push some refs")) {
+    return "푸시 실패: 원격에 새 변경이 있습니다. 먼저 ‘동기화’로 받은 뒤 다시 푸시하세요.";
+  }
+  if (
+    t.includes("Could not resolve host") ||
+    t.includes("Connection refused") ||
+    t.includes("Connection timed out") ||
+    t.includes("network")
+  ) {
+    return "네트워크에 연결할 수 없습니다. 인터넷 연결과 저장소 주소를 확인하세요.";
+  }
+  if (
+    t.includes("Permission denied") ||
+    t.includes("permission denied") ||
+    t.includes("Authentication failed") ||
+    t.includes("authentication") ||
+    t.includes("auth")
+  ) {
+    return "접근 권한이 없습니다. SSH 키가 등록되어 있는지, 또는 아이디/비밀번호가 맞는지 확인하세요.";
+  }
+  if (t.includes("Host key verification failed")) {
+    return "서버의 SSH 호스트 키를 확인할 수 없습니다. 터미널에서 한 번 접속해 호스트를 신뢰 목록에 추가하세요.";
+  }
+  return t || "알 수 없는 이유로 실패했습니다.";
+}
+
+/** 로컬 경로 검증 — 실패 이유마다 다른 문구. */
+function checkLocalRepoPath(input: string): { path: string } | { error: string } {
+  const p = expandTilde(input);
+  if (!p) return { error: "저장소 폴더 경로를 입력하세요." };
+  if (!existsSync(p)) {
+    return {
+      error: `그 경로에 폴더가 없습니다: ${p}\n경로를 다시 확인하세요. 전체 경로(예: /home/이름/projects/my-app)로 입력해야 합니다.`,
+    };
+  }
+  if (!statSync(p).isDirectory()) {
+    return { error: `폴더가 아니라 파일입니다: ${p}\n저장소 폴더 자체를 고르세요.` };
+  }
+  if (!existsSync(join(p, ".git"))) {
+    // 하위 폴더를 고른 흔한 실수를 잡아 준다.
+    let hint =
+      "\ngit clone 으로 받은 폴더를 고르거나, 이 폴더를 저장소로 만들려면 ‘git 저장소로 만들기’를 쓰세요.";
+    let up = p;
+    for (let i = 0; i < 8; i++) {
+      const parent = dirname(up);
+      if (parent === up) break;
+      up = parent;
+      if (existsSync(join(up, ".git"))) {
+        hint = `\n혹시 이 폴더를 찾으셨나요? ${up}`;
+        break;
+      }
+    }
+    return { error: `이 폴더는 git 저장소가 아닙니다 (.git 이 없습니다): ${p}${hint}` };
+  }
+  return { path: p };
+}
+
+/** Rust `config_store::AppSettings::default()` 의 external_tools 와 동일. */
+const DEFAULT_EXTERNAL_TOOLS: ExternalToolRecord[] = [
+  { id: "code", label: "VS Code", command_template: "code", args_template: "{path}", enabled: true },
+  { id: "cursor", label: "Cursor", command_template: "cursor", args_template: "{path}", enabled: true },
+  { id: "sublime", label: "Sublime Text", command_template: "subl", args_template: "{path}", enabled: true },
+  {
+    id: "gnome-terminal",
+    label: "GNOME Terminal",
+    command_template: "gnome-terminal",
+    args_template: "--working-directory={path}",
+    enabled: true,
+  },
+  { id: "xterm", label: "XTerm", command_template: "xterm", args_template: '-e "cd {path} && bash"', enabled: true },
+  { id: "tmux", label: "Tmux", command_template: "tmux", args_template: "new-session -c {path}", enabled: true },
+];
+
+/**
+ * 미리보기용 알림 수신자 목록 (프로세스 메모리).
+ *
+ * 실제로는 백엔드가 들고 있다. 여기 두는 이유는 알림 화면의 "구성원 동기화"와
+ * "제거"가 눌렀을 때 실제로 목록이 바뀌는 걸 보여 주기 위해서다 — 고정 배열을
+ * 돌려주면 버튼이 동작하는지 아닌지 알 수 없다. 개발 서버를 재시작하면 초기화된다.
+ */
+const devMembers = new Map<
+  string,
+  { device_id: string | null; email: string; name: string | null; role: string; joined_at: string | null }
+>([
+  [
+    "test@example.com",
+    {
+      device_id: "dev-1",
+      email: "test@example.com",
+      name: "테스트 1",
+      role: "admin",
+      joined_at: new Date().toISOString(),
+    },
+  ],
+]);
 
 // ── IPC dispatch ────────────────────────────────────────────────────────────
 
@@ -538,9 +771,20 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
           if (!sshCfg) return git(a.project_path, cmd.split(" "));
           return sshRun(sshCfg, `git -C ${shellQuoteArg(a.project_path)} ${cmd}`);
         };
-        const inside = remoteGit("rev-parse --is-inside-work-tree");
-        if (!inside.ok) {
-          return jsonError("git", "선택한 경로가 git 저장소가 아닙니다.");
+        if (!sshCfg) {
+          // 로컬 경로는 여기서 검증하고 `~` 를 펼쳐 저장한다 — 펼치지 않으면
+          // 등록은 되지만 이후 모든 git 호출이 없는 경로를 향한다.
+          const checked = checkLocalRepoPath(a.project_path);
+          if ("error" in checked) return jsonError("git", checked.error);
+          a.project_path = checked.path;
+        } else {
+          const inside = remoteGit("rev-parse --is-inside-work-tree");
+          if (!inside.ok) {
+            return jsonError(
+              "git",
+              `원격 서버(${a.ssh_host})의 이 경로는 git 저장소가 아닙니다: ${a.project_path}`,
+            );
+          }
         }
         const origin = remoteGit("remote get-url origin");
         const head = remoteGit("symbolic-ref --short HEAD");
@@ -563,6 +807,25 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         s.repositories.push(rec);
         saveSettings(s);
         return rec;
+      }
+      // 아직 git 저장소가 아닌 폴더를 저장소로 만들고 바로 등록한다.
+      // "이 폴더는 git 저장소가 아닙니다"에서 막힌 사람에게 앱 안의 다음 걸음.
+      case "init_repository": {
+        const raw = String(args.path ?? "");
+        const p2 = expandTilde(raw);
+        if (!p2) return jsonError("git", "저장소 폴더 경로를 입력하세요.");
+        if (!existsSync(p2)) return jsonError("git", `그 경로에 폴더가 없습니다: ${p2}`);
+        if (!statSync(p2).isDirectory()) return jsonError("git", `폴더가 아닙니다: ${p2}`);
+        if (!existsSync(join(p2, ".git"))) {
+          const out = git(p2, ["init", "-b", "main"]);
+          if (!out.ok) {
+            return jsonError("git", `git 저장소로 만들지 못했습니다: ${out.stderr.trim()}`);
+          }
+        }
+        return dispatch({
+          cmd: "register_repository",
+          args: { args: { project_path: p2, ssh_host: "", ssh_user: "", ssh_key_path: "", ssh_password: "", ssh_port: 22 } },
+        });
       }
       case "remove_repository": {
         const s = loadSettings();
@@ -642,6 +905,8 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         const strategy =
           (args.binaryStrategy as string | null | undefined) ??
           (args.binary_strategy as string | null | undefined) ??
+          // 인자를 비우면 설정에 저장된 전략을 쓴다 (Rust 쪽과 같은 규칙).
+          loadSettings().ai?.binary_strategy ??
           "";
         if (strategy && strategy !== "ours" && strategy !== "theirs") {
           return jsonError("config", `알 수 없는 선택: ${strategy} (ours 또는 theirs)`);
@@ -682,19 +947,75 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
       }
 
       // ── peer / team (dev-only stubs so the inbox UI can be exercised) ──
+      //
+      // 실제 배달망은 FastAPI 백엔드(`backend/`)가 담당한다. 여기서는 화면을
+      // 눌러 볼 수 있을 만큼만 흉내를 낸다 — 수신자 목록은 프로세스 메모리에
+      // 두어 "구성원 동기화" / "제거" 가 눈에 보이게 동작한다.
+      // 로그인 화면의 "서버 주소" — 예전에는 이 두 명령이 없어서 shim 의 목
+      // 데이터로 떨어졌다. "저장했습니다"라고 말하면서 아무것도 저장하지
+      // 않았고, 그래서 로그인이 계속 실패하는데 이유를 알 수 없었다.
+      case "peer_get_config": {
+        const peer = (loadSettings().peer ?? {}) as Record<string, unknown>;
+        return {
+          backend_url: String(peer.backend_url ?? ""),
+          device_token: String(peer.device_token ?? ""),
+          device_id: String(peer.device_id ?? ""),
+          device_name: String(peer.device_name ?? ""),
+          last_poll_port: null,
+        };
+      }
+      case "peer_set_backend_url": {
+        const url = String(args.url ?? "").trim().replace(/\/+$/, "");
+        if (!url) return jsonError("bad_request", "서버 주소를 입력하세요.");
+        const cfg = loadSettings();
+        cfg.peer = { ...(cfg.peer ?? {}), backend_url: url };
+        saveSettings(cfg);
+        return null;
+      }
+      // 저장한 주소로 실제 연결되는지 확인한다. 저장만 하고 "됐다"고 말하면
+      // 오타 하나로 로그인이 계속 실패하는데 원인을 알 수 없다.
+      case "peer_check_backend": {
+        const url = String(args.url ?? "").trim().replace(/\/+$/, "") ||
+          String((loadSettings().peer as { backend_url?: string } | undefined)?.backend_url ?? "");
+        if (!url) return { ok: false, message: "서버 주소가 비어 있습니다." };
+        try {
+          const r = await fetch(`${url}/healthz`, { signal: AbortSignal.timeout(5000) });
+          if (!r.ok) {
+            return { ok: false, message: `서버가 응답했지만 상태가 정상이 아닙니다 (${r.status}).` };
+          }
+          return { ok: true, message: "서버에 연결됩니다." };
+        } catch {
+          return {
+            ok: false,
+            message: `연결할 수 없습니다. 주소가 맞는지, 서버가 실행 중인지 확인하세요:\n  cd backend && uvicorn app.main:app`,
+          };
+        }
+      }
       case "peer_unread_count": {
         return 2;
       }
       case "peer_list_projects": {
-        return [
-          { id: "p1", display_name: "테스트 프로젝트", join_code: "TEST-0001", role: "admin" },
-        ];
+        return [{ id: "p1", display_name: "데모 팀", join_code: "TEAM-0001", role: "admin" }];
       }
       case "peer_list_members": {
-        return [
-          { device_id: null, email: "alice@example.com", name: "앨리스", role: "member", joined_at: null },
-          { device_id: null, email: "bob@example.com", name: "밥", role: "admin", joined_at: null },
-        ];
+        return [...devMembers.values()];
+      }
+      case "peer_invite_by_email": {
+        const email = String(args.email ?? "").trim().toLowerCase();
+        if (!email) return jsonError("bad_request", "이메일이 비어 있습니다.");
+        const entry = {
+          device_id: null,
+          email,
+          name: (args.name as string | null) ?? null,
+          role: (args.role as string | null) ?? "member",
+          joined_at: null,
+        };
+        devMembers.set(email, entry);
+        return entry;
+      }
+      case "peer_remove_email_invite": {
+        devMembers.delete(String(args.email ?? "").trim().toLowerCase());
+        return null;
       }
       case "peer_repos_for_project": {
         // dev stub: 등록된 첫 저장소를 연결된 것으로 보여준다.
@@ -785,7 +1106,7 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         if ("error" in r) return jsonError("repo_not_found", r.error);
         const flag = args.stageAll ? ["-a"] : [];
         const out = tgGit(targetOf(r), ["commit", ...flag, "-m", args.message as string]);
-        if (!out.ok) return jsonError("git", out.stderr.trim());
+        if (!out.ok) return jsonError("git", explainCommitFailure(out.stdout, out.stderr));
         const sha = tgGit(targetOf(r), ["rev-parse", "HEAD"]).stdout.trim();
         return { ok: true, sha, message: out.stdout.trim() };
       }
@@ -796,7 +1117,7 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         const t = targetOf(r);
         let branch = args.branch as string | undefined;
         if (!branch) {
-          branch = tgGit(t, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
+          branch = currentBranch(t);
         }
         if (!branch) return jsonError("git", "cannot determine branch");
         const url = tgGit(t, ["remote", "get-url", "origin"]).stdout.trim();
@@ -835,13 +1156,15 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
           ok: out.ok,
           pushed_sha: null,
           auth_required: false,
-          message: (out.stdout.trim() || out.stderr.trim()) || "",
+          message: out.ok
+            ? out.stdout.trim() || out.stderr.trim()
+            : friendlyGitError(out.stderr || out.stdout),
         };
       }
       case "pull": {
         const r = repoById(args.repoId as string);
         if ("error" in r) return jsonError("repo_not_found", r.error);
-        const branch = tgGit(targetOf(r), ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
+        const branch = currentBranch(targetOf(r));
         const out = tgGit(targetOf(r), ["pull", "--ff-only", "origin", branch]);
         const conflicted = tgGit(targetOf(r), ["diff", "--name-only", "--diff-filter=U"]).stdout
           .split("\n").filter(Boolean);
@@ -886,12 +1209,21 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
 
       // ── AI config ─────────────────────────────────────────────────────
       case "get_ai_config": {
-        return loadSettings().ai ?? {
-          enabled: false,
-          base_url: "",
-          api_key: "",
-          model: "",
+        const saved = loadSettings().ai;
+        // 오래된 config.json 에는 새 필드가 없다 — Rust 쪽 serde(default)와
+        // 같은 기본값으로 채워서 UI가 undefined 를 만나지 않게 한다.
+        return {
+          enabled: saved?.enabled ?? false,
+          base_url: saved?.base_url ?? "",
+          api_key: saved?.api_key ?? "",
+          model: saved?.model ?? "",
+          system_prompt: saved?.system_prompt ?? "",
+          auto_resolve: saved?.auto_resolve ?? false,
+          binary_strategy: saved?.binary_strategy || "theirs",
         };
+      }
+      case "ai_default_prompt": {
+        return DEFAULT_AI_PROMPT;
       }
       case "set_ai_config": {
         const s = loadSettings();
@@ -910,91 +1242,97 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
       }
 
       // ── 로그인 계정 (로컬 레지스트리) ──────────────────────────────
+      // ── 계정 (팀 서버의 users 테이블) ────────────────────────────────
+      //
+      // 흉내를 내지 않고 실제 백엔드(`backend/`)의 `/auth/*` 를 그대로
+      // 호출한다. 미리보기에서 가입한 계정이 데스크톱 앱에서도 그대로
+      // 로그인되어야 하고, 비밀번호 규칙·중복 검사 같은 것을 두 곳에서
+      // 따로 구현하면 반드시 어긋난다.
+      //
+      // 토큰은 Rust 와 같은 자리(설정 파일의 `session`)에 저장한다.
       case "account_register": {
-        const s = loadSettings();
-        s.accounts ??= [];
-        const name = (args.name as string).trim();
-        const email = (args.email as string).trim().toLowerCase();
-        const username = (args.username as string | undefined)?.trim().toLowerCase() ?? "";
-        const password = (args.password as string | undefined) ?? "";
-        if (!name || !email) return jsonError("bad_request", "이름과 이메일을 입력하세요.");
-        if (!email.includes("@")) return jsonError("bad_request", "올바른 이메일 주소를 입력하세요.");
-        let passwordHash: string | undefined;
-        if (username && password) {
-          if (!/^[a-z0-9._-]{1,32}$/.test(username)) {
-            return jsonError("bad_request", "아이디는 영문/숫자/._- 만 사용하고 1~32자로 입력하세요.");
-          }
-          if (password.length < 4) return jsonError("bad_request", "비밀번호는 4자 이상 입력하세요.");
-          passwordHash = hashPassword(username, password);
-        }
-        if (s.accounts.some((a) => a.email === email)) {
-          return jsonError("bad_request", `${email}은(는) 이미 등록된 이메일입니다.`);
-        }
-        if (username && s.accounts.some((a) => (a.username ?? "").toLowerCase() === username)) {
-          return jsonError("bad_request", `${username}은(는) 이미 사용 중인 아이디입니다.`);
-        }
-        const acc: AccountRecord = {
-          id: randomUUID(),
-          name,
-          email,
-          username: username || null,
-          password_hash: passwordHash ?? null,
-          created_at: new Date().toISOString(),
-        };
-        s.accounts.push(acc);
-        s.active_account_id = acc.id;
-        saveSettings(s);
-        return acc;
+        return authProxy("POST", "/auth/register", {
+          name: args.name,
+          email: args.email,
+          username: args.username,
+          password: args.password,
+        }).then(saveSessionFromAuth);
       }
       case "account_login_by_password": {
-        const s = loadSettings();
-        const id = ((args.username as string) ?? "").trim().toLowerCase();
-        const acc = (s.accounts ?? []).find(
-          (a) =>
-            (a.username ?? "").toLowerCase() === id ||
-            (id.includes("@") && a.email === id),
-        );
-        const err = () => jsonError("bad_request", "아이디 또는 비밀번호가 올바르지 않습니다.");
-        if (!acc) return err();
-        const hash = acc.password_hash;
-        if (!hash || hash !== hashPassword(acc.username ?? id, (args.password as string) ?? "")) {
-          return err();
-        }
-        s.active_account_id = acc.id;
-        saveSettings(s);
-        return acc;
-      }
-      case "account_list": {
-        return loadSettings().accounts ?? [];
-      }
-      case "account_delete": {
-        const s = loadSettings();
-        s.accounts ??= [];
-        const id = args.id as string;
-        s.accounts = s.accounts.filter((a) => a.id !== id);
-        if (s.active_account_id === id) s.active_account_id = null;
-        saveSettings(s);
-        return null;
-      }
-      case "account_login": {
-        const s = loadSettings();
-        const acc = (s.accounts ?? []).find((a) => a.id === (args.id as string));
-        if (!acc) return jsonError("bad_request", "계정을 찾을 수 없습니다.");
-        s.active_account_id = acc.id;
-        saveSettings(s);
-        return acc;
+        return authProxy("POST", "/auth/login", {
+          username: args.username,
+          password: args.password,
+        }).then(saveSessionFromAuth);
       }
       case "account_logout": {
         const s = loadSettings();
-        s.active_account_id = null;
+        const token = s.session?.token;
+        if (token) await authProxy("POST", "/auth/logout", undefined, token).catch(() => null);
+        s.session = null;
         saveSettings(s);
         return null;
       }
       case "account_current": {
+        return loadSettings().session?.user ?? null;
+      }
+      case "account_refresh": {
         const s = loadSettings();
-        const id = s.active_account_id;
-        if (!id) return null;
-        return (s.accounts ?? []).find((a) => a.id === id) ?? null;
+        const token = s.session?.token;
+        if (!token) return null;
+        try {
+          const user = (await authProxy("GET", "/auth/me", undefined, token)) as AccountRecord;
+          s.session = { user, token };
+          saveSettings(s);
+          return user;
+        } catch (e) {
+          // 401 이면 세션이 사라진 것 — 그 외(네트워크 등)는 캐시를 유지한다.
+          if (String((e as Error).message).includes("401")) {
+            s.session = null;
+            saveSettings(s);
+            return null;
+          }
+          return s.session?.user ?? null;
+        }
+      }
+      case "account_update_profile": {
+        const s = loadSettings();
+        const token = requireSessionToken(s);
+        const body: Record<string, unknown> = {};
+        if (args.name !== undefined && args.name !== null) body.name = args.name;
+        if (args.email !== undefined && args.email !== null) body.email = args.email;
+        const user = (await authProxy("PATCH", "/auth/me", body, token)) as AccountRecord;
+        s.session = { user, token };
+        saveSettings(s);
+        return user;
+      }
+      case "account_change_password": {
+        const s = loadSettings();
+        const token = requireSessionToken(s);
+        await authProxy(
+          "POST",
+          "/auth/me/password",
+          {
+            current_password: args.currentPassword ?? args.current_password,
+            new_password: args.newPassword ?? args.new_password,
+          },
+          token,
+        );
+        return null;
+      }
+      case "account_delete_self": {
+        const s = loadSettings();
+        const token = requireSessionToken(s);
+        await authProxy("DELETE", "/auth/me", undefined, token);
+        s.session = null;
+        saveSettings(s);
+        return null;
+      }
+      case "account_search": {
+        const s = loadSettings();
+        const q = String(args.query ?? "").trim();
+        if (q.length < 2) return [];
+        const token = requireSessionToken(s);
+        return authProxy("GET", `/auth/users?q=${encodeURIComponent(q)}`, undefined, token);
       }
 
       // ── 푸시 자격증명 (설정에서 저장 / 자동 입력) ────────────────────
@@ -1025,12 +1363,27 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         if ("error" in r) return jsonError("repo_not_found", r.error);
         const t = targetOf(r);
         const raw = readWorkingTree(t, ".gpconfig").trim();
-        if (!raw) return { exists: false, config: defaultProjectConfig() };
-        try {
-          return { exists: true, config: normalizeProjectConfig(JSON.parse(raw)) };
-        } catch (e) {
-          return jsonError("git", `.gpconfig 파싱 실패: ${(e as Error).message}`);
+        if (raw) {
+          try {
+            return { exists: true, config: normalizeProjectConfig(JSON.parse(raw)) };
+          } catch (e) {
+            return jsonError("git", `.gpconfig 파싱 실패: ${(e as Error).message}`);
+          }
         }
+        // 작업 브랜치에 사본이 없으면 병합 브랜치에 커밋된 팀 규칙을 읽는다
+        // (Rust `read_config_effective`와 같은 규칙). 없으면 병합 관리자
+        // 미지정으로 읽혀 팀원에게 관리자 화면이 뜬다.
+        const base = (r.default_branch || "main").trim();
+        for (const rev of [`origin/${base}`, base]) {
+          const out = tgGit(t, ["show", `${rev}:.gpconfig`]);
+          if (!out.ok || !out.stdout.trim()) continue;
+          try {
+            return { exists: true, config: normalizeProjectConfig(JSON.parse(out.stdout.trim())) };
+          } catch {
+            continue;
+          }
+        }
+        return { exists: false, config: defaultProjectConfig() };
       }
       case "project_config_set": {
         const r = repoById(args.repoId as string);
@@ -1038,15 +1391,14 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         const t = targetOf(r);
         let cfg = normalizeProjectConfig((args.config ?? {}) as ProjectConfigRecord);
         // 저장하는 사람도 구성원으로 자동 포함 (로그인 상태일 때).
-        const me = (() => {
-          const s = loadSettings();
-          const id = s.active_account_id;
-          if (!id) return null;
-          return (s.accounts ?? []).find((a) => a.id === id) ?? null;
-        })();
-        if (me && !cfg.members.some((m) => m.email.toLowerCase() === me.email.toLowerCase())) {
-          cfg.members.push({ id: me.id, name: me.name, email: me.email, role: "member" });
+        // normalizeProjectConfig 는 항상 members 를 채우지만 타입은 옵셔널이라
+        // 지역 변수로 받아 좁힌다.
+        const me = loadSettings().session?.user ?? null;
+        const members = cfg.members ?? [];
+        if (me && !members.some((m) => m.email.toLowerCase() === me.email.toLowerCase())) {
+          members.push({ id: me.id, name: me.name, email: me.email, role: "member" });
         }
+        cfg.members = members;
         if (!cfg.default_base_branch) cfg.default_base_branch = r.default_branch || "main";
         writeWorkingTree(t, ".gpconfig", JSON.stringify(cfg, null, 2));
         let commit: { ok: boolean; message: string } | null = null;
@@ -1093,14 +1445,54 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         return s.ssh_profile;
       }
       case "list_external_tools": {
-        return loadSettings().external_tools ?? [];
+        const saved = loadSettings().external_tools;
+        // Rust `config_store` 는 설정이 비어 있으면 기본 도구를 심어 준다.
+        // 미리보기에서도 같은 목록이 보여야 저장소 화면의 "열기" 버튼이
+        // 실제 앱과 같게 나타난다.
+        return saved && saved.length > 0 ? saved : DEFAULT_EXTERNAL_TOOLS;
       }
       case "set_external_tool": {
-        return jsonError("not_implemented", "dev bridge does not yet mutate external_tools");
+        const tool = args.tool as ExternalToolRecord;
+        if (!tool?.id || !tool.label || !tool.command_template) {
+          return jsonError("bad_request", "id·label·command_template 는 필수입니다.");
+        }
+        const cfg = loadSettings();
+        // 목록이 비어 있으면 기본 도구를 먼저 심는다 — 그러지 않으면 하나를
+        // 편집하는 순간 나머지 기본 도구가 사라진다.
+        const tools = cfg.external_tools?.length ? cfg.external_tools : [...DEFAULT_EXTERNAL_TOOLS];
+        const at = tools.findIndex((t) => t.id === tool.id);
+        if (at >= 0) tools[at] = tool;
+        else tools.push(tool);
+        cfg.external_tools = tools;
+        saveSettings(cfg);
+        return tool;
       }
-      case "remove_external_tool":
-      case "open_external_tool":
+      case "remove_external_tool": {
+        const id = String(args.id ?? "");
+        const cfg = loadSettings();
+        const tools = cfg.external_tools?.length ? cfg.external_tools : [...DEFAULT_EXTERNAL_TOOLS];
+        cfg.external_tools = tools.filter((t) => t.id !== id);
+        saveSettings(cfg);
         return null;
+      }
+      case "open_external_tool": {
+        // 브라우저 미리보기에서는 도구를 실제로 띄우지 않는다 — 명령이 이
+        // 개발 서버가 도는 머신에서 실행되므로 사용자의 화면에 아무것도
+        // 뜨지 않는다. 그래도 SSH 저장소 거절은 Rust 와 같게 재현해서, 왜
+        // 안 되는지 미리보기에서도 확인할 수 있게 한다.
+        const r = repoById(args.repoId as string);
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        if (r.ssh_host) {
+          return jsonError(
+            "config",
+            `‘${r.display_name}’은(는) SSH 저장소(${r.ssh_host}:${r.path})입니다. 작업 트리가 원격 서버에 있어 이 컴퓨터의 도구로 열 수 없습니다.`,
+          );
+        }
+        return jsonError(
+          "config",
+          "브라우저 미리보기에서는 외부 도구를 띄울 수 없습니다. 데스크톱 앱(cargo tauri dev)에서 동작합니다.",
+        );
+      }
 
       // Real SSH — the dev server runs on the same machine as the user, so
       // auth (agent / key / known_hosts) works exactly like in the app.
@@ -1330,7 +1722,7 @@ function startMerge(t: GitTarget, branchRef: string, base: string): MergeOutcome
       message: "작업 트리에 커밋되지 않은 변경이 있습니다. 작업 탭에서 커밋하거나 stash하세요.",
     };
   }
-  const head = tgGit(t, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
+  const head = currentBranch(t);
   if (head !== base) {
     tgGit(t, ["fetch", "origin", `${base}:${base}`]);
   }
@@ -1402,14 +1794,17 @@ function resolveConflict(t: GitTarget, path: string, r: Resolution): string[] {
 
 interface FileResolution {
   path: string;
-  method: "ai" | "ours" | "theirs";
+  /** "skipped" 는 `remainingReasons` 항목에만 쓴다 (자동으로 안 고친 파일). */
+  method: "ai" | "ours" | "theirs" | "skipped";
   note: string | null;
 }
+// Rust `git::auto::AutoResolveReport` 와 같은 와이어 형식(camelCase).
 interface AutoResolveReport {
   resolved: FileResolution[];
   remaining: string[];
+  remainingReasons: FileResolution[];
   committed: boolean;
-  backup_id: string | null;
+  backupId: string | null;
   message: string;
 }
 interface BackupEntry {
@@ -1446,6 +1841,18 @@ function mergeHeadBranch(t: GitTarget): string {
   return "(병합 대상)";
 }
 
+/// 한쪽만 base에서 바뀐 충돌이면 그 바뀐 쪽을 돌려준다 (Rust `one_sided_change`와
+/// 같은 규칙). 양쪽이 모두 바뀌었으면 null — 자동으로 고를 정답이 없다.
+function oneSidedChange(detail: { base: string | null; ours: string; theirs: string }):
+  | "ours"
+  | "theirs"
+  | null {
+  if (detail.base === null) return null;
+  if (detail.base === detail.theirs) return "ours";
+  if (detail.base === detail.ours) return "theirs";
+  return null;
+}
+
 function autoResolveMerge(t: GitTarget, binaryStrategy: "ours" | "theirs"): AutoResolveReport {
   const st = mergeState(t);
   const remaining0 = st.in_progress
@@ -1456,8 +1863,9 @@ function autoResolveMerge(t: GitTarget, binaryStrategy: "ours" | "theirs"): Auto
       return {
         resolved: [],
         remaining: [],
+        remainingReasons: [],
         committed: false,
-        backup_id: null,
+        backupId: null,
         message: "해결할 충돌 파일이 없습니다. ‘병합 완료’를 눌러 병합을 마무리하세요.",
       };
     }
@@ -1477,7 +1885,15 @@ function autoResolveMerge(t: GitTarget, binaryStrategy: "ours" | "theirs"): Auto
   const backupId = backedUp.length > 0 ? backupDir.split(/[\\/]/).pop() ?? null : null;
 
   // Resolve file by file; failures just leave the file in `remaining`.
+  //
+  // 이 브릿지는 일부러 LLM을 호출하지 않는다 (미리보기에 API 키가 없다). 즉
+  // 항상 "AI를 못 쓴 상태"와 같으므로, Rust 쪽과 동일한 안전 규칙을 쓴다:
+  // AI가 켜져 있으면 양쪽이 모두 고친 텍스트 파일을 자동으로 한쪽만 남기지
+  // 않는다 — 팀원의 커밋이 조용히 사라진 채 커밋/푸시되는 것을 막는다.
+  const aiEnabled = loadSettings().ai?.enabled ?? false;
+  const textFallback: "ours" | "theirs" | null = aiEnabled ? null : binaryStrategy;
   const resolved: FileResolution[] = [];
+  const skipNotes = new Map<string, string>();
   let remaining = [...remaining0];
   for (const path of remaining0) {
     const detail = conflictDetail(t, path);
@@ -1487,7 +1903,16 @@ function autoResolveMerge(t: GitTarget, binaryStrategy: "ours" | "theirs"): Auto
       method = binaryStrategy;
       note = "바이너리/대용량 파일 — 내용 확인 후 병합 탭에서 검토하세요.";
     } else {
-      method = detail.base === detail.theirs ? "ours" : "theirs";
+      const side = oneSidedChange(detail) ?? textFallback;
+      if (side === null) {
+        // 사람에게 넘긴다 — 충돌 상태 그대로 남겨 둔다.
+        skipNotes.set(
+          path,
+          "양쪽에서 모두 수정된 파일입니다. AI 결과를 쓸 수 없어 자동으로 한쪽을 고르지 않았습니다 — 병합 탭에서 직접 확인하세요.",
+        );
+        continue;
+      }
+      method = side;
       note = "AI 결과를 사용할 수 없어 규칙 기반으로 선택했습니다.";
     }
     tgGit(t, ["checkout", `--${method}`, "--", path]);
@@ -1495,6 +1920,11 @@ function autoResolveMerge(t: GitTarget, binaryStrategy: "ours" | "theirs"): Auto
     resolved.push({ path, method, note });
   }
   remaining = tgGit(t, ["diff", "--name-only", "--diff-filter=U"]).stdout.split("\n").filter(Boolean);
+  const remainingReasons: FileResolution[] = remaining.map((path) => ({
+    path,
+    method: "skipped",
+    note: skipNotes.get(path) ?? null,
+  }));
 
   if (remaining.length === 0 && st.in_progress) {
     const branch = mergeHeadBranch(t);
@@ -1503,25 +1933,32 @@ function autoResolveMerge(t: GitTarget, binaryStrategy: "ours" | "theirs"): Auto
       return {
         resolved,
         remaining,
+        remainingReasons,
         committed: true,
-        backup_id: backupId,
+        backupId: backupId,
         message: `충돌 ${resolved.length}개를 자동 해결하고 ‘AI 자동 병합: ${branch}’로 커밋했습니다.`,
       };
     }
     return {
       resolved,
       remaining,
+      remainingReasons,
       committed: false,
-      backup_id: backupId,
+      backupId: backupId,
       message: `모든 충돌은 해결됐지만 커밋에 실패했습니다: ${commit.stderr.trim()}. 충돌 전 상태는 백업에 보존되어 있으니 병합 센터의 ‘병합 완료’로 마무리하세요.`,
     };
   }
   return {
     resolved,
     remaining,
+    remainingReasons,
     committed: false,
-    backup_id: backupId,
-    message: `충돌 ${remaining0.length}개 중 ${remaining.length}개를 해결하지 못했습니다. 남은 파일은 병합 센터에서 처리하세요.`,
+    backupId: backupId,
+    message:
+      `충돌 ${remaining0.length}개 중 ${remaining.length}개를 해결하지 못했습니다. ` +
+      (textFallback === null
+        ? "양쪽에서 모두 수정된 파일은 자동으로 한쪽을 고르지 않습니다 — 병합 탭에서 직접 확인하세요."
+        : "남은 파일은 병합 센터에서 처리하세요."),
   };
 }
 
@@ -1580,7 +2017,7 @@ function syncToBase(t: GitTarget, base: string): MergeOutcome & { conflicted: bo
   }
   tgGit(t, ["fetch", "--prune", "origin"]);
   tgGit(t, ["fetch", "origin", `${base}:${base}`]);
-  const head = tgGit(t, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
+  const head = currentBranch(t);
   const args: string[] =
     head === base
       ? ["merge", "--no-edit", `origin/${base}`]
@@ -1641,7 +2078,7 @@ interface WorkingTreeStatus {
   files: Array<{ kind: string; path: string; staged: boolean; unstaged: boolean }>;
 }
 function workingTreeStatus(t: GitTarget): WorkingTreeStatus {
-  const branch = tgGit(t, ["rev-parse", "--abbrev-ref", "HEAD"]).stdout.trim();
+  const branch = currentBranch(t);
   const upstream = tgGit(t, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]).stdout.trim();
   const ab = upstream
     ? tgGit(t, ["rev-list", "--left-right", "--count", `${upstream}...HEAD`]).stdout.trim()
@@ -1678,8 +2115,14 @@ export function gitBridgePlugin(): Plugin {
   return {
     name: "git-companion-bridge",
     configureServer(server: ViteDevServer) {
-      server.middlewares.use("/__gc/invoke", async (req, res, next) => {
-        if (req.method !== "POST") {
+      // 경로를 접두사로 마운트하지 않고 직접 비교한다. code-server 같은
+      // 리버스 프록시 뒤에서 볼 때는 vite 를 base(`/absproxy/5173/`) 아래에서
+      // 띄우므로 요청 경로가 `/absproxy/5173/__gc/invoke` 로 들어온다.
+      // 플러그인 미들웨어는 vite 의 base 제거 미들웨어보다 먼저 실행되기
+      // 때문에, 접두사 마운트는 그 경우 매칭에 실패한다.
+      server.middlewares.use(async (req, res, next) => {
+        const path = (req.url ?? "").split("?")[0] ?? "";
+        if (req.method !== "POST" || !path.endsWith("/__gc/invoke")) {
           next();
           return;
         }

@@ -16,6 +16,7 @@ fn enabled_cfg(base_url: &str) -> AiConfig {
         base_url: base_url.into(),
         api_key: "sk-test-xxx".into(),
         model: "gpt-4o-mini".into(),
+        ..AiConfig::default()
     }
 }
 
@@ -82,8 +83,60 @@ async fn suggest_with_rejects_empty_config() {
         base_url: "".into(),
         api_key: "k".into(),
         model: "m".into(),
+        ..AiConfig::default()
     };
     let err = suggest_with(&client, &cfg, &ctx()).await.unwrap_err();
     let msg = format!("{err:?}");
     assert!(msg.contains("Base URL") || msg.contains("비어"));
+}
+
+// ── Pre-configured resolver prompt (scenario 5) ─────────────────────────────
+//
+// The merge manager writes the prompt once in Settings; every conflicted file
+// must then be resolved with *that* text, not the built-in default.
+
+#[test]
+fn effective_prompt_falls_back_to_default_when_unset() {
+    let cfg = AiConfig::default();
+    assert_eq!(
+        git_companion::ai::effective_system_prompt(&cfg),
+        git_companion::ai::DEFAULT_SYSTEM_PROMPT
+    );
+    // Whitespace-only is treated as unset, so a cleared textarea still works.
+    let blank = AiConfig {
+        system_prompt: "   \n  ".into(),
+        ..AiConfig::default()
+    };
+    assert_eq!(
+        git_companion::ai::effective_system_prompt(&blank),
+        git_companion::ai::DEFAULT_SYSTEM_PROMPT
+    );
+}
+
+#[tokio::test]
+async fn suggest_with_sends_the_preconfigured_prompt() {
+    let server = MockServer::start().await;
+    let cfg = AiConfig {
+        system_prompt: "  우리 팀 규칙: 항상 theirs 쪽 API 시그니처를 유지한다.  ".into(),
+        ..enabled_cfg(&server.uri())
+    };
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(wiremock::matchers::body_string_contains(
+            "우리 팀 규칙: 항상 theirs 쪽 API 시그니처를 유지한다.",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{"message": {"role": "assistant", "content": "ok"}}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let out = suggest_with(&client, &cfg, &ctx()).await.unwrap();
+    assert_eq!(out, "ok");
 }

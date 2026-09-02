@@ -3,7 +3,6 @@ import { normalizePort, renderSshTestReport, runSshTest } from "../lib/sshTest";
 import { openModal, confirmDialog } from "../components/Modal";
 import { toast } from "../components/Toast";
 import { icon } from "../components/Icon";
-import { setBusy } from "../components/Busy";
 interface ToolEntry {
   id: string;
   label: string;
@@ -32,7 +31,8 @@ export async function renderSettingsView(): Promise<HTMLElement> {
   head.appendChild(title);
   const sub = document.createElement("div");
   sub.className = "gc-page-head__sub";
-  sub.textContent = "연결, SSH 프로필, 외부 도구를 관리합니다.";
+  sub.textContent =
+    "AI 자동 병합, SSH 연결, 푸시 자격증명, 외부 도구를 관리합니다. 팀 규칙(병합 대상 브랜치·병합 관리자·구성원)은 저장소 → 설정 탭에서 정합니다.";
   head.appendChild(sub);
   main.appendChild(head);
 
@@ -46,6 +46,11 @@ export async function renderSettingsView(): Promise<HTMLElement> {
         <button class="gc-button-secondary text-display-sm" id="btn-test-ssh">연결 테스트</button>
         <button class="gc-button-secondary text-display-sm" id="btn-edit-ssh">편집</button>
       </div>
+    </div>
+    <div class="text-display-sm text-[color:var(--color-ink-muted)]">
+      저장소가 <strong>다른 서버에 있을 때만</strong> 필요합니다. 저장소를 등록할 때
+      호스트·사용자·키를 매번 입력하지 않도록 기본값을 여기에 둡니다.
+      내 컴퓨터의 폴더만 쓴다면 비워 둬도 됩니다 — 아래 “—”는 오류가 아닙니다.
     </div>
     <div class="flex flex-col gap-2 text-display-sm" id="ssh-fields">
       <div class="flex gap-2"><span class="text-[color:var(--color-ink-muted)] w-32 shrink-0">사용자:</span><span id="ssh-d-user">—</span></div>
@@ -178,39 +183,29 @@ export async function renderSettingsView(): Promise<HTMLElement> {
   });
 
   // ── External Tools ───────────────────────────────────────────────────────
+  //
+  // 여기는 **목록 관리**만 한다. 실행은 저장소 화면 우측 상단의 "열기" 버튼이
+  // 맡는다 — 사람은 저장소를 보고 있을 때 "이걸 에디터로 열자"고 생각하므로,
+  // 설정에 들어와 저장소를 골라 실행하게 만들면 순서가 거꾸로다.
   const toolsSection = document.createElement("div");
   toolsSection.className = "flex flex-col gap-4";
   toolsSection.innerHTML = `
-    <div class="flex items-center justify-between">
+    <div class="flex flex-col gap-1">
       <div class="text-display-md font-medium">외부 도구</div>
+      <div class="text-display-sm text-[color:var(--color-ink-muted)]">
+        저장소 폴더를 다른 프로그램으로 여는 명령입니다. 명령의
+        <code>{path}</code>가 저장소 경로로 바뀝니다 — 예: <code>code {path}</code>는
+        그 저장소를 VS Code로 엽니다.
+        <strong>실행은 저장소 화면 오른쪽 위의 “열기” 버튼</strong>에서 합니다.
+      </div>
+      <div class="text-display-xs text-[color:var(--color-ink-muted)]">
+        명령은 이 앱이 실행 중인 컴퓨터에서 돌아갑니다. 그래서 SSH로 등록한
+        저장소(작업 트리가 원격 서버에 있음)에서는 쓸 수 없고, 그 저장소에는
+        “열기” 버튼이 나타나지 않습니다.
+      </div>
     </div>
   `;
   main.appendChild(toolsSection);
-
-  // ── Repo picker row ──────────────────────────────────────────────────────
-  const repoPicker = document.createElement("div");
-  repoPicker.className = "flex items-center gap-3";
-  repoPicker.innerHTML = `
-    <label class="text-display-sm text-[color:var(--color-ink-muted)] shrink-0" for="tool-repo-select">저장소 선택:</label>
-    <select id="tool-repo-select" class="gc-input flex-1"></select>
-    <span id="no-repo-hint" class="text-display-sm text-[color:var(--color-ink-muted)] hidden">저장소를 먼저 등록하세요</span>
-  `;
-  toolsSection.appendChild(repoPicker);
-
-  const repos = await ipc.listRepositories();
-  const repoSel = repoPicker.querySelector<HTMLSelectElement>("#tool-repo-select")!;
-  const noRepoHint = repoPicker.querySelector("#no-repo-hint")!;
-  if (repos.length === 0) {
-    repoSel.style.display = "none";
-    noRepoHint.classList.remove("hidden");
-  } else {
-    for (const r of repos) {
-      const opt = document.createElement("option");
-      opt.value = r.id;
-      opt.textContent = r.display_name;
-      repoSel.appendChild(opt);
-    }
-  }
 
   // ── Tool card grid ──────────────────────────────────────────────────────
   const grid = document.createElement("div");
@@ -294,26 +289,11 @@ export async function renderSettingsView(): Promise<HTMLElement> {
           <div><span class="font-mono">${escape(tool.command_template)}</span> ${escape(tool.args_template)}</div>
         </div>
         <div class="flex gap-2 mt-1">
-          <button class="gc-button-secondary text-display-sm" data-run>실행</button>
           <button class="gc-button-secondary text-display-sm" data-edit>편집</button>
           <button class="gc-button-secondary text-display-sm text-[color:var(--color-danger)]" data-delete>삭제</button>
         </div>
       `;
 
-      const runBtn = card.querySelector<HTMLButtonElement>("[data-run]")!;
-      runBtn.addEventListener("click", async () => {
-        const repoId = repoSel.value;
-        if (!repoId) { toast("저장소를 선택하세요", "error"); return; }
-        setBusy(runBtn, true, "실행 중…");
-        try {
-          await ipc.openExternalTool(repoId, tool.id);
-          toast(`${tool.label} 실행 완료`, "success");
-        } catch (e) {
-          toast(`실행 실패: ${(e as Error).message ?? e}`, "error");
-        } finally {
-          setBusy(runBtn, false);
-        }
-      });
       card.querySelector<HTMLButtonElement>("[data-edit]")!.addEventListener("click", () => {
         openToolModal(tool);
       });
@@ -356,31 +336,72 @@ export async function renderSettingsView(): Promise<HTMLElement> {
 
   await refreshTools();
 
-  // ── AI conflict resolution (optional) ────────────────────────────────────
+  // ── AI 자동 병합 (시나리오 5) ─────────────────────────────────────────────
+  // 병합 중 충돌이 났을 때 AI가 알아서 고치게 하려면 **미리** 두 가지를 정해
+  // 둬야 한다: (1) 충돌 시 자동으로 돌릴지, (2) 어떤 지침(프롬프트)으로 고칠지.
+  // 그래서 이 카드는 접속 정보와 함께 그 두 개를 같은 자리에서 저장한다.
   const aiSection = document.createElement("section");
   aiSection.className = "gc-card flex flex-col gap-3";
   aiSection.innerHTML = `
-    <div class="text-display-lg font-medium inline-flex items-center gap-2"><span id="ai-title-icon"></span><span>AI 충돌 해결(선택)</span></div>
+    <div class="text-display-lg font-medium inline-flex items-center gap-2"><span id="ai-title-icon"></span><span>AI 자동 병합</span></div>
     <div class="text-display-sm text-[color:var(--color-ink-muted)]">
-      OpenAI 호환 /chat/completions 엔드포인트에 ours/theirs 본문을 보내고
-      병합 제안을 받습니다. 기본값은 <strong>비활성</strong>입니다.
+      병합하다 충돌이 나면 AI가 양쪽 수정을 모두 살리는 코드를 만들어 병합을 마무리합니다.
+      원본은 항상 백업되고, 충돌 표시가 남은 파일은 절대 커밋되지 않습니다.
+      기본값은 <strong>비활성</strong>입니다.
     </div>
-    <div class="flex items-center gap-2">
+
+    <label class="gc-check">
       <input id="ai-enabled" type="checkbox" />
-      <label for="ai-enabled" class="text-display-md">사용함</label>
+      <span class="text-display-md">AI 사용함</span>
+    </label>
+
+    <div id="ai-conn" class="flex flex-col gap-3 pl-1">
+      <label class="flex flex-col gap-1">
+        <span class="text-display-sm text-[color:var(--color-ink-muted)]">Base URL</span>
+        <input id="ai-base-url" class="gc-input" placeholder="https://api.openai.com/v1" />
+      </label>
+      <label class="flex flex-col gap-1">
+        <span class="text-display-sm text-[color:var(--color-ink-muted)]">모델</span>
+        <input id="ai-model" class="gc-input" placeholder="gpt-4o-mini" />
+      </label>
+      <label class="flex flex-col gap-1">
+        <span class="text-display-sm text-[color:var(--color-ink-muted)]">API 키</span>
+        <input id="ai-api-key" type="password" class="gc-input" autocomplete="off" />
+      </label>
+
+      <label class="gc-check">
+        <input id="ai-auto" type="checkbox" />
+        <span class="flex flex-col">
+          <span class="text-display-md">충돌이 나면 곧바로 자동 해결</span>
+          <span class="text-display-xs text-[color:var(--color-ink-muted)]">
+            병합 중 충돌이 감지되면 버튼을 누르지 않아도 아래 지침대로 바로 고칩니다.
+            끄면 병합 화면에서 “AI 자동 병합” 버튼으로 직접 실행합니다.
+          </span>
+        </span>
+      </label>
+
+      <label class="flex flex-col gap-1">
+        <span class="text-display-sm text-[color:var(--color-ink-muted)]">바이너리·대용량 파일은 어느 쪽을 쓸까요</span>
+        <select id="ai-binary" class="gc-input">
+          <option value="theirs">상대 것(가져온 브랜치) — 기본</option>
+          <option value="ours">나의 것(병합 대상 브랜치)</option>
+        </select>
+      </label>
+
+      <label class="flex flex-col gap-1">
+        <span class="text-display-sm text-[color:var(--color-ink-muted)] flex items-center justify-between gap-2">
+          <span>해결 지침(프롬프트) — 미리 저장해 두면 충돌마다 이 지침으로 고칩니다</span>
+          <button id="ai-prompt-reset" type="button" class="gc-button-secondary text-display-xs">기본값으로</button>
+        </span>
+        <textarea id="ai-prompt" class="gc-input font-mono text-display-sm" rows="6"
+          spellcheck="false"></textarea>
+        <span class="text-display-xs text-[color:var(--color-ink-muted)]">
+          비워 두면 기본 지침을 씁니다. 팀 규칙(예: “API 시그니처는 상대 쪽을 따른다”,
+          “마이그레이션 파일은 절대 합치지 말고 양쪽을 모두 남긴다”)을 여기에 적어 두세요.
+        </span>
+      </label>
     </div>
-    <label class="flex flex-col gap-1">
-      <span class="text-display-sm text-[color:var(--color-ink-muted)]">Base URL</span>
-      <input id="ai-base-url" class="gc-input" placeholder="https://api.openai.com/v1" />
-    </label>
-    <label class="flex flex-col gap-1">
-      <span class="text-display-sm text-[color:var(--color-ink-muted)]">모델</span>
-      <input id="ai-model" class="gc-input" placeholder="gpt-4o-mini" />
-    </label>
-    <label class="flex flex-col gap-1">
-      <span class="text-display-sm text-[color:var(--color-ink-muted)]">API 키</span>
-      <input id="ai-api-key" type="password" class="gc-input" autocomplete="off" />
-    </label>
+
     <div class="text-display-xs text-[color:var(--color-ink-muted)]">
       키는 <code>~/.config/com.gitcompanion.app/config.json</code>에 평문 저장됩니다.
       사용 후 비워 두려면 비활성화하세요.
@@ -392,26 +413,71 @@ export async function renderSettingsView(): Promise<HTMLElement> {
   aiSection.querySelector<HTMLElement>("#ai-title-icon")!.appendChild(icon("sparkles", 18));
   main.appendChild(aiSection);
 
+  const aiEnabledBox = aiSection.querySelector<HTMLInputElement>("#ai-enabled")!;
+  const aiConn = aiSection.querySelector<HTMLElement>("#ai-conn")!;
+  const aiPrompt = aiSection.querySelector<HTMLTextAreaElement>("#ai-prompt")!;
+  let aiDefaultPrompt = "";
+
+  // AI를 안 쓰는 사람에게는 세부 항목을 숨겨 화면을 비워 둔다.
+  function syncAiDisclosure() {
+    aiConn.style.display = aiEnabledBox.checked ? "" : "none";
+  }
+  aiEnabledBox.addEventListener("change", syncAiDisclosure);
+
+  aiSection.querySelector<HTMLButtonElement>("#ai-prompt-reset")!
+    .addEventListener("click", () => {
+      aiPrompt.value = aiDefaultPrompt;
+      aiPrompt.focus();
+    });
+
   try {
-    const aiCfg = await ipc.getAiConfig();
-    (aiSection.querySelector<HTMLInputElement>("#ai-enabled")!).checked = aiCfg.enabled;
-    (aiSection.querySelector<HTMLInputElement>("#ai-base-url")!).value = aiCfg.base_url;
-    (aiSection.querySelector<HTMLInputElement>("#ai-model")!).value = aiCfg.model;
-    (aiSection.querySelector<HTMLInputElement>("#ai-api-key")!).value = aiCfg.api_key;
+    const [aiCfg, defaultPrompt] = await Promise.all([
+      ipc.getAiConfig(),
+      ipc.aiDefaultPrompt().catch(() => ""),
+    ]);
+    aiDefaultPrompt = defaultPrompt;
+    aiEnabledBox.checked = !!aiCfg.enabled;
+    (aiSection.querySelector<HTMLInputElement>("#ai-base-url")!).value = aiCfg.base_url ?? "";
+    (aiSection.querySelector<HTMLInputElement>("#ai-model")!).value = aiCfg.model ?? "";
+    (aiSection.querySelector<HTMLInputElement>("#ai-api-key")!).value = aiCfg.api_key ?? "";
+    (aiSection.querySelector<HTMLInputElement>("#ai-auto")!).checked = !!aiCfg.auto_resolve;
+    (aiSection.querySelector<HTMLSelectElement>("#ai-binary")!).value =
+      aiCfg.binary_strategy === "ours" ? "ours" : "theirs";
+    // 저장된 지침이 없으면 기본 지침을 채워 보여 준다 — 무엇을 편집하는지
+    // 눈으로 보이는 편이 빈 칸보다 훨씬 안전하다.
+    aiPrompt.value = (aiCfg.system_prompt ?? "").trim() || defaultPrompt;
+    aiPrompt.placeholder = defaultPrompt;
   } catch (e) {
     toast(`AI 설정 불러오기 실패: ${(e as Error).message ?? e}`, "error");
   }
+  syncAiDisclosure();
 
   aiSection.querySelector<HTMLButtonElement>("#ai-save")!.addEventListener("click", async () => {
+    const typedPrompt = aiPrompt.value.trim();
     const cfg = {
-      enabled: aiSection.querySelector<HTMLInputElement>("#ai-enabled")!.checked,
+      enabled: aiEnabledBox.checked,
       base_url: aiSection.querySelector<HTMLInputElement>("#ai-base-url")!.value.trim(),
       api_key: aiSection.querySelector<HTMLInputElement>("#ai-api-key")!.value,
       model: aiSection.querySelector<HTMLInputElement>("#ai-model")!.value.trim(),
+      // 기본 지침과 같으면 빈 값으로 저장해, 기본값이 바뀌면 자동으로 따라간다.
+      system_prompt: typedPrompt === aiDefaultPrompt.trim() ? "" : typedPrompt,
+      auto_resolve: aiSection.querySelector<HTMLInputElement>("#ai-auto")!.checked,
+      binary_strategy: aiSection.querySelector<HTMLSelectElement>("#ai-binary")!.value === "ours"
+        ? "ours"
+        : "theirs",
     };
+    if (cfg.enabled && (!cfg.base_url || !cfg.model)) {
+      toast("AI를 사용하려면 Base URL과 모델명을 입력하세요.", "error");
+      return;
+    }
     try {
       await ipc.setAiConfig(cfg);
-      toast("AI 설정을 저장했습니다.", "success");
+      toast(
+        cfg.enabled && cfg.auto_resolve
+          ? "저장했습니다. 이제 충돌이 나면 AI가 곧바로 해결을 시도합니다."
+          : "AI 설정을 저장했습니다.",
+        "success",
+      );
     } catch (e) {
       toast(`저장 실패: ${(e as Error).message ?? e}`, "error");
     }
@@ -471,7 +537,19 @@ export async function renderSettingsView(): Promise<HTMLElement> {
     }
   }
 
-  function openCredModal(repoId: string | null, existing?: { username: string; password: string }) {
+  async function openCredModal(
+    repoId: string | null,
+    existing?: { username: string; password: string },
+  ) {
+    // 저장소 목록은 이 모달만 쓴다 — 열 때 읽어서 최신 목록을 보여 준다.
+    const repos = await ipc.listRepositories().catch(() => [] as Repo[]);
+    // 자격증명은 저장소마다 저장된다. 저장소가 하나도 없으면 선택 상자가 빈
+    // 채로 열리고, 저장을 누르면 "저장소를 선택하세요"만 뜬다 — 고를 것이
+    // 없다는 사실을 먼저 말해 준다.
+    if (repos.length === 0) {
+      toast("먼저 저장소를 등록하세요. 자격증명은 저장소별로 저장됩니다.", "info");
+      return;
+    }
     const m = openModal({
       title: existing ? "자격증명 편집" : "자격증명 추가",
       submitLabel: "저장",

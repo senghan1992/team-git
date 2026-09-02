@@ -180,11 +180,15 @@ const mockData: Record<string, any> = {
       config: args.config,
       commit: { ok: true, message: "mock commit" },
     }) as never,
-  peer_list_projects: [{ id: "p1", display_name: "Test Project", join_code: "TEST-0001", role: "admin" }],
+  peer_list_projects: [{ id: "p1", display_name: "데모 팀", join_code: "TEAM-0001", role: "admin" }],
   peer_create_project: { id: "p1", display_name: "Test Project", join_code: "TEST-0001", role: "admin" },
   peer_join_project: { id: "p2", display_name: "Joined Project", join_code: "JOIN-0002", role: "member" },
   peer_leave_project: undefined,
-  peer_list_members: [{ device_id: null, email: "a@b.com", name: null, role: "member", pending: true }],
+  // Rust `peer::MemberEmailEntry` 와 같은 모양. joined_at 이 null 이면 "미합류".
+  peer_list_members: [
+    { device_id: "d1", email: "test@example.com", name: "테스트 1", role: "admin", joined_at: new Date().toISOString() },
+    { device_id: null, email: "junho@example.com", name: "박준호", role: "member", joined_at: null },
+  ],
   peer_invite_by_email: undefined,
   peer_remove_email_invite: undefined,
   peer_unread_count: 0,
@@ -213,6 +217,69 @@ const mockData: Record<string, any> = {
   ],
   sync_branch: { conflicted: false, files: [], message: "mock sync ok" },
   peer_poll_now: undefined,
+  // ── AI 자동 병합 설정 — 설정 화면 미리보기용 ──
+  get_ai_config: {
+    enabled: true,
+    base_url: "https://api.openai.com/v1",
+    api_key: "sk-mock",
+    model: "gpt-4o-mini",
+    system_prompt: "",
+    auto_resolve: true,
+    binary_strategy: "theirs",
+  },
+  set_ai_config: undefined,
+  ai_default_prompt:
+    "git 병합에 실패한 상태입니다. ours(현재 브랜치)와 theirs(병합 대상 브랜치) 양쪽에서 수정한 기능들이 서로 영향받지 않도록 모두 반영하는 최종 코드를 제안하세요.",
+  // ── 병합 대기 브랜치 — 변경 지도 / 다음 할 일 미리보기용 ──
+  list_pending_branches: [
+    {
+      name: "origin/feature/login",
+      short_name: "feature/login",
+      sha: "3f9a1c2",
+      author: "김민지",
+      unix_time: Math.floor(Date.now() / 1000) - 1800,
+      subject: "로그인 토큰 갱신 로직 추가",
+      ahead: 4,
+      behind: 1,
+      local: false,
+      changed_files: [
+        { path: "src/api/user.ts", kind: "M" },
+        { path: "src/auth/token.ts", kind: "A" },
+        { path: "ui/views/LoginView.ts", kind: "M" },
+      ],
+    },
+    {
+      name: "origin/feature/payment",
+      short_name: "feature/payment",
+      sha: "b71e044",
+      author: "박준호",
+      unix_time: Math.floor(Date.now() / 1000) - 7200,
+      subject: "결제 실패 재시도",
+      ahead: 2,
+      behind: 1,
+      local: false,
+      changed_files: [
+        { path: "src/api/user.ts", kind: "M" },
+        { path: "src/pay/retry.ts", kind: "A" },
+      ],
+    },
+    {
+      name: "origin/fix/nav",
+      short_name: "fix/nav",
+      sha: "c0d4488",
+      author: "이도윤",
+      unix_time: Math.floor(Date.now() / 1000) - 300,
+      subject: "사이드바 활성 상태 수정",
+      ahead: 1,
+      behind: 0,
+      local: false,
+      changed_files: [
+        { path: "ui/views/LoginView.ts", kind: "M" },
+        { path: "ui/components/Sidebar.ts", kind: "M" },
+      ],
+    },
+  ],
+  merge_state: { in_progress: false, conflicted_files: [] },
 };
 interface TauriInternals {
   invoke: (cmd: string, args: unknown) => Promise<unknown>;
@@ -227,7 +294,7 @@ if (globals.__TAURI_INTERNALS__) {
       let body: unknown = null;
       let gotJson = false;
       try {
-        const r = await fetch("/__gc/invoke", {
+        const r = await fetch(`${import.meta.env.BASE_URL}__gc/invoke`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cmd, args }),
