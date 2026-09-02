@@ -861,7 +861,12 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
       case "start_merge": {
         const r = repoById(args.repoId as string);
         if ("error" in r) return jsonError("repo_not_found", r.error);
-        return startMerge(targetOf(r), args.branchRef as string, args.base as string);
+        return startMerge(
+          targetOf(r),
+          args.branchRef as string,
+          args.base as string,
+          (args.expectedSha as string | null | undefined) ?? null,
+        );
       }
       case "merge_state": {
         const r = repoById(args.repoId as string);
@@ -1742,7 +1747,8 @@ function pendingBranches(t: GitTarget, remote: string, base: string): PendingBra
     const parts = line.split("\t");
     const [name, sha, author, unix, subject] = parts;
     if (!name || !sha || name === `${remote}/HEAD` || name === baseRef) continue;
-    if (name.endsWith("/HEAD")) continue;
+    // %(refname:short)는 origin/HEAD를 "origin"으로 줄인다 — 유령 카드 방지.
+    if (name === remote || name.endsWith("/HEAD")) continue;
     const anc = tgGit(t, ["merge-base", "--is-ancestor", name, baseRef]);
     if (anc.ok) continue;
     // 로컬 base에는 이미 병합됐지만 push가 안 된 상태 (Rust와 동일한 규칙).
@@ -1787,7 +1793,21 @@ function pendingBranches(t: GitTarget, remote: string, base: string): PendingBra
   return out;
 }
 
-function startMerge(t: GitTarget, branchRef: string, base: string): MergeOutcome {
+function startMerge(
+  t: GitTarget,
+  branchRef: string,
+  base: string,
+  expectedSha: string | null = null,
+): MergeOutcome {
+  // Rust start_merge와 같은 가드 — 진행 중 병합 위에 새 병합을 얹지 않는다.
+  if (tgGit(t, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).ok) {
+    return {
+      ok: false,
+      conflicted: false,
+      conflicted_files: [],
+      message: "이미 진행 중인 병합이 있습니다. 병합 탭에서 먼저 마무리하거나 중단하세요.",
+    };
+  }
   const dirty = tgGit(t, ["status", "--porcelain=v2", "--untracked-files=no"]).stdout.trim();
   if (dirty) {
     return {
@@ -1802,6 +1822,24 @@ function startMerge(t: GitTarget, branchRef: string, base: string): MergeOutcome
     tgGit(t, ["fetch", "origin", `${base}:${base}`]);
   }
   tgGit(t, ["fetch", "--prune", "origin"]);
+  const tip = tgGit(t, ["rev-parse", "-q", "--verify", branchRef]);
+  if (!tip.ok) {
+    return {
+      ok: false,
+      conflicted: false,
+      conflicted_files: [],
+      message: `${branchRef} 브랜치를 찾을 수 없습니다 — 방금 원격에서 삭제되었을 수 있습니다. 목록을 새로고침하세요.`,
+    };
+  }
+  const actual = tip.stdout.trim();
+  if (expectedSha && actual !== expectedSha && !actual.startsWith(expectedSha)) {
+    return {
+      ok: false,
+      conflicted: false,
+      conflicted_files: [],
+      message: `검토한 뒤 이 브랜치에 새 push가 있었습니다(또는 히스토리가 바뀌었습니다). 목록을 새로고침해 최신 내용을 확인한 뒤 다시 병합하세요.`,
+    };
+  }
   const co = tgGit(t, ["checkout", base]);
   if (!co.ok) {
     return { ok: false, conflicted: false, conflicted_files: [], message: co.stderr.trim() };
@@ -2167,17 +2205,29 @@ function workingTreeStatus(t: GitTarget, base?: string): WorkingTreeStatus {
     if (line.startsWith("1 ") || line.startsWith("2 ")) {
       const fields = line.split(" ");
       const xy = fields[1] ?? "";
-      const path = fields.slice(8).join(" ");
-      const staged = xy[0] !== " " && xy[0] !== "?";
-      const unstaged = xy[1] !== " ";
+      // `2 `(rename) 라인은 <X><score> 필드가 하나 더 있다 (Rust와 동일 규칙).
+      const path = fields.slice(line.startsWith("2 ") ? 9 : 8).join(" ");
+      const staged = xy[0] !== " " && xy[0] !== "." && xy[0] !== "?";
+      const unstaged = xy[1] !== " " && xy[1] !== ".";
+      const eff = xy[0] === "." || xy[0] === " " ? xy[1] : xy[0];
       const kind =
-        xy[0] === "A" ? "added" :
-        xy[0] === "M" || xy[1] === "M" ? "modified" :
-        xy[0] === "D" || xy[1] === "D" ? "deleted" :
-        xy[0] === "R" ? "renamed" :
-        xy[0] === "C" ? "copied" :
-        xy[0] === "U" || xy[1] === "U" ? "conflicted" : "modified";
-      files.push({ kind, path, staged, unstaged });
+        eff === "A" ? "added" :
+        eff === "D" ? "deleted" :
+        eff === "R" ? "renamed" :
+        eff === "C" ? "copied" :
+        eff === "U" ? "conflicted" : "modified";
+      files.push({ kind, path: path.split("\t")[0] ?? path, staged, unstaged });
+    } else if (line.startsWith("u ")) {
+      // u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path> — 필드 11개.
+      const fields = line.split(" ");
+      const xy = fields[1] ?? "";
+      const path = fields.slice(10).join(" ");
+      files.push({
+        kind: "conflicted",
+        path,
+        staged: xy[0] !== "." && xy[0] !== " ",
+        unstaged: xy[1] !== "." && xy[1] !== " ",
+      });
     } else if (line.startsWith("? ")) {
       files.push({ kind: "untracked", path: line.slice(2), staged: false, unstaged: false });
     }

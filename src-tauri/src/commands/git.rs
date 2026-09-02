@@ -171,17 +171,32 @@ pub async fn list_pending_branches(
     base: String,
 ) -> AppResult<Vec<git::merge::PendingBranch>> {
     let (target, _) = resolve_target(repo_id)?;
-    git::merge::list_pending_branches(&target, MERGE_REMOTE, &base)
+    let mut pending = git::merge::list_pending_branches(&target, MERGE_REMOTE, &base)?;
+    // 다른 병합 대상 브랜치(develop 기준일 때의 release/1.0 등)는 팀원의
+    // 작업 브랜치가 아니다 — "병합 대기" 카드로 세우면 관리자가 release 를
+    // develop 에 실수로 병합하도록 유도한다.
+    let targets = merge_target_branches(&target, &base);
+    pending.retain(|b| !targets.contains(&b.short_name));
+    Ok(pending)
 }
 
+/// `expected_sha`: 관리자가 화면에서 검토한 tip. fetch 후 tip 이 달라졌으면
+/// (그 사이 새 push / force-push) 병합하지 않고 새로고침을 요구한다.
 #[tauri::command]
 pub async fn start_merge(
     repo_id: Uuid,
     branch_ref: String,
     base: String,
+    expected_sha: Option<String>,
 ) -> AppResult<git::merge::MergeOutcome> {
     let (target, _) = resolve_target(repo_id)?;
-    git::merge::start_merge(&target, &branch_ref, &base, MERGE_REMOTE)
+    git::merge::start_merge(
+        &target,
+        &branch_ref,
+        &base,
+        MERGE_REMOTE,
+        expected_sha.as_deref(),
+    )
 }
 
 /// 병합 대기 브랜치의 한 파일이 base와 얼마나 다른지 —

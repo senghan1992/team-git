@@ -74,20 +74,27 @@ pub fn parse_log(output: &str) -> AppResult<Vec<Commit>> {
             continue;
         }
         let parts: Vec<&str> = line.split(SEP).collect();
-        if parts.len() != 5 {
+        if parts.len() < 5 {
             return Err(AppError::Git(format!("malformed log line: {line:?}")));
         }
+        // 커밋 제목(%s)에 구분자(0x1f)가 들어 있으면 필드가 5개를 넘는다.
+        // 제목 하나 때문에 페이지 전체를 Err 로 버리지 말고, sha 는 앞에서,
+        // 나머지 세 필드는 뒤에서 세고 가운데 전부를 제목으로 되붙인다.
+        let n = parts.len();
         let sha = parts[0].trim().to_string();
-        let message = parts[1].to_string();
-        let author = parts[2].to_string();
-        let date_str = parts[3];
+        let message = parts[1..n - 3].join("\u{1f}");
+        let author = parts[n - 3].to_string();
+        let date_str = parts[n - 2];
         let date = DateTime::parse_from_rfc3339(date_str)
             .map_err(|e| AppError::Git(format!("invalid date {date_str}: {e}")))?
             .with_timezone(&Utc);
-        let parents: Vec<String> = if parts[4].trim().is_empty() {
+        let parents: Vec<String> = if parts[n - 1].trim().is_empty() {
             vec![]
         } else {
-            parts[4].split_whitespace().map(|s| s.to_string()).collect()
+            parts[n - 1]
+                .split_whitespace()
+                .map(|s| s.to_string())
+                .collect()
         };
         if sha.is_empty() {
             continue;
@@ -131,5 +138,19 @@ mod tests {
     fn rejects_malformed_line() {
         let s = "garbage\n";
         assert!(parse_log(s).is_err());
+    }
+
+    #[test]
+    fn subject_containing_the_separator_does_not_kill_the_page() {
+        // %s 는 제어문자를 그대로 내보낸다 — 제목에 0x1f 가 든 커밋 하나가
+        // 커밋 목록 전체를 죽이면 안 된다.
+        let s = format!(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{SEP}weird{SEP}subject{SEP}Alice{SEP}2024-01-02T03:04:05+00:00{SEP}\n"
+        );
+        let c = parse_log(&s).unwrap();
+        assert_eq!(c.len(), 1);
+        assert_eq!(c[0].message, format!("weird{SEP}subject"));
+        assert_eq!(c[0].author, "Alice");
+        assert!(c[0].parents.is_empty());
     }
 }

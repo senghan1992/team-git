@@ -42,6 +42,14 @@ pub fn sync_to_base(target: &Target, base: &str, remote: &str) -> AppResult<Sync
     if current.is_empty() {
         return Err(AppError::Git("현재 브랜치를 확인할 수 없습니다.".into()));
     }
+    // detached HEAD에서 merge 커밋을 만들면 어느 브랜치에도 속하지 않아
+    // 다음 checkout과 함께 미아가 된다 (reflog 없이는 유실).
+    if current == "HEAD" {
+        return Err(AppError::Git(
+            "지금 브랜치 위에 있지 않습니다(detached HEAD). 브랜치로 전환한 뒤 동기화하세요."
+                .into(),
+        ));
+    }
     let merge_args: Vec<String> = if current == base {
         vec![format!("merge"), format!("{remote}/{base}")]
     } else {
@@ -78,7 +86,10 @@ pub fn sync_to_base(target: &Target, base: &str, remote: &str) -> AppResult<Sync
                 .into(),
         ));
     }
-    Err(AppError::Git(format!("병합 실패: {}", out.stderr.trim())))
+    Err(AppError::Git(format!(
+        "병합 실패: {}",
+        crate::git::ops::friendly_git_error(&out.stderr)
+    )))
 }
 
 /// Full sync: fetch from remote, checkout current branch if needed, then merge
@@ -145,5 +156,10 @@ pub fn run_merge(repo_path: &Path, base: &str, token: Option<&str>) -> AppResult
 
 pub fn conflicted_files(repo_path: &Path) -> AppResult<Vec<String>> {
     let out = run(Some(repo_path), ["diff", "--name-only", "--diff-filter=U"])?;
-    Ok(out.stdout.lines().map(|s| s.to_string()).collect())
+    Ok(out
+        .stdout
+        .lines()
+        .filter(|s| !s.is_empty())
+        .map(crate::git::unquote_git_path)
+        .collect())
 }

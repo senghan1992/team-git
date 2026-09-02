@@ -73,14 +73,22 @@ pub enum StashAction {
 // ── add ─────────────────────────────────────────────────────────────────────────
 
 pub fn add(target: &Target, paths: &[String]) -> AppResult<()> {
+    // `--`: `-weird.txt` 같은 대시로 시작하는 파일명이 옵션으로 오해되지 않게.
     let args: Vec<&str> = if paths.is_empty() {
         vec!["add", "-A"]
     } else {
-        let mut a = vec!["add"];
+        let mut a = vec!["add", "--"];
         a.extend(paths.iter().map(|s| s.as_str()));
         a
     };
-    run_at_target(target, &args)?;
+    let out = run_at_target(target, &args)?;
+    if !out.ok() {
+        // 실패를 삼키면 "체크한 파일만 커밋"이 조용히 전체/빈 커밋이 된다.
+        return Err(AppError::Git(format!(
+            "스테이징 실패: {}",
+            out.stderr.trim()
+        )));
+    }
     Ok(())
 }
 
@@ -170,7 +178,15 @@ pub fn push(
             .to_string()
     };
     if branch_ref.is_empty() {
-        return Err(AppError::Git("cannot determine current branch".into()));
+        return Err(AppError::Git("현재 브랜치를 확인할 수 없습니다.".into()));
+    }
+    // detached HEAD 에서 refspec 이 "HEAD:HEAD" 가 되면 git 이 거부하는데,
+    // 그 오류가 "먼저 동기화하세요"로 잘못 번역돼 사용자를 헤매게 했다.
+    if branch_ref == "HEAD" {
+        return Err(AppError::Git(
+            "지금 브랜치 위에 있지 않습니다(detached HEAD). 브랜치로 전환한 뒤 푸시하세요."
+                .into(),
+        ));
     }
     let remote_url = run_at_target(target, ["remote", "get-url", "origin"]).ok();
     let https = remote_url
@@ -342,7 +358,13 @@ pub fn pull(target: &Target) -> AppResult<PullOutcome> {
     let branch_ref = run_at_target(target, ["rev-parse", "--abbrev-ref", "HEAD"])?;
     let branch = branch_ref.stdout.trim();
     if branch.is_empty() {
-        return Err(AppError::Git("cannot determine current branch".into()));
+        return Err(AppError::Git("현재 브랜치를 확인할 수 없습니다.".into()));
+    }
+    if branch == "HEAD" {
+        return Err(AppError::Git(
+            "지금 브랜치 위에 있지 않습니다(detached HEAD). 브랜치로 전환한 뒤 받아오세요."
+                .into(),
+        ));
     }
     // Fast-forward when possible; otherwise merge (--no-rebase so a user-level
     // `pull.rebase` config can't change this). Conflicts from the merge are
@@ -437,14 +459,37 @@ pub fn list_status_with_base(target: &Target, base: &str) -> AppResult<WorkingTr
         return Ok(st);
     }
     let base_ref = format!("refs/remotes/origin/{base}");
-    let exists = run_at_target(target, ["rev-parse", "-q", "--verify", &base_ref])?;
-    if exists.ok() {
+    let base_exists = run_at_target(target, ["rev-parse", "-q", "--verify", &base_ref])?.ok();
+    if base_exists {
         if let Ok(out) = run_at_target(
             target,
             ["rev-list", "--count", &format!("HEAD..{base_ref}")],
         ) {
             if out.ok() {
                 st.behind_base = out.stdout.trim().parse::<u32>().unwrap_or(0);
+            }
+        }
+    }
+
+    // 업스트림이 없거나(한 번도 push 안 한 브랜치) 원격에서 지워진 브랜치는
+    // porcelain 의 `# branch.ab` 가 아예 안 나와 ahead 가 0 으로 읽힌다 —
+    // 그 브랜치의 커밋 전부가 미푸시인데 "할 일 없음"으로 보이던 원인.
+    // 병합 브랜치에 없는 커밋 수를 ahead 로 대신 채운다.
+    let upstream_gone = match &st.upstream {
+        None => true,
+        Some(u) => !run_at_target(
+            target,
+            ["rev-parse", "-q", "--verify", &format!("refs/remotes/{u}")],
+        )?
+        .ok(),
+    };
+    if upstream_gone && st.ahead == 0 && base_exists && st.branch.is_some() {
+        if let Ok(out) = run_at_target(
+            target,
+            ["rev-list", "--count", &format!("{base_ref}..HEAD")],
+        ) {
+            if out.ok() {
+                st.ahead = out.stdout.trim().parse::<u32>().unwrap_or(0);
             }
         }
     }
@@ -513,47 +558,71 @@ pub fn list_commits(
 // ── stash ─────────────────────────────────────────────────────────────────────
 
 pub fn stash(target: &Target, action: StashAction) -> AppResult<()> {
+    // 예전에는 모든 갈래가 종료 코드를 무시했다 — pop 이 충돌로 실패해도,
+    // untracked 만 있어 아무것도 보관되지 않아도 화면에는 "성공"이 떴다.
+    let check = |out: crate::git::GitOutput, what: &str| -> AppResult<()> {
+        if out.ok() {
+            return Ok(());
+        }
+        let e = out.stderr.trim();
+        if e.contains("CONFLICT") || e.contains("could not be applied")
+            || out.stdout.contains("CONFLICT")
+        {
+            return Err(AppError::Git(
+                "스태시를 복원하다 충돌이 났습니다. 파일의 충돌 표시를 정리한 뒤 커밋하세요 — 스태시 항목은 지워지지 않고 남아 있습니다."
+                    .into(),
+            ));
+        }
+        Err(AppError::Git(format!("{what} 실패: {e}")))
+    };
     match action {
         StashAction::Save { message } => {
-            let mut args: Vec<String> = vec!["stash".into(), "push".into()];
+            // `-u`: 새로 만든(untracked) 파일도 함께 보관한다 — 병합 전
+            // 정리가 목적인데 새 파일만 있으면 조용히 아무 일도 안 하던 문제.
+            let mut args: Vec<String> = vec!["stash".into(), "push".into(), "-u".into()];
             if let Some(msg) = message {
                 args.push("-m".into());
                 args.push(msg);
             }
-            run_at_target(target, &args.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
-            Ok(())
+            let out =
+                run_at_target(target, &args.iter().map(|s| s.as_str()).collect::<Vec<_>>())?;
+            if out.ok() && out.stdout.contains("No local changes") {
+                return Err(AppError::Git("보관할 변경이 없습니다.".into()));
+            }
+            check(out, "스태시 저장")
         }
-        StashAction::Pop => {
-            run_at_target(target, ["stash", "pop"])?;
-            Ok(())
-        }
-        StashAction::PopIndex(index) => {
-            run_at_target(target, ["stash", "pop", &index])?;
-            Ok(())
-        }
-        StashAction::List => {
-            run_at_target(target, ["stash", "list"])?;
-            Ok(())
-        }
-        StashAction::Drop => {
-            run_at_target(target, ["stash", "drop"])?;
-            Ok(())
-        }
-        StashAction::DropIndex(index) => {
-            run_at_target(target, ["stash", "drop", &index])?;
-            Ok(())
-        }
-        StashAction::Clear => {
-            run_at_target(target, ["stash", "clear"])?;
-            Ok(())
-        }
+        StashAction::Pop => check(run_at_target(target, ["stash", "pop"])?, "스태시 복원"),
+        StashAction::PopIndex(index) => check(
+            run_at_target(target, ["stash", "pop", &index])?,
+            "스태시 복원",
+        ),
+        StashAction::List => check(run_at_target(target, ["stash", "list"])?, "스태시 목록"),
+        StashAction::Drop => check(run_at_target(target, ["stash", "drop"])?, "스태시 삭제"),
+        StashAction::DropIndex(index) => check(
+            run_at_target(target, ["stash", "drop", &index])?,
+            "스태시 삭제",
+        ),
+        StashAction::Clear => check(run_at_target(target, ["stash", "clear"])?, "스태시 비우기"),
     }
 }
 
 // ── branch creation / checkout ─────────────────────────────────────────────────
 
 pub fn create_branch(target: &Target, branch: &str) -> AppResult<()> {
-    run_at_target(target, ["checkout", "-b", branch])?;
+    let out = run_at_target(target, ["checkout", "-b", branch])?;
+    if !out.ok() {
+        let e = out.stderr.trim();
+        // git 의 "not a valid branch name" 류를 사람 말로.
+        if e.contains("is not a valid branch name") || e.contains("not a valid ref name") {
+            return Err(AppError::Git(format!(
+                "'{branch}'은(는) 쓸 수 없는 브랜치 이름입니다. 공백과 특수문자(~^:?*[\\)를 빼고 다시 지어 주세요."
+            )));
+        }
+        if dirty_tree_error(e) {
+            return Err(AppError::Git(DIRTY_TREE_MSG.into()));
+        }
+        return Err(AppError::Git(format!("브랜치 생성 실패: {e}")));
+    }
     Ok(())
 }
 
@@ -633,12 +702,22 @@ pub fn friendly_git_error(stderr: &str) -> String {
     if s.contains("Repository not found") || s.contains("repository does not exist") {
         return "원격에서 저장소를 찾을 수 없습니다. 저장소 주소와 접근 권한을 확인하세요.".into();
     }
-    if s.contains("non-fast-forward") || s.contains("updates were rejected") {
+    // git 은 "Updates were rejected" 처럼 대문자로 시작하기도 한다.
+    let lower = s.to_lowercase();
+    if lower.contains("non-fast-forward") || lower.contains("updates were rejected") {
         return "푸시 거부됨: 원격 브랜치가 로컬보다 앞서 있습니다. 먼저 ‘동기화’로 최신 내용을 받은 뒤 다시 푸시하세요.".into();
     }
     if s.contains("failed to push some refs") {
         return "푸시 실패: 원격에 새 변경이 있습니다. 먼저 ‘동기화’로 받은 뒤 다시 푸시하세요."
             .into();
+    }
+    // ── 병합 진행 중 ──
+    if s.contains("You have not concluded your merge") || s.contains("MERGE_HEAD exists") {
+        return "진행 중인 병합이 있습니다. 병합 탭에서 먼저 마무리하거나 중단하세요.".into();
+    }
+    // ── 병합 대상 ref 없음 (원격 없음 / 방금 삭제됨) ──
+    if s.contains("not something we can merge") {
+        return "병합할 대상을 찾을 수 없습니다. 원격(origin)이 등록돼 있는지, 브랜치가 방금 삭제되지 않았는지 확인하고 목록을 새로고침하세요.".into();
     }
     // ── 네트워크 (인증보다 먼저 — 호스트를 못 찾은 것은 권한 문제가 아니다) ──
     if s.contains("Could not resolve host")

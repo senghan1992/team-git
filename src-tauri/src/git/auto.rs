@@ -22,8 +22,10 @@ use crate::error::{AppError, AppResult};
 use crate::git::merge::{self, ConflictDetail};
 use crate::git::{run_at_target, Target};
 
-/// Conflict marker lines that must never survive into a staged file.
-const MARKERS: [&str; 4] = ["<<<<<<<", "=======", ">>>>>>>", "|||||||"];
+// 충돌 마커 판정은 merge::has_unresolved_markers 로 통일한다 — 줄 첫머리의
+// 시작/종료/베이스 마커만 본다. (`=======` 단독 줄은 마크다운 setext 제목
+// 밑줄 같은 정당한 내용일 수 있어, substring 검사는 그런 파일의 AI 병합을
+// 영구히 막았다. git 마커는 항상 <<<<<<< / >>>>>>> 와 함께 나타난다.)
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -389,11 +391,12 @@ fn stage(target: &Target, path: &str) -> AppResult<()> {
 /// Accept AI output only when it is non-empty and free of conflict markers —
 /// never auto-commit while markers remain.
 fn valid_ai_body(text: &str) -> bool {
-    let t = text.trim();
-    if t.is_empty() {
+    if text.trim().is_empty() {
         return false;
     }
-    !MARKERS.iter().any(|m| t.contains(m))
+    // 마커 검사는 원문 기준 — trim 하면 첫 줄의 들여쓰기가 벗겨져
+    // "    <<<<<<< 예시" 같은 문서 내용이 0열 마커로 오인된다.
+    !crate::git::merge::has_unresolved_markers(text)
 }
 
 /// Strip a ``` fence the model may have wrapped its answer in.
@@ -573,10 +576,16 @@ mod tests {
             "<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> branch"
         ));
         assert!(!valid_ai_body("prefix\n||||||| base\nmiddle"));
-        assert!(!valid_ai_body("got =======  marker"));
         assert!(valid_ai_body("let a = 1;\nreturn a;"));
-        // A lone "=====" is ambiguous markdown — treat as invalid (safety first).
-        assert!(!valid_ai_body("=========="));
+        // `=======` 단독/유사 줄은 정당한 내용일 수 있다 (마크다운 setext
+        // 제목 밑줄 등). git 마커는 항상 <<<<<<< / >>>>>>> 짝과 함께 오므로
+        // 그 짝 없이는 유효한 본문으로 받아들인다 — 예전 substring 검사는
+        // 이런 문서의 AI 병합을 영구히 막았다.
+        assert!(valid_ai_body("제목\n=======\n본문"));
+        assert!(valid_ai_body("=========="));
+        assert!(valid_ai_body("got =======  marker"));
+        // 들여쓰인 유사 마커도 내용이다 (git 마커는 항상 0열).
+        assert!(valid_ai_body("    <<<<<<< sample in docs"));
     }
 
     #[test]

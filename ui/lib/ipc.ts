@@ -400,8 +400,13 @@ export const ipc = {
     invoke<string>("fetch_repo", { repoId }),
   listPendingBranches: (repoId: Uuid, base: string) =>
     invoke<PendingBranch[]>("list_pending_branches", { repoId, base }),
-  startMerge: (repoId: Uuid, branchRef: string, base: string) =>
-    invoke<MergeOutcome>("start_merge", { repoId, branchRef, base }),
+  startMerge: (repoId: Uuid, branchRef: string, base: string, expectedSha?: string | null) =>
+    invoke<MergeOutcome>("start_merge", {
+      repoId,
+      branchRef,
+      base,
+      expectedSha: expectedSha ?? null,
+    }),
   mergeState: (repoId: Uuid) =>
     invoke<MergeState>("merge_state", { repoId }),
   baseUnpushedCount: (repoId: Uuid, base: string) =>

@@ -88,8 +88,12 @@ pub fn list_pending_branches(
     remote: &str,
     base: &str,
 ) -> AppResult<Vec<PendingBranch>> {
+    // %(symref): refs/remotes/origin/HEAD 같은 심볼릭 ref에서만 비어 있지
+    // 않다. %(refname:short)는 origin/HEAD를 "origin"으로 줄여 버려서
+    // 이름 비교("origin/HEAD")로는 절대 거를 수 없다 — 원격 HEAD가 base가
+    // 아닌 브랜치를 가리키면 "origin"이라는 유령 카드가 생기던 원인.
     let fmt =
-        "%(refname:short)%09%(objectname)%09%(authorname)%09%(committerdate:unix)%09%(subject)";
+        "%(refname:short)%09%(objectname)%09%(authorname)%09%(committerdate:unix)%09%(symref)%09%(subject)";
     let list = run_at_target(
         target,
         [
@@ -117,12 +121,16 @@ pub fn list_pending_branches(
         if line.is_empty() {
             continue;
         }
-        let mut parts = line.splitn(5, '\t');
+        let mut parts = line.splitn(6, '\t');
         let name = parts.next().unwrap_or("").to_string();
         let sha = parts.next().unwrap_or("").to_string();
         let author = parts.next().unwrap_or("").to_string();
         let unix_str = parts.next().unwrap_or("0");
+        let symref = parts.next().unwrap_or("");
         let subject = parts.next().unwrap_or("").to_string();
+        if !symref.is_empty() {
+            continue; // origin/HEAD 포인터 — 브랜치가 아니다.
+        }
         if name == head_ref || name == base_ref || name.is_empty() || sha.is_empty() {
             continue;
         }
@@ -149,12 +157,16 @@ pub fn list_pending_branches(
         if line.is_empty() {
             continue;
         }
-        let mut parts = line.splitn(5, '\t');
+        let mut parts = line.splitn(6, '\t');
         let name = parts.next().unwrap_or("").to_string();
         let sha = parts.next().unwrap_or("").to_string();
         let author = parts.next().unwrap_or("").to_string();
         let unix_str = parts.next().unwrap_or("0");
+        let symref = parts.next().unwrap_or("");
         let subject = parts.next().unwrap_or("").to_string();
+        if !symref.is_empty() {
+            continue;
+        }
         if name == base || name == "HEAD" || name.is_empty() || sha.is_empty() {
             continue;
         }
@@ -232,7 +244,10 @@ fn build_pending(
                 // already have the "new" path in `path`
             }
             if !path.is_empty() {
-                changed_files.push(ChangedPath { path, kind });
+                changed_files.push(ChangedPath {
+                    path: crate::git::unquote_git_path(&path),
+                    kind,
+                });
             }
         }
     }
@@ -353,6 +368,19 @@ pub fn delete_remote_branch(
             "병합 브랜치({base})는 삭제할 수 없습니다."
         )));
     }
+    // 심층 방어: .gpconfig의 병합 대상 브랜치(develop, release/1.0 …)는
+    // 어떤 호출 경로로도 지우지 않는다 — 커맨드 계층의 필터에만 의존하면
+    // merge 계층을 직접 쓰는 코드가 팀의 합류 지점을 지울 수 있다.
+    if let Ok((cfg, exists)) = crate::gpconfig::read_config_effective(target, base, remote) {
+        if exists
+            && (cfg.merge_targets.iter().any(|t| t == branch)
+                || cfg.default_base_branch == branch)
+        {
+            return Err(AppError::Git(format!(
+                "{branch}은(는) 병합 대상 브랜치라 삭제할 수 없습니다."
+            )));
+        }
+    }
     let branch_ref = format!("{remote}/{branch}");
     let base_ref = format!("{remote}/{base}");
     let ancestor = run_at_target(
@@ -443,7 +471,17 @@ pub fn start_merge(
     branch_ref: &str,
     base: &str,
     remote: &str,
+    expected_sha: Option<&str>,
 ) -> AppResult<MergeOutcome> {
+    // 이미 병합이 진행 중이면 새 병합을 시작하지 않는다. 특히 충돌을 전부
+    // ours로 해결해 둔 상태는 인덱스가 HEAD와 같아 아래 dirty-tree 가드를
+    // 통과하고, 이어지는 `checkout <base>`가 "Already on <base>"이면서도
+    // MERGE_HEAD를 지워 버린다 — 사용자가 풀어 둔 병합이 소리 없이 증발한다.
+    if merge_in_progress(target)? {
+        return Err(AppError::Git(
+            "이미 진행 중인 병합이 있습니다. 병합 탭에서 먼저 마무리하거나 중단하세요.".into(),
+        ));
+    }
     if has_tracked_changes(target)? {
         return Err(AppError::Git(
             "작업 트리에 커밋되지 않은 변경이 있습니다. 작업 탭에서 커밋하거나 stash하세요.".into(),
@@ -458,6 +496,25 @@ pub fn start_merge(
         let _ = run_at_target(target, ["fetch", remote, &format!("{base}:{base}")]);
     }
     let _ = run_at_target(target, ["fetch", "--prune", remote]);
+
+    // fetch --prune 이후의 실제 tip 확인 — 관리자가 화면에서 검토한 것과
+    // 지금 병합될 것이 같은지 검증한다.
+    let tip = run_at_target(target, ["rev-parse", "-q", "--verify", branch_ref])?;
+    if !tip.ok() {
+        return Err(AppError::Git(format!(
+            "{branch_ref} 브랜치를 찾을 수 없습니다 — 방금 원격에서 삭제되었을 수 있습니다. 목록을 새로고침하세요."
+        )));
+    }
+    if let Some(expected) = expected_sha {
+        let actual = tip.stdout.trim();
+        if !expected.is_empty() && actual != expected && !actual.starts_with(expected) {
+            return Err(AppError::Git(format!(
+                "검토한 뒤 이 브랜치에 새 push가 있었습니다(또는 히스토리가 바뀌었습니다). 목록을 새로고침해 최신 내용을 확인한 뒤 다시 병합하세요. (검토: {} → 현재: {})",
+                &expected[..expected.len().min(7)],
+                &actual[..actual.len().min(7)],
+            )));
+        }
+    }
 
     let checkout = run_at_target(target, ["checkout", base])?;
     if !checkout.ok() {
@@ -497,7 +554,7 @@ pub fn start_merge(
     // Anything else: abort so the tree isn't left in a broken state.
     let _ = run_at_target(target, ["merge", "--abort"]);
     Err(AppError::Git(format!(
-        "merge failed: {}",
+        "병합 실패: {}",
         merge.stderr.trim()
     )))
 }
@@ -588,6 +645,16 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
             }
         }
         Resolution::Manual { content } => {
+            // 충돌 마커가 남은 본문이 그대로 스테이징·커밋되면 팀 전체에
+            // 배포된다 — 자동 경로(valid_ai_body)와 같은 규칙으로 거부한다.
+            // `=======` 단독 줄은 정당한 내용(마크다운 밑줄 등)일 수 있으므로
+            // 시작/종료/베이스 마커가 있을 때만 미해결로 판정한다.
+            if has_unresolved_markers(content) {
+                return Err(AppError::Git(
+                    "충돌 표시(<<<<<<< 또는 >>>>>>>)가 아직 남아 있습니다. 모든 블록을 해결한 뒤 저장하세요."
+                        .into(),
+                ));
+            }
             crate::git::write_file_at_target(target, path, content.as_bytes())?;
         }
     }
@@ -599,6 +666,19 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
         )));
     }
     remaining_conflicts(target)
+}
+
+/// 줄 첫머리 기준의 미해결 충돌 마커 검사. `=======` 단독은 정당한 내용일 수
+/// 있어 제외하고, git이 항상 함께 쓰는 시작(`<<<<<<< `)·종료(`>>>>>>> `)·
+/// 베이스(`|||||||`) 마커만 본다.
+pub(crate) fn has_unresolved_markers(content: &str) -> bool {
+    content.lines().any(|l| {
+        l.starts_with("<<<<<<< ")
+            || l.starts_with(">>>>>>> ")
+            || l.starts_with("|||||||")
+            || l == "<<<<<<<"
+            || l == ">>>>>>>"
+    })
 }
 
 /// `git checkout --ours/--theirs` 가 "does not have our/their version" 으로
@@ -624,8 +704,8 @@ pub fn remaining_conflicts(target: &Target) -> AppResult<Vec<String>> {
     Ok(out
         .stdout
         .lines()
-        .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
+        .map(crate::git::unquote_git_path)
         .collect())
 }
 

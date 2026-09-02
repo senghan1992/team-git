@@ -247,7 +247,7 @@ fn modify_delete_conflict_resolves_to_deletion() {
     seed_commit(work.path(), "doomed.txt", "modified\n", "modify doomed");
 
     let target = Target::Local(work.path().into());
-    let outcome = start_merge(&target, "origin/feature/del", "main", "origin").unwrap();
+    let outcome = start_merge(&target, "origin/feature/del", "main", "origin", None).unwrap();
     assert!(outcome.conflicted, "modify/delete는 충돌이어야 한다");
     assert!(outcome.conflicted_files.contains(&"doomed.txt".to_string()));
 
@@ -294,7 +294,7 @@ fn merge_success_creates_no_ff_merge_commit() {
     git_run(work.path(), &["checkout", "-q", "main"]);
 
     let target = Target::Local(work.path().into());
-    let outcome = start_merge(&target, "origin/feature/o", "main", "origin").unwrap();
+    let outcome = start_merge(&target, "origin/feature/o", "main", "origin", None).unwrap();
     assert!(outcome.ok);
     assert!(!outcome.conflicted);
     let out = git_run(work.path(), &["log", "-1", "--pretty=%P"]);
@@ -321,7 +321,7 @@ fn merge_conflict_reports_files_and_keeps_merging_state() {
     git_run(work.path(), &["push", "-q", "origin", "main"]);
 
     let target = Target::Local(work.path().into());
-    let outcome = start_merge(&target, "origin/feature/a", "main", "origin").unwrap();
+    let outcome = start_merge(&target, "origin/feature/a", "main", "origin", None).unwrap();
     assert!(outcome.conflicted);
     assert!(outcome.conflicted_files.iter().any(|p| p == "app.txt"));
     assert!(merge_in_progress(&target).unwrap());
@@ -342,7 +342,7 @@ fn merge_rejected_when_worktree_dirty() {
     git_run(work.path(), &["add", "-A"]);
 
     let target = Target::Local(work.path().into());
-    let err = start_merge(&target, "origin/feature/d", "main", "origin").unwrap_err();
+    let err = start_merge(&target, "origin/feature/d", "main", "origin", None).unwrap_err();
     let msg = format!("{err:?}");
     assert!(
         msg.contains("변경"),
@@ -364,7 +364,7 @@ fn abort_merge_restores_clean_tree() {
     seed_commit(work.path(), "app.txt", "line1-main\n", "main edit");
 
     let target = Target::Local(work.path().into());
-    let outcome = start_merge(&target, "origin/feature/ab", "main", "origin").unwrap();
+    let outcome = start_merge(&target, "origin/feature/ab", "main", "origin", None).unwrap();
     assert!(outcome.conflicted);
     abort_merge(&target).unwrap();
     assert!(!merge_in_progress(&target).unwrap());
@@ -391,7 +391,7 @@ fn resolve_manual_then_complete_merges_both_edits() {
     seed_commit(work.path(), "app.txt", "line1-n\nline2\n", "feat n");
 
     let target = Target::Local(work.path().into());
-    let _ = start_merge(&target, "origin/feature/m", "main", "origin").unwrap();
+    let _ = start_merge(&target, "origin/feature/m", "main", "origin", None).unwrap();
     assert!(merge_in_progress(&target).unwrap());
     let detail = conflict_detail(&target, "app.txt").unwrap();
     assert!(!detail.is_binary);
@@ -437,7 +437,7 @@ fn conflict_detail_stages_with_missing_base_on_add_add() {
     );
 
     let target = Target::Local(work.path().into());
-    let outcome = start_merge(&target, "origin/feature/add", "main", "origin").unwrap();
+    let outcome = start_merge(&target, "origin/feature/add", "main", "origin", None).unwrap();
     assert!(outcome.conflicted);
     let detail = conflict_detail(&target, "new.txt").unwrap();
     assert!(
@@ -565,7 +565,7 @@ fn pending_branches_lists_local_unpushed_branch_and_dedupes() {
     assert!(!matching[0].local);
 
     // And merging by the (now remote) ref works end to end.
-    let out = start_merge(&target, "origin/wip/feature", "main", "origin").unwrap();
+    let out = start_merge(&target, "origin/wip/feature", "main", "origin", None).unwrap();
     assert!(out.ok, "merge of pending branch succeeds");
 }
 

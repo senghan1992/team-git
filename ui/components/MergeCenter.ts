@@ -581,7 +581,9 @@ export async function renderMergeCenter(
         if (!ok) return;
         setBusy(btn, true, "병합 중…");
         try {
-          const out: MergeOutcome = await ipc.startMerge(repo.id, b.name, base);
+          // 검토한 tip(sha)을 함께 보낸다 — 목록을 본 뒤 팀원이 push(또는
+          // force-push)했다면 백엔드가 병합을 멈추고 새로고침을 요구한다.
+          const out: MergeOutcome = await ipc.startMerge(repo.id, b.name, base, b.sha);
           if (out.ok) {
             toast(`${b.short_name} 병합 완료`, "success");
             await pushMergedBranch();
@@ -611,7 +613,15 @@ export async function renderMergeCenter(
           }
         } catch (e) {
           const msg = (e as Error).message ?? String(e);
-          if (msg.includes("변경")) {
+          if (msg.includes("새 push가 있었습니다") || msg.includes("찾을 수 없습니다")) {
+            // 검토 후 브랜치가 바뀌었거나(새 push/force-push) 방금 삭제됨 —
+            // 목록을 새로 그려 최신 상태를 보여 준다.
+            toast(msg, "error");
+            await refresh();
+          } else if (msg.includes("진행 중인 병합")) {
+            toast(msg, "error");
+            await refresh();
+          } else if (msg.includes("변경")) {
             // 이 앱에는 해시 라우터가 없다 — 예전에는 location.hash 를 바꿔서
             // 아무 일도 일어나지 않았고, 안내만 하고 그 자리에 남았다.
             toast(`${msg} — 작업 탭에서 커밋하거나 스태시한 뒤 다시 시도하세요.`, "error");

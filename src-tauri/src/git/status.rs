@@ -79,9 +79,12 @@ pub fn parse_status(output: &str) -> AppResult<WorkingTreeStatus> {
             status.ahead = ahead;
             status.behind = behind;
         } else if line.starts_with("1 ") || line.starts_with("2 ") {
-            // 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
-            // 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>\t<origPath>
-            let mut parts: Vec<&str> = line.splitn(9, ' ').collect();
+            // 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>                    → 9 필드
+            // 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>\t<orig> → 10 필드
+            // rename(`2 `) 라인은 <X><score> 필드가 하나 더 있다 — 같은 9로
+            // 자르면 경로 앞에 "R100 " 이 섞여 나온다.
+            let n = if line.starts_with("2 ") { 10 } else { 9 };
+            let mut parts: Vec<&str> = line.splitn(n, ' ').collect();
             let _ver = parts.remove(0);
             let xy = parts.remove(0);
             let path = parts.pop().unwrap_or("");
@@ -89,7 +92,7 @@ pub fn parse_status(output: &str) -> AppResult<WorkingTreeStatus> {
             let (staged, unstaged) = parse_xy(xy);
             status.files.push(FileChange {
                 kind,
-                path: final_path,
+                path: crate::git::unquote_git_path(&final_path),
                 staged,
                 unstaged,
             });
@@ -98,20 +101,22 @@ pub fn parse_status(output: &str) -> AppResult<WorkingTreeStatus> {
             // Untracked files: not in index, not in work tree (staged=F, unstaged=F)
             status.files.push(FileChange {
                 kind: FileChangeKind::Untracked,
-                path,
+                path: crate::git::unquote_git_path(&path),
                 staged: false,
                 unstaged: false,
             });
         } else if line.starts_with("u ") {
-            // 1 <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
-            let mut parts: Vec<&str> = line.splitn(10, ' ').collect();
+            // u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path> → 11 필드
+            // (모드 4개 + 스테이지 해시 3개) — 10으로 자르면 경로 앞에
+            // stage-3 SHA 40자가 붙어 충돌 중 파일 목록 전체가 깨진다.
+            let mut parts: Vec<&str> = line.splitn(11, ' ').collect();
             let _ver = parts.remove(0);
             let xy = parts.remove(0);
             let path = parts.pop().unwrap_or("");
             let (staged, unstaged) = parse_xy(xy);
             status.files.push(FileChange {
                 kind: FileChangeKind::Conflicted,
-                path: path.to_string(),
+                path: crate::git::unquote_git_path(path),
                 staged,
                 unstaged,
             });
@@ -134,11 +139,14 @@ fn classify(xy: &str, path: &str) -> (FileChangeKind, String) {
     let x = xy.chars().next().unwrap_or(' ');
     let y = xy.chars().nth(1).unwrap_or(' ');
     let path = path.to_string();
-    match (x, y) {
-        ('R', _) | ('C', _) => {
+    // 인덱스(X)에 변화가 없으면 워크트리(Y) 열로 분류한다 — 탐색기에서
+    // 파일을 지운 흔한 상태(`.D`)가 "수정됨"으로 표시되던 원인.
+    let effective = if x == '.' || x == ' ' { y } else { x };
+    match effective {
+        'R' | 'C' => {
             let p = path.split('\t').next().unwrap_or(&path).to_string();
             (
-                if x == 'R' {
+                if effective == 'R' {
                     FileChangeKind::Renamed
                 } else {
                     FileChangeKind::Copied
@@ -146,8 +154,8 @@ fn classify(xy: &str, path: &str) -> (FileChangeKind, String) {
                 p,
             )
         }
-        ('A', _) => (FileChangeKind::Added, path),
-        ('D', _) => (FileChangeKind::Deleted, path),
+        'A' => (FileChangeKind::Added, path),
+        'D' => (FileChangeKind::Deleted, path),
         _ => (FileChangeKind::Modified, path),
     }
 }

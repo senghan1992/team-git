@@ -208,6 +208,72 @@ pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// git 이 C-quoting 으로 감싼 경로를 원래 문자열로 되돌린다.
+///
+/// `core.quotepath=off` 로 한글 등 비ASCII는 그대로 나오지만, `"` 나 제어
+/// 문자가 든 파일명은 여전히 `"a\"b.txt"` 형태로 감싸여 나온다 — 그대로
+/// 반환하면 그 경로로 하는 diff/add/해결이 전부 "파일 없음"이 된다.
+pub(crate) fn unquote_git_path(s: &str) -> String {
+    let s = s.trim_end_matches('\r');
+    if s.len() < 2 || !s.starts_with('"') || !s.ends_with('"') {
+        return s.to_string();
+    }
+    let inner = &s[1..s.len() - 1];
+    let mut bytes: Vec<u8> = Vec::with_capacity(inner.len());
+    let mut it = inner.bytes().peekable();
+    while let Some(b) = it.next() {
+        if b != b'\\' {
+            bytes.push(b);
+            continue;
+        }
+        match it.next() {
+            Some(b'\\') => bytes.push(b'\\'),
+            Some(b'"') => bytes.push(b'"'),
+            Some(b't') => bytes.push(b'\t'),
+            Some(b'n') => bytes.push(b'\n'),
+            Some(b'r') => bytes.push(b'\r'),
+            Some(d @ b'0'..=b'7') => {
+                // 8진수 최대 3자리 (UTF-8 바이트 단위).
+                let mut v = (d - b'0') as u32;
+                for _ in 0..2 {
+                    match it.peek() {
+                        Some(&n @ b'0'..=b'7') => {
+                            v = v * 8 + (n - b'0') as u32;
+                            it.next();
+                        }
+                        _ => break,
+                    }
+                }
+                bytes.push(v as u8);
+            }
+            Some(other) => {
+                bytes.push(b'\\');
+                bytes.push(other);
+            }
+            None => bytes.push(b'\\'),
+        }
+    }
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[cfg(test)]
+mod unquote_tests {
+    use super::unquote_git_path;
+
+    #[test]
+    fn plain_and_quoted_paths_roundtrip() {
+        assert_eq!(unquote_git_path("src/한글 파일.ts"), "src/한글 파일.ts");
+        assert_eq!(unquote_git_path("\"a\\\"b.txt\""), "a\"b.txt");
+        assert_eq!(unquote_git_path("\"tab\\there\""), "tab\there");
+        assert_eq!(unquote_git_path("\"back\\\\slash\""), "back\\slash");
+        // 8진수 UTF-8 바이트 (quotepath=on 환경 대비): "한" = \354\225\234 아님,
+        // 실제 값으로 검증 — '한' = ED 95 9C.
+        assert_eq!(unquote_git_path("\"\\355\\225\\234\""), "한");
+        assert_eq!(unquote_git_path("\"\""), "");
+        assert_eq!(unquote_git_path("no-quotes"), "no-quotes");
+    }
+}
+
 /// Build an `ssh` (or `sshpass … ssh` for password auth) command targeting
 /// `user@host`, pre-loaded with the same auth options the rest of the app
 /// uses. Call sites append their remote command. The password is passed via

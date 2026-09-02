@@ -102,15 +102,35 @@ pub fn read_config_effective(
     base_branch: &str,
     remote: &str,
 ) -> AppResult<(ProjectConfig, bool)> {
-    let (cfg, exists) = read_config(target)?;
+    // 워킹 트리 사본이 "깨져 있는" 경우(대표적으로 .gpconfig 자체가 병합
+    // 충돌 마커를 달고 있는 동안)는 "없음"과 똑같이 취급하고 커밋된 사본으로
+    // 넘어간다 — 병합 도중에 관리자 판정·팀 목록이 통째로 마비되면 안 된다.
+    let (cfg, exists) = match read_config(target) {
+        Ok(v) => v,
+        Err(AppError::Config(_)) => (ProjectConfig::default(), false),
+        Err(e) => return Err(e),
+    };
     if exists {
         return Ok((cfg, true));
     }
     let base = base_branch.trim();
-    if base.is_empty() {
-        return Ok((cfg, false));
+    let mut candidates: Vec<String> = Vec::new();
+    if !base.is_empty() {
+        candidates.push(format!("{remote}/{base}"));
+        candidates.push(base.to_string());
     }
-    for rev in [format!("{remote}/{base}"), base.to_string()] {
+    // 등록된 base(main)에 설정이 없어도, 팀이 실제로 쓰는 병합 브랜치
+    // (원격 HEAD가 가리키는 기본 브랜치, 예: develop)에는 있을 수 있다.
+    if let Ok(head) = run_at_target(
+        target,
+        ["rev-parse", "--abbrev-ref", &format!("refs/remotes/{remote}/HEAD")],
+    ) {
+        let name = head.stdout.trim().to_string();
+        if head.ok() && !name.is_empty() && name != "HEAD" && !candidates.contains(&name) {
+            candidates.push(name);
+        }
+    }
+    for rev in candidates {
         let spec = format!("{rev}:{GPCONFIG_FILE}");
         let out = run_at_target(target, ["show", &spec])?;
         if !out.ok() || out.stdout.trim().is_empty() {
@@ -141,7 +161,13 @@ pub fn commit_config(target: &Target) -> AppResult<CommitOutcome> {
     if !run_at_target(target, ["add", "--", GPCONFIG_FILE])?.ok() {
         return Err(AppError::Git("git add .gpconfig 실패".into()));
     }
-    let out = run_at_target(target, ["commit", "-m", GP_COMMIT_MESSAGE])?;
+    // pathspec으로 커밋 범위를 .gpconfig 하나로 못박는다 — 사용자가 다른
+    // 파일을 스테이징해 둔 상태였다면, pathspec 없는 commit은 그 미완성
+    // 작업까지 "chore: config" 커밋에 쓸어 담아 버린다.
+    let out = run_at_target(
+        target,
+        ["commit", "-m", GP_COMMIT_MESSAGE, "--", GPCONFIG_FILE],
+    )?;
     if out.ok() {
         Ok(CommitOutcome {
             ok: true,
