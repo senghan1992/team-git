@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Git Companion pre-push hook (auto-generated; do not edit by hand)
+set -e
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+APP_BIN="${GIT_COMPANION_BIN:-git-companion}"
+while read -r local_ref local_sha remote_ref remote_sha; do
+  AUTHOR="$(git log -1 --format='%an' "$local_sha" 2>/dev/null || echo unknown)"
+  COMMIT_MSG="$(git log -1 --format='%s' "$local_sha" 2>/dev/null || echo '')"
+  SHA="$(git log -1 --format='%H' "$local_sha" 2>/dev/null || echo '')"
+  REMOTE_URL="$(git remote get-url origin 2>/dev/null || echo '')"
+  if [[ "$remote_ref" == "refs/heads/main" ]]; then
+    "$APP_BIN" hook emit --event main-push \
+      --author "$AUTHOR" --message "$COMMIT_MSG" --sha "$SHA" \
+      --branch main --remote-url "$REMOTE_URL" --repo "$REPO_ROOT" || true
+  elif [[ "$remote_ref" == refs/heads/* ]]; then
+    BRANCH="${remote_ref#refs/heads/}"
+    "$APP_BIN" hook emit --event branch-push \
+      --author "$AUTHOR" --message "$COMMIT_MSG" --sha "$SHA" \
+      --branch "$BRANCH" --remote-url "$REMOTE_URL" --repo "$REPO_ROOT" || true
+  fi
+  if [[ "$remote_ref" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    TAG="${remote_ref#refs/tags/}"
+    "$APP_BIN" hook emit --event release \
+      --author "$AUTHOR" --message "$COMMIT_MSG" --sha "$SHA" \
+      --version "${TAG#v}" --remote-url "$REMOTE_URL" --repo "$REPO_ROOT" || true
+  fi
+done
+exit 0

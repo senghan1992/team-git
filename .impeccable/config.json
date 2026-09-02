@@ -1,0 +1,35 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "design-system-radius",
+        "value": "2px",
+        "files": ["ui/styles/app.css"],
+        "reason": "Carved cobalt nav tick (3px × 15px) — signature mark documented in DESIGN.md Shapes."
+      },
+      {
+        "rule": "design-system-radius",
+        "value": "3px",
+        "files": ["ui/styles/app.css"],
+        "reason": "Conflict file-item dot (9px square) — pattern mark documented in DESIGN.md Components."
+      },
+      {
+        "rule": "design-system-font-size",
+        "value": "0.75rem",
+        "files": ["ui/styles/app.css"],
+        "reason": "Hash chip 12px mono — measurement chip documented in DESIGN.md Typography."
+      },
+      {
+        "rule": "design-system-radius",
+        "value": "2px",
+        "files": [".impeccable/design.json"],
+        "reason": "Nav tick radius in the sidecar's self-contained ds-nav snippet."
+      }
+    ],
+    "designSystem": {
+      "enabled": true
+    }
+  }
+}

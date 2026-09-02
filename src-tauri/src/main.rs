@@ -1,0 +1,211 @@
+//! Entry point. Handles the `hook emit` subcommand (used by the pre-push hook)
+//! and the GUI application.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use std::path::PathBuf;
+
+use git_companion::config_store;
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args.get(1).map(|s| s.as_str()) == Some("hook") {
+        let rest: &[String] = if args.get(2).map(|s| s.as_str()) == Some("emit") {
+            &args[3..]
+        } else {
+            &args[2..]
+        };
+        let code = match run_hook_subcommand(rest) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("[ERROR] {e}");
+                1
+            }
+        };
+        std::process::exit(code);
+    }
+    run_gui();
+}
+
+fn run_gui() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init();
+    if let Err(e) = config_store::ensure_dirs() {
+        eprintln!("config init failed: {e}");
+    }
+    git_companion::run();
+}
+
+/// Minimal event enum for the hook subcommand — mirrors what peer backend expects.
+#[derive(Debug, serde::Serialize)]
+#[serde(tag = "kind", content = "data")]
+enum HookEvent {
+    #[serde(rename = "main_push")]
+    MainPush {
+        author: String,
+        message: String,
+        sha: String,
+        repo_name: String,
+        url: String,
+        branch: String,
+    },
+    #[serde(rename = "branch_push")]
+    BranchPush {
+        author: String,
+        message: String,
+        sha: String,
+        repo_name: String,
+        url: String,
+        branch: String,
+    },
+    #[serde(rename = "release")]
+    Release {
+        author: String,
+        repo_name: String,
+        url: String,
+        version: String,
+    },
+}
+
+impl HookEvent {
+    fn event_kind_str(&self) -> &'static str {
+        match self {
+            HookEvent::MainPush { .. } => "main_push",
+            HookEvent::BranchPush { .. } => "branch_push",
+            HookEvent::Release { .. } => "release",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct HookArgs {
+    event: String,
+    author: String,
+    message: String,
+    sha: String,
+    branch: Option<String>,
+    version: Option<String>,
+    remote_url: String,
+    repo: String,
+}
+
+fn run_hook_subcommand(args: &[String]) -> anyhow::Result<()> {
+    let parsed = parse_hook_args(args)?;
+    let repo_path = std::fs::canonicalize(&parsed.repo)?;
+    let cfg = config_store::load()?;
+    let repo = cfg
+        .repositories
+        .iter()
+        .find(|r| PathBuf::from(&r.path) == repo_path || r.path == parsed.repo)
+        .ok_or_else(|| anyhow::anyhow!("repo not registered: {}", parsed.repo))?;
+
+    let event: HookEvent = match parsed.event.as_str() {
+        "main-push" => HookEvent::MainPush {
+            author: parsed.author.clone(),
+            message: parsed.message.clone(),
+            sha: parsed.sha.clone(),
+            repo_name: repo.display_name.clone(),
+            url: parsed.remote_url.clone(),
+            branch: parsed.branch.clone().unwrap_or_else(|| "main".into()),
+        },
+        "branch-push" => HookEvent::BranchPush {
+            author: parsed.author.clone(),
+            message: parsed.message.clone(),
+            sha: parsed.sha.clone(),
+            repo_name: repo.display_name.clone(),
+            url: parsed.remote_url.clone(),
+            branch: parsed
+                .branch
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("branch required for branch-push"))?,
+        },
+        "release" => HookEvent::Release {
+            author: parsed.author.clone(),
+            repo_name: repo.display_name.clone(),
+            url: parsed.remote_url.clone(),
+            version: parsed
+                .version
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("version required for release"))?,
+        },
+        other => return Err(anyhow::anyhow!("unknown event {other}")),
+    };
+
+    // Fan out to peer backend for every linked project.
+    let peer_cfg = &cfg.peer;
+    if !peer_cfg.backend_url.is_empty() && !peer_cfg.device_token.is_empty() {
+        let peer_backend_url = peer_cfg.backend_url.clone();
+        let peer_token = peer_cfg.device_token.clone();
+        let peer_event_kind = event.event_kind_str();
+        let peer_repo_name = repo.display_name.clone();
+        let repo_projects = git_companion::peer::RepoProjects::load().unwrap_or_default();
+        let project_ids_vec = repo_projects.projects_for(&repo_path.to_string_lossy());
+        let payload = serde_json::to_string(&event).unwrap_or_default();
+        let n_projects = project_ids_vec.len();
+        for project_id in project_ids_vec {
+            if let Ok(rt) = tokio::runtime::Runtime::new() {
+                let project_id = project_id.clone();
+                rt.block_on(git_companion::peer::fanout_event(
+                    &peer_backend_url,
+                    &peer_token,
+                    &project_id,
+                    peer_event_kind,
+                    &peer_repo_name,
+                    &payload,
+                ))
+                .ok();
+            }
+        }
+        println!("[OK] event posted to {} project(s)", n_projects);
+    } else {
+        println!("[OK] no peer backend configured; event not sent");
+    }
+
+    Ok(())
+}
+
+fn parse_hook_args(args: &[String]) -> anyhow::Result<HookArgs> {
+    let mut event = String::new();
+    let mut author = String::new();
+    let mut message = String::new();
+    let mut sha = String::new();
+    let mut branch = None;
+    let mut version = None;
+    let mut remote_url = String::new();
+    let mut repo = String::new();
+    let mut i = 0;
+    while i < args.len() {
+        let key = &args[i];
+        let val = args
+            .get(i + 1)
+            .ok_or_else(|| anyhow::anyhow!("missing value for {key}"))?;
+        match key.as_str() {
+            "--event" => event = val.clone(),
+            "--author" => author = val.clone(),
+            "--message" => message = val.clone(),
+            "--sha" => sha = val.clone(),
+            "--branch" => branch = Some(val.clone()),
+            "--version" => version = Some(val.clone()),
+            "--remote-url" => remote_url = val.clone(),
+            "--repo" => repo = val.clone(),
+            _ => return Err(anyhow::anyhow!("unknown arg {key}")),
+        }
+        i += 2;
+    }
+    if event.is_empty() || repo.is_empty() {
+        return Err(anyhow::anyhow!("--event and --repo are required"));
+    }
+    Ok(HookArgs {
+        event,
+        author,
+        message,
+        sha,
+        branch,
+        version,
+        remote_url,
+        repo,
+    })
+}

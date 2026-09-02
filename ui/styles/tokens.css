@@ -1,0 +1,129 @@
+/* Git Companion — 청화백자 (Cobalt-white Porcelain).
+ * 달항아리처럼 고요한 포슬린 지면, 코발트 언더글레이즈 한 색.
+ * 재료 어휘: 유약 바른 백자(표면), 구운 질그릇(사이드바), 유약 소지(청자/철화/진사),
+ * 새겨진 1px 헤어라인. 상태는 색이 아니라 문양으로도 읽힌다 (jn).
+ */
+
+@theme {
+  /* ── Color: porcelain ground ── */
+  --color-canvas: #f6f5f1;          /* porcelain body */
+  --color-canvas-deep: #efede5;     /* deeper porcelain (hover washes) */
+  --color-clay: #ece8dd;            /* unglazed clay — sidebar */
+  --color-clay-strong: #e1dccb;     /* clay pressed */
+  --color-surface: #ffffff;         /* glazed plaque */
+  --color-surface-2: #faf9f5;       /* in-plaque wash */
+  --color-surface-strong: #f1eee6;  /* strong clay wash */
+
+  /* ── Color: ink ── */
+  --color-ink: #25272c;             /* ink — blue-black, never pure black */
+  --color-ink-muted: #6c6a63;       /* warm gray ink */
+  --color-ink-faint: #8f8a7d;       /* faint ink — disabled/decorative only */
+
+  /* ── Color: cobalt underglaze (one accent) ── */
+  --color-primary: #2c4b8f;
+  --color-primary-hover: #24407a;
+  --color-primary-deep: #1c3260;
+  --color-primary-soft: #eef1f8;    /* cobalt wash */
+
+  /* ── Color: glazes (status — celadon/iron/copper) ── */
+  --color-success: #276b4e;         /* celadon */
+  --color-warning: #8a5a10;         /* iron brown */
+  --color-danger: #ad392c;          /* copper red */
+  --color-danger-hover: #8f2d22;
+  --color-info: #2c4b8f;            /* cobalt */
+  --color-accent-warn: #8a5a10;
+  /* diff 미리보기 라인 틴트 — 수정 라인은 젖빛 유약 위에 옅게 */
+  --color-diff-add: #edf3ee;        /* celadon wash */
+  --color-diff-del: #f8efec;        /* copper wash */
+
+  --color-hairline: #e6e1d4;        /* engraved hairline */
+  --color-border-strong: #d2cbb9;   /* strong hairline */
+
+  /* ── Typography ── */
+  --font-display: "Pretendard Variable", Pretendard, "Apple SD Gothic Neo",
+    "Noto Sans KR", "Malgun Gothic", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo,
+    Consolas, "Liberation Mono", "Courier New", monospace;
+
+  --text-display-xs: 0.6875rem;   /* 11px — labels */
+  --text-display-sm: 0.8125rem;   /* 13px — secondary */
+  --text-display-md: 0.875rem;    /* 14px — body */
+  --text-display-base: 1rem;      /* 16px */
+  --text-display-lg: 1.375rem;    /* 22px */
+  --text-display-xl: 1.75rem;     /* 28px */
+  --text-display-2xl: 2.25rem;    /* 36px */
+
+  /* ── Radii — moon-jar curves ── */
+  --radius-xs: 6px;         /* hash chips, toast icon tiles */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-plate: 10px;     /* underglaze tab plates, toast plaque */
+  --radius-tab: 7px;        /* tab segment inside the plate */
+  --radius-full: 9999px;
+
+  /* ── Spacing scale (4px base) ── */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 28px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ── Shadow — porcelain light, offset + blur ── */
+  --shadow-card: 0 1px 2px rgba(37, 39, 44, 0.04), 0 3px 10px rgba(37, 39, 44, 0.05);
+  --shadow-pop: 0 4px 12px rgba(37, 39, 44, 0.08), 0 16px 40px rgba(37, 39, 44, 0.14);
+  --shadow-float: 0 1px 1px rgba(37, 39, 44, 0.05), 0 10px 28px rgba(37, 39, 44, 0.12);
+  --shadow-btn: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 1px 2px rgba(22, 40, 77, 0.28);
+  --shadow-btn-hover: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 2px 5px rgba(22, 40, 77, 0.32);
+  --shadow-btn-active: inset 0 2px 6px rgba(15, 28, 56, 0.3);
+  --shadow-cta: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 10px 30px rgba(28, 50, 96, 0.18);
+  --shadow-cta-btn: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 3px rgba(10, 20, 45, 0.35);
+
+  /* ── Layout ── */
+  --spacing-page-x: 32px;
+  --width-sidebar: 240px;
+
+  /* ── Lane palette (GitGraph) — ceramic pigments ── */
+  --lane-1: #2c4b8f;   /* cobalt */
+  --lane-2: #3e7a5e;   /* celadon */
+  --lane-3: #9a6b26;   /* iron */
+  --lane-4: #66758f;   /* porcelain gray */
+  --lane-5: #b04938;   /* copper */
+  --lane-6: #7c7466;   /* umber */
+
+  /* ── Tints (banners/badges — porcelain washes) ── */
+  --tint-info: #edf1f9;
+  --tint-warning: #f8f1e1;
+  --tint-danger: #f9eeec;
+  --tint-success: #edf4ef;
+
+  /* ── Fired dark porcelain (toast) ── */
+  --color-toast: #2a2d34;
+  --color-toast-celadon: #83c9a5;
+  --color-toast-copper: #e79a8a;
+  --color-toast-cobalt: #a3b9e4;
+
+  /* ── CTA plaque stops ── */
+  --color-cta-top: #32518f;
+  --color-cta-bottom: #21396b;
+  --color-cta-edge: rgba(18, 34, 66, 0.5);
+  --color-border-hover: #c2bba9;
+
+  /* ── Engraved marks — state patterns (color is never the sole signal) ── */
+  --pattern-hatch: repeating-linear-gradient(
+    45deg, rgba(44, 75, 143, 0.18) 0 2px, transparent 2px 5px
+  );
+  --pattern-cross: repeating-linear-gradient(
+      45deg, rgba(173, 57, 44, 0.22) 0 2px, transparent 2px 5px
+    ),
+    repeating-linear-gradient(
+      -45deg, rgba(173, 57, 44, 0.22) 0 2px, transparent 2px 5px
+    );
+}

@@ -1,0 +1,49 @@
+[package]
+name = "git-companion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Git Companion — keep your team in sync via webhook notifications."
+build = "build.rs"
+
+[[bin]]
+name = "git-companion"
+path = "src/main.rs"
+
+[[bin]]
+name = "gc-peer-listener"
+path = "src/bin/gc_peer_listener.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-shell = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.10"
+tokio = { workspace = true }
+reqwest = { workspace = true }
+rusqlite = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dirs = { workspace = true }
+async-trait = { workspace = true }
+url = { workspace = true }
+axum = "0.7"
+tower-http = { version = "0.6", features = ["cors"] }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"
+tokio-test = "0.4"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

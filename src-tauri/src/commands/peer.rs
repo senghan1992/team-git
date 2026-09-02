@@ -1,0 +1,364 @@
+//! Tauri commands for peer networking.
+use crate::config_store::config_dir;
+use crate::error::{AppError, AppResult};
+use crate::peer::{self, PeerConfig, PeerDeviceInfo, PeerProjectInfo};
+use uuid::Uuid;
+
+#[tauri::command]
+pub async fn peer_register_device(backend_url: String, name: String) -> AppResult<PeerDeviceInfo> {
+    let token = peer::load_or_create_token()?;
+    let info = peer::register_device(&backend_url, &token, &name).await?;
+
+    // Persist peer config into AppSettings.peer (single source of truth)
+    let mut cfg = crate::config_store::load()?;
+    cfg.peer.backend_url = backend_url;
+    cfg.peer.device_token = token.clone();
+    cfg.peer.device_id = info.id.clone();
+    cfg.peer.device_name = name;
+    crate::config_store::save(&cfg)?;
+
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn peer_create_project(
+    name: String,
+    repo_id: Option<Uuid>,
+) -> AppResult<PeerProjectInfo> {
+    let cfg = crate::config_store::load()?;
+    let token = peer::load_or_create_token()?;
+    let info = peer::create_project(&cfg.peer.backend_url, &token, &name).await?;
+
+    if let Some(r_id) = repo_id {
+        if let Some(repo) = cfg.repositories.iter().find(|r| r.id == r_id) {
+            let repo_path = std::fs::canonicalize(&repo.path)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| repo.path.clone());
+            let mut repos = peer::RepoProjects::load()?;
+            repos.link(&repo_path, &info.id);
+            repos.save()?;
+        }
+    }
+
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn peer_join_project(code: String, repo_id: Option<Uuid>) -> AppResult<PeerProjectInfo> {
+    let cfg = crate::config_store::load()?;
+    let token = peer::load_or_create_token()?;
+    let info = peer::join_project(&cfg.peer.backend_url, &token, &code).await?;
+
+    if let Some(r_id) = repo_id {
+        if let Some(repo) = cfg.repositories.iter().find(|r| r.id == r_id) {
+            let repo_path = std::fs::canonicalize(&repo.path)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| repo.path.clone());
+            let mut repos = peer::RepoProjects::load()?;
+            repos.link(&repo_path, &info.id);
+            repos.save()?;
+        }
+    }
+
+    Ok(info)
+}
+
+#[tauri::command]
+pub async fn peer_list_projects() -> AppResult<Vec<PeerProjectInfo>> {
+    let cfg = crate::config_store::load()?;
+    let token = peer::load_or_create_token()?;
+    peer::list_projects(&cfg.peer.backend_url, &token).await
+}
+
+#[tauri::command]
+pub fn peer_link_repo_to_project(repo_id: Uuid, project_id: String) -> AppResult<()> {
+    let cfg = crate::config_store::load()?;
+    let repo = cfg
+        .repositories
+        .iter()
+        .find(|r| r.id == repo_id)
+        .ok_or_else(|| AppError::RepoNotFound(repo_id.to_string()))?;
+    let repo_path = std::fs::canonicalize(&repo.path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| repo.path.clone());
+    let mut repos = peer::RepoProjects::load()?;
+    repos.link(&repo_path, &project_id);
+    repos.save()
+}
+
+#[tauri::command]
+pub fn peer_unlink_repo(repo_id: Uuid, project_id: String) -> AppResult<()> {
+    let cfg = crate::config_store::load()?;
+    let repo = cfg
+        .repositories
+        .iter()
+        .find(|r| r.id == repo_id)
+        .ok_or_else(|| AppError::RepoNotFound(repo_id.to_string()))?;
+    let repo_path = std::fs::canonicalize(&repo.path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| repo.path.clone());
+    let mut repos = peer::RepoProjects::load()?;
+    repos.unlink(&repo_path, &project_id);
+    repos.save()
+}
+
+/// Linked-repo summary for the project card — id + display name + path.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoLinkSummary {
+    pub repo_id: Uuid,
+    pub display_name: String,
+    pub path: String,
+}
+
+/// List repositories registered on this device that are linked to `project_id`.
+/// (The reverse of `peer_link_repo_to_project` — used so a project card can
+/// show which local repos belong to the team project.)
+#[tauri::command]
+pub fn peer_repos_for_project(project_id: String) -> AppResult<Vec<RepoLinkSummary>> {
+    let cfg = crate::config_store::load()?;
+    let repos_by_path = peer::RepoProjects::load()?;
+    let mut out = Vec::new();
+    for repo in &cfg.repositories {
+        let canon = std::fs::canonicalize(&repo.path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| repo.path.clone());
+        if repos_by_path
+            .projects_for(&canon)
+            .iter()
+            .any(|id| id == &project_id)
+        {
+            out.push(RepoLinkSummary {
+                repo_id: repo.id,
+                display_name: repo.display_name.clone(),
+                path: repo.path.clone(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Read the peer_port file and register the URL with the backend via PUT /devices/me/poll_url.
+#[tauri::command]
+pub async fn peer_local_url() -> AppResult<String> {
+    let cfg = crate::config_store::load()?;
+    let path = config_dir()?.join("peer_port");
+    if !path.exists() {
+        return Err(AppError::Config("peer listener not started".into()));
+    }
+    let port: u16 = std::fs::read_to_string(&path)?
+        .trim()
+        .parse()
+        .map_err(|e| AppError::Config(format!("invalid port: {}", e)))?;
+    let local_url = format!("http://127.0.0.1:{}", port);
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(format!(
+            "{}/devices/me/poll_url",
+            cfg.peer.backend_url.trim_end_matches('/')
+        ))
+        .header("Authorization", format!("Bearer {}", cfg.peer.device_token))
+        .json(&serde_json::json!({ "poll_url": local_url }))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("poll_url registration failed: {}", e)))?;
+
+    if !resp.status().is_success() {
+        return Err(AppError::Internal(format!(
+            "poll_url PUT failed: {}",
+            resp.status()
+        )));
+    }
+
+    Ok(local_url)
+}
+
+/// Count unread peer push events in the local inbox DB.
+#[tauri::command]
+pub fn peer_unread_count() -> AppResult<u32> {
+    let store = crate::notify::store::Store::open()?;
+    store.count_unread_team_events()
+}
+/// Get current peer config.
+#[tauri::command]
+pub fn peer_get_config() -> AppResult<PeerConfig> {
+    let cfg = crate::config_store::load()?;
+    Ok(cfg.peer.clone())
+}
+
+/// Update backend URL and persist to AppSettings.peer.
+#[tauri::command]
+pub async fn peer_set_backend_url(url: String) -> AppResult<()> {
+    let mut cfg = crate::config_store::load()?;
+    cfg.peer.backend_url = url;
+    crate::config_store::save(&cfg)?;
+    Ok(())
+}
+
+/// Poll once, drain all pending events, persist each to the local team inbox DB.
+/// The backend marks each delivery as consumed, so we must deserialize and store
+/// before the next poll call — otherwise events are permanently lost.
+/// Uses ?wait=0 on every call so empty polls return immediately instead of blocking 25s.
+#[tauri::command]
+pub async fn peer_poll_now() -> AppResult<()> {
+    use crate::notify::store::{new_id, Store, TeamEventRow};
+
+    #[derive(serde::Deserialize)]
+    struct PollEvent {
+        project_id: String,
+        sender_device_id: String,
+        event_kind: String,
+        repo_name: String,
+        payload: String,
+    }
+
+    let store = Store::open()?;
+    let cfg = crate::config_store::load()?;
+    if cfg.peer.backend_url.is_empty() || cfg.peer.device_token.is_empty() {
+        return Ok(());
+    }
+    let client = reqwest::Client::new();
+    loop {
+        let url = format!(
+            "{}/events/poll?wait=0",
+            cfg.peer.backend_url.trim_end_matches('/')
+        );
+        let resp = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", cfg.peer.device_token))
+            .timeout(std::time::Duration::from_secs(35))
+            .send()
+            .await
+            .map_err(|e| AppError::Internal(format!("poll failed: {}", e)))?;
+        if !resp.status().is_success() {
+            return Err(AppError::Internal(format!(
+                "poll returned {}",
+                resp.status()
+            )));
+        }
+        let body: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| AppError::Internal(format!("poll JSON parse failed: {}", e)))?;
+        let event_val = match body.get("event") {
+            Some(serde_json::Value::Null) | None => break,
+            Some(v) => v.clone(),
+        };
+        let event: PollEvent = match serde_json::from_value(event_val) {
+            Ok(e) => e,
+            Err(_) => break,
+        };
+        let row = TeamEventRow {
+            id: new_id(),
+            project_id: event.project_id,
+            sender_device_name: event.sender_device_id,
+            event_kind: event.event_kind,
+            repo_name: event.repo_name,
+            payload: event.payload,
+            received_at: chrono::Utc::now(),
+            read: false,
+        };
+        store.insert_team_event(&row)?;
+    }
+    Ok(())
+}
+
+/// Leave a peer project (remove self from member list) and unlink all repos.
+#[tauri::command]
+pub async fn peer_leave_project(project_id: String) -> AppResult<()> {
+    let cfg = crate::config_store::load()?;
+    let token = peer::load_or_create_token()?;
+    let device_id = &cfg.peer.device_id;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .delete(format!(
+            "{}/projects/{}/members/{}",
+            cfg.peer.backend_url.trim_end_matches('/'),
+            project_id,
+            device_id
+        ))
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|e| AppError::Internal(format!("leave failed: {}", e)))?;
+    if !resp.status().is_success() {
+        return Err(AppError::Internal(format!(
+            "leave returned {}",
+            resp.status()
+        )));
+    }
+
+    // Unlink all repos from this project
+    let mut repos = peer::RepoProjects::load()?;
+    let to_remove: Vec<String> = repos
+        .0
+        .iter()
+        .filter(|(_, pids)| pids.contains(&project_id))
+        .map(|(rp, _)| rp.clone())
+        .collect();
+    for rp in to_remove {
+        repos.unlink(&rp, &project_id);
+    }
+    repos.save()?;
+
+    Ok(())
+}
+
+/// List team push events from local inbox DB.
+#[tauri::command]
+pub fn peer_list_team_events(
+    limit: u32,
+    unread_only: bool,
+) -> AppResult<Vec<crate::notify::store::TeamEventRow>> {
+    let store = crate::notify::store::Store::open()?;
+    store.list_team_events(limit, unread_only)
+}
+
+/// Mark a team event as read.
+#[tauri::command]
+pub fn peer_mark_team_read(id: String) -> AppResult<()> {
+    let store = crate::notify::store::Store::open()?;
+    store.mark_team_read(&id)
+}
+
+// ── Email invite commands ────────────────────────────────────────────────────────
+
+/// Invite someone to a project by email.
+#[tauri::command]
+pub async fn peer_invite_by_email(
+    project_id: String,
+    email: String,
+    name: Option<String>,
+    role: Option<String>,
+) -> AppResult<peer::InviteByEmailResponse> {
+    let cfg = crate::config_store::load()?;
+    let token = peer::load_or_create_token()?;
+    let role_str = role.unwrap_or_else(|| "member".to_string());
+    peer::invite_by_email(
+        &cfg.peer.backend_url,
+        &token,
+        &project_id,
+        &email,
+        name.as_deref(),
+        &role_str,
+    )
+    .await
+}
+
+/// List all members and pending email invites for a project.
+#[tauri::command]
+pub async fn peer_list_members(project_id: String) -> AppResult<Vec<peer::MemberEmailEntry>> {
+    let cfg = crate::config_store::load()?;
+    let token = peer::load_or_create_token()?;
+    peer::list_members(&cfg.peer.backend_url, &token, &project_id).await
+}
+
+/// Remove a pending email invite from a project.
+#[tauri::command]
+pub async fn peer_remove_email_invite(project_id: String, email: String) -> AppResult<()> {
+    let cfg = crate::config_store::load()?;
+    let token = peer::load_or_create_token()?;
+    peer::remove_email_invite(&cfg.peer.backend_url, &token, &project_id, &email).await
+}

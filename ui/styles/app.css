@@ -1,0 +1,1058 @@
+@import "tailwindcss";
+@import "pretendard/dist/web/variable/pretendardvariable.css";
+@import "./tokens.css";
+
+/* ── Base — porcelain body ─────────────────────────────────────────────── */
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-display);
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+code,
+kbd,
+pre,
+tt,
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--color-primary);
+}
+
+input,
+textarea {
+  caret-color: var(--color-primary);
+}
+
+::selection {
+  background: rgba(44, 75, 143, 0.2);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+.gc-input:focus-visible {
+  outline: none;
+}
+
+/* ── Scrollbars — engraved rails ── */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-hairline);
+  border-radius: 8px;
+  border: 2px solid var(--color-canvas);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-hairline) transparent;
+}
+
+/* ── Buttons — glazed plaques ──────────────────────────────────────────── */
+.gc-button-primary {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-primary);
+  color: #fff;
+  border: 0;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-btn);
+  padding: 0 var(--space-6);
+  height: 40px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  transition: background-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
+}
+.gc-button-primary:hover {
+  background: var(--color-primary-hover);
+  box-shadow: var(--shadow-btn-hover);
+}
+.gc-button-primary:active {
+  background: var(--color-primary-deep);
+  transform: translateY(0.5px);
+  box-shadow: var(--shadow-btn-active);
+}
+.gc-button-primary:disabled {
+  background: var(--color-clay-strong);
+  color: var(--color-ink-faint);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+/* 가마에서 유약이 흐르는 빛 — 버튼이 일(busy) 중일 때만. */
+.gc-button-primary[aria-busy="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg, transparent 32%, rgba(255, 255, 255, 0.26) 50%, transparent 68%
+  );
+  transform: translateX(-100%);
+  animation: gc-sheen 1.15s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+}
+@keyframes gc-sheen {
+  to { transform: translateX(100%); }
+}
+
+.gc-button-secondary {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  padding: 0 var(--space-5);
+  height: 40px;
+  font-weight: 500;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.gc-button-secondary:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-border-hover);
+}
+.gc-button-secondary:active {
+  background: var(--color-canvas-deep);
+}
+.gc-button-secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.gc-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+}
+.gc-icon-btn--danger:hover {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+/* ── Action bar — the workbench row ────────────────────────────────────── */
+.gc-action-bar {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-2);
+  border-top: 1px solid var(--color-hairline);
+  padding-top: var(--space-3);
+}
+.gc-action-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: var(--space-2) 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-ink-muted);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.gc-action-cell:hover {
+  background: var(--color-canvas-deep);
+  color: var(--color-ink);
+}
+.gc-action-cell:active {
+  background: var(--color-clay-strong);
+}
+.gc-action-cell:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.gc-action-cell__label { font-size: 11px; line-height: 1; font-weight: 500; }
+.gc-action-bar--3col { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.gc-action-bar--4col { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.gc-action-cell > span { font-size: 11px; line-height: 1; }
+
+/* ── Plaques & rules ───────────────────────────────────────────────────── */
+.gc-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  padding: var(--space-6);
+  box-shadow: var(--shadow-card);
+}
+.gc-hairline {
+  border-bottom: 1px solid var(--color-hairline);
+}
+
+/* ── Inputs — engraved slots ───────────────────────────────────────────── */
+.gc-input {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-4);
+  height: 40px;
+  font-size: var(--text-display-base);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+textarea.gc-input {
+  height: auto;
+  padding: var(--space-3) var(--space-4);
+}
+.gc-input::placeholder {
+  color: var(--color-ink-muted);
+}
+.gc-input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(44, 75, 143, 0.14);
+}
+
+/* ── Settings ledger — labels, lists, row groups, save bar ──────────────── */
+/* 필드 라벨: 입력창 위 11px 라벨 — '어디에 무엇을 입력하는지' 먼저 읽힌다. */
+.gc-input-label {
+  display: block;
+  font-size: var(--text-display-xs);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-ink-muted);
+}
+.gc-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 검색 슬롯 — 입력창 안 아이콘 */
+.gc-search {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+.gc-search > svg {
+  position: absolute;
+  left: 13px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-ink-faint);
+  pointer-events: none;
+}
+.gc-search .gc-input {
+  padding-left: 38px;
+  width: 100%;
+}
+
+/* 목록 — 유약 씻은 판 위에 헤어라인으로 나눈 행.
+ * 목록은 칸(border)이 아니라 바탕(씻은 판)과 구분선으로 읽히도록,
+ * 옆에 있는 입력 슬롯(흰 유약 + 강한 헤어라인)과 형태가 겹치지 않게 한다. */
+.gc-list {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.gc-list__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 10px 12px;
+  transition: background-color 120ms ease;
+}
+.gc-list__row + .gc-list__row {
+  border-top: 1px solid var(--color-hairline);
+}
+.gc-list__row:hover {
+  background: var(--color-canvas-deep);
+}
+.gc-avatar {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-xs);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: var(--text-display-xs);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* 편집 단위 — 브랜치 행처럼 '항목 + 컨트롤'이 한 덩어리임을 보여주는 묶음.
+ * 안쪽 입력은 테두리 없이(ghost), 묶음 전체가 포커스 링을 가진다. */
+.gc-rowgroup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  padding: 3px 4px 3px 8px;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+.gc-rowgroup:hover {
+  border-color: var(--color-border-hover);
+}
+.gc-rowgroup:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(44, 75, 143, 0.14);
+}
+.gc-input--ghost {
+  border: 0;
+  background: transparent;
+  height: 34px;
+  padding: 0 8px 0 0;
+  font-size: var(--text-display-sm);
+  color: var(--color-ink);
+  min-width: 0;
+}
+.gc-input--ghost::placeholder {
+  color: var(--color-ink-faint);
+}
+.gc-input--ghost:focus {
+  outline: none;
+  border: 0;
+  box-shadow: none;
+}
+select.gc-input--ghost {
+  cursor: pointer;
+  color: var(--color-ink-muted);
+  width: 150px;
+  max-width: 100%;
+  flex: 0 1 auto;
+}
+select.gc-input--ghost:hover {
+  color: var(--color-ink);
+}
+.gc-vdivider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--color-hairline);
+}
+.gc-hdivider {
+  height: 1px;
+  background: var(--color-hairline);
+}
+
+/* 작은 행 액션 — 페이지 메인 액션(저장)과 위계를 나누는 컴팩트 버튼 */
+.gc-btn-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--radius-tab);
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-size: var(--text-display-sm);
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.gc-btn-sm:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-border-hover);
+}
+.gc-btn-sm:active {
+  background: var(--color-canvas-deep);
+}
+.gc-btn-sm:focus-visible {
+  outline: 2px solid rgba(44, 75, 143, 0.55);
+  outline-offset: 1px;
+}
+.gc-btn-sm--danger {
+  color: var(--color-danger);
+}
+.gc-btn-sm--danger:hover {
+  background: var(--tint-danger);
+  border-color: transparent;
+  color: var(--color-danger-hover);
+}
+
+/* 컴팩트 셀렉트 (행 안) */
+.gc-input--sm {
+  height: 32px;
+  font-size: var(--text-display-sm);
+  padding: 0 10px;
+}
+
+/* 카운트 배지 — 수치는 mono 계열로 (측정 규칙) */
+.gc-badge--num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 인라인 빈 상태 — 점선 판으로 '여기엔 아직 아무것도 없다'를 바로 알린다. */
+.gc-empty-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+  color: var(--color-ink-muted);
+  font-size: var(--text-display-sm);
+  line-height: 1.45;
+}
+.gc-empty-inline svg {
+  flex-shrink: 0;
+  color: var(--color-ink-faint);
+}
+
+/* 카드 머리 — 제목·설명을 본문과 나누는 1px 헤어라인 */
+.gc-card__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-hairline);
+}
+.gc-card__head-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* 저장 바 — 변경 상태 + 저장/푸시 액션 */
+.gc-savebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-card);
+  padding: 12px 16px;
+}
+.gc-savebar--sticky {
+  position: sticky;
+  bottom: 12px;
+  z-index: 20;
+}
+.gc-savebar__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-display-sm);
+  color: var(--color-ink-muted);
+}
+.gc-savebar__status svg {
+  flex-shrink: 0;
+}
+
+/* ── Modal — the kiln door ─────────────────────────────────────────────── */
+.gc-modal {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  max-width: 560px;
+  width: calc(100% - 32px);
+  margin: auto;
+}
+.gc-modal::backdrop {
+  background: rgba(30, 33, 39, 0.45);
+}
+.gc-modal__panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+  animation: gc-modal-in 180ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes gc-modal-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to   { opacity: 1; transform: none; }
+}
+.gc-modal__header {
+  padding: var(--space-6);
+  padding-bottom: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.gc-modal__body {
+  padding: var(--space-4) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.gc-modal__footer {
+  padding: var(--space-4) var(--space-6);
+  padding-top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  align-items: flex-end;
+}
+.gc-modal__title {
+  font-size: var(--text-display-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.gc-modal__description {
+  font-size: var(--text-display-sm);
+  color: var(--color-ink-muted);
+  margin-top: var(--space-1);
+}
+.gc-modal__error {
+  color: var(--color-danger);
+  font-size: var(--text-display-sm);
+  margin-top: var(--space-1);
+  align-self: flex-start;
+}
+
+/* ── Tabs — underglaze plates ──────────────────────────────────────────── */
+.gc-tabs {
+  display: inline-flex;
+  gap: 3px;
+  background: var(--color-clay);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-plate);
+  padding: 3px;
+}
+.gc-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 var(--space-4);
+  border-radius: var(--radius-tab);
+  background: transparent;
+  border: 0;
+  font-size: var(--text-display-md);
+  font-weight: 500;
+  color: var(--color-ink-muted);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.gc-tab:hover {
+  color: var(--color-ink);
+  background: rgba(255, 255, 255, 0.5);
+}
+.gc-tab.is-active {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  box-shadow: inset 0 0 0 1px var(--color-hairline), var(--shadow-card);
+}
+
+/* ── Page headers & sidebar ────────────────────────────────────────────── */
+.gc-page-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.gc-page-head__title {
+  font-size: var(--text-display-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.gc-page-head__sub {
+  font-size: var(--text-display-sm);
+  color: var(--color-ink-muted);
+}
+
+.gc-nav-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 0;
+  background: transparent;
+  font-size: var(--text-display-md);
+  color: var(--color-ink);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.gc-nav-btn:hover {
+  background: rgba(255, 255, 255, 0.55);
+}
+.gc-nav-btn.is-active {
+  background: var(--color-surface);
+  box-shadow: inset 0 0 0 1px var(--color-hairline), var(--shadow-card);
+  font-weight: 600;
+}
+/* 새겨진 코발트 틱 — 활성 상태는 색 없이도 문양으로 읽힌다. */
+.gc-nav-btn.is-active::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 15px;
+  border-radius: 2px;
+  background: var(--color-primary);
+}
+.gc-nav-ico {
+  display: inline-flex;
+  color: var(--color-ink-muted);
+  transition: color 120ms ease;
+}
+.gc-nav-btn.is-active .gc-nav-ico {
+  color: var(--color-primary);
+}
+
+/* ── Banners — porcelain slips, one 1px colored edge ──────────────────── */
+.gc-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  border: 1px solid var(--color-hairline);
+  border-left: 1px solid currentColor;
+  border-radius: var(--radius-sm);
+  padding: var(--space-4) var(--space-5);
+}
+.gc-banner--info {
+  color: var(--color-info);
+  background: var(--tint-info);
+}
+.gc-banner--warning {
+  color: var(--color-accent-warn);
+  background: var(--tint-warning);
+}
+.gc-banner--danger {
+  color: var(--color-danger);
+  background: var(--tint-danger);
+}
+.gc-banner--success {
+  color: var(--color-success);
+  background: var(--tint-success);
+}
+.gc-banner__title {
+  font-weight: 600;
+  color: var(--color-ink);
+}
+.gc-banner__body {
+  flex: 1;
+  color: var(--color-ink);
+}
+.gc-banner__icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+}
+
+/* ── Badges — small glazed chips, patterns ride along ──────────────────── */
+.gc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-display-xs);
+  font-weight: 600;
+  background: var(--color-clay);
+  color: var(--color-ink-muted);
+  white-space: nowrap;
+  letter-spacing: -0.01em;
+}
+.gc-badge--success {
+  background: var(--tint-success);
+  color: var(--color-success);
+}
+.gc-badge--warning {
+  background: var(--tint-warning);
+  color: var(--color-accent-warn);
+}
+.gc-badge--danger {
+  background-color: var(--tint-danger);
+  color: var(--color-danger);
+  background-image: var(--pattern-cross);
+}
+.gc-badge--info {
+  background: var(--tint-info);
+  color: var(--color-info);
+}
+.gc-badge--neutral {
+  background: var(--color-clay);
+  color: var(--color-ink);
+}
+.gc-badge--muted {
+  background: var(--color-clay);
+  color: var(--color-ink-muted);
+}
+
+/* ── Status chip — signed counters (value + trend, tabular) ────────────── */
+.gc-status-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-hairline);
+  background: var(--color-surface);
+  font-family: var(--font-mono);
+  font-size: var(--text-display-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-muted);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+/* ── Hash chip — short SHAs as carved labels ───────────────────────────── */
+.gc-hash-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: var(--color-clay);
+  border: 1px solid var(--color-hairline);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-ink-muted);
+}
+
+/* ── Empty states ──────────────────────────────────────────────────────── */
+.gc-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-12) var(--space-6);
+  color: var(--color-ink-muted);
+  text-align: center;
+}
+.gc-empty__icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-clay);
+  border: 1px solid var(--color-hairline);
+  color: var(--color-ink-muted);
+}
+.gc-empty__title {
+  font-size: var(--text-display-lg);
+  font-weight: 600;
+  color: var(--color-ink);
+  letter-spacing: -0.01em;
+}
+.gc-empty__desc {
+  font-size: var(--text-display-sm);
+  color: var(--color-ink-muted);
+}
+
+/* ── Conflict file list ────────────────────────────────────────────────── */
+.gc-select-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  text-align: left;
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: var(--space-3) var(--space-4);
+  cursor: pointer;
+  width: 100%;
+  font-size: var(--text-display-sm);
+  color: var(--color-ink);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.gc-select-item:hover {
+  background: var(--color-surface-2);
+}
+.gc-select-item.is-active {
+  border-color: var(--color-primary);
+  background: var(--color-primary-soft);
+}
+.gc-select-item.is-resolved {
+  color: var(--color-ink-muted);
+}
+.gc-select-item__dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background-color: var(--tint-danger);
+  background-image: var(--pattern-cross);
+  border: 1px solid rgba(173, 57, 44, 0.45);
+  flex-shrink: 0;
+}
+
+/* ── CTA — the one cobalt plaque (Home) ────────────────────────────────── */
+.gc-cta {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-8);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-cta-edge);
+  background: linear-gradient(165deg, var(--color-cta-top) 0%, var(--color-primary-hover) 55%, var(--color-cta-bottom) 100%);
+  box-shadow: var(--shadow-cta);
+}
+/* 유약이 위에서 스며드는 빛. */
+.gc-cta::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 70% at 12% -10%, rgba(255, 255, 255, 0.14), transparent 55%);
+  pointer-events: none;
+}
+.gc-cta__tile {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.gc-cta__title {
+  font-size: var(--text-display-xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: #fff;
+}
+.gc-cta__desc {
+  font-size: var(--text-display-md);
+  color: rgba(255, 255, 255, 0.72);
+  max-width: 52ch;
+}
+.gc-cta__btn {
+  position: relative;
+  align-self: flex-start;
+  background: #faf8f2;
+  color: var(--color-primary-deep);
+  border: 0;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-cta-btn);
+  padding: 0 var(--space-6);
+  height: 40px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+.gc-cta__btn:hover {
+  background: #ffffff;
+}
+.gc-cta__btn:active {
+  transform: translateY(0.5px);
+}
+
+/* ── SSH proof report ──────────────────────────────────────────────────── */
+.ssh-test-ok { color: var(--color-success); }
+.ssh-test-fail { color: var(--color-danger); }
+.ssh-test-details {
+  margin-top: var(--space-2);
+  border: 1px solid var(--color-hairline);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.ssh-test-row {
+  display: flex;
+  gap: 12px;
+  padding: 6px 10px;
+  font-size: var(--text-display-sm);
+}
+.ssh-test-row + .ssh-test-row {
+  border-top: 1px solid var(--color-hairline);
+}
+.ssh-test-label {
+  color: var(--color-ink-muted);
+  width: 96px;
+  flex-shrink: 0;
+}
+.ssh-test-error {
+  margin-top: var(--space-2);
+  padding: var(--space-2) 10px;
+  font-size: var(--text-display-xs);
+  color: var(--color-danger);
+  background: var(--tint-danger);
+  border-radius: var(--radius-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── Toast — fired glaze ───────────────────────────────────────────────── */
+/* 우측 하단 스택 — 팀 이벤트가 작업 흐름을 가리지 않게 바닥에 뜬다. */
+.gc-toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: min(420px, calc(100vw - 32px));
+}
+@keyframes gc-toast-in {
+  from { opacity: 0; transform: translateY(12px); filter: blur(4px); }
+  to   { opacity: 1; transform: none; filter: blur(0); }
+}
+.gc-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-plate);
+  font-size: var(--text-display-md);
+  font-weight: 500;
+  color: var(--color-canvas);
+  background: var(--color-toast);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: var(--shadow-float);
+  animation: gc-toast-in 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.gc-toast__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-xs);
+  flex-shrink: 0;
+}
+.gc-toast__body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.gc-toast__detail {
+  font-size: var(--text-display-sm);
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.62);
+}
+.gc-toast__action {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--color-canvas);
+  font-size: var(--text-display-md);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.gc-toast__action:hover { background: rgba(255, 255, 255, 0.2); }
+.gc-toast__action:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 1px;
+}
+.gc-toast__close {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.gc-toast__close:hover { color: var(--color-canvas); background: rgba(255, 255, 255, 0.12); }
+.gc-toast--success .gc-toast__icon { background: color-mix(in srgb, var(--color-success) 22%, transparent); color: var(--color-toast-celadon); }
+.gc-toast--error .gc-toast__icon { background: color-mix(in srgb, var(--color-danger) 22%, transparent); color: var(--color-toast-copper); }
+.gc-toast--info .gc-toast__icon { background: color-mix(in srgb, var(--color-primary) 24%, transparent); color: var(--color-toast-cobalt); }
+
+/* ── Loading ───────────────────────────────────────────────────────────── */
+@keyframes gc-spin { to { transform: rotate(360deg); } }
+@keyframes gc-fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.gc-spin { animation: gc-spin 0.9s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite; }
+.gc-loading-ring {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  color: var(--color-primary);
+}
+.gc-loading-ring::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-full);
+  border: 3px solid var(--color-hairline);
+}
+.gc-loading-ring > svg {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+}
+.gc-page-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-12) var(--space-6);
+  color: var(--color-ink-muted);
+  animation: gc-fade-in 200ms ease-out;
+}
+.gc-page-loading__label {
+  font-size: var(--text-display-md);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+.gc-page-loading--fill {
+  flex: 1;
+  align-self: stretch;
+  min-height: 50vh;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .gc-spin,
+  .gc-page-loading,
+  .gc-toast,
+  .gc-modal__panel,
+  .gc-button-primary[aria-busy="true"]::after {
+    animation: none;
+  }
+}

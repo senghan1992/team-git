@@ -1,0 +1,26 @@
+# Build artifacts
+target/
+dist/
+node_modules/
+
+# Rust / Tauri
+src-tauri/gen/schemas/
+
+# Core dumps & crash artifacts
+core
+core.*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local config
+*.local.json

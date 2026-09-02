@@ -1,0 +1,146 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-28T00:00:00.000Z",
+  "title": "Design System: Git Companion",
+  "extensions": {
+    "colorMeta": {
+      "cobalt": { "role": "primary", "displayName": "Cobalt Underglaze", "canonical": "#2c4b8f", "tonalRamp": ["#131f3a", "#1c3260", "#24407a", "#2c4b8f", "#4362a0", "#627bb2", "#8fa2cd", "#eef1f8"] },
+      "porcelain-canvas": { "role": "neutral", "displayName": "Porcelain Body", "canonical": "#f6f5f1", "tonalRamp": ["#232116", "#4a473b", "#6c6a63", "#8f8a7d", "#b3ae9f", "#cdc8b8", "#e6e1d4", "#f6f5f1"] },
+      "clay": { "role": "neutral", "displayName": "Unglazed Clay", "canonical": "#ece8dd", "tonalRamp": ["#1d1b14", "#3f3c30", "#605c4e", "#7f7a6c", "#a39e8e", "#c6c1b1", "#e1dccb", "#ece8dd"] },
+      "plaque": { "role": "neutral", "displayName": "Glazed Plaque", "canonical": "#ffffff", "tonalRamp": ["#1f2126", "#43464d", "#6c6a63", "#8f8a7d", "#b3b0a6", "#cdcabf", "#e9e6dd", "#ffffff"] },
+      "ink": { "role": "neutral", "displayName": "Ink", "canonical": "#25272c", "tonalRamp": ["#0c0d10", "#17181c", "#25272c", "#3a3d44", "#565a62", "#6c6a63", "#8f8a7d", "#aba79d"] },
+      "celadon": { "role": "secondary", "displayName": "Celadon", "canonical": "#276b4e", "tonalRamp": ["#0d2419", "#153c2b", "#1d5340", "#276b4e", "#3c8465", "#5b9f81", "#8cc0aa", "#edf4ef"] },
+      "iron": { "role": "secondary", "displayName": "Iron", "canonical": "#8a5a10", "tonalRamp": ["#2b1c05", "#46300a", "#66460e", "#8a5a10", "#a9732a", "#c7944c", "#e0bf8a", "#f8f1e1"] },
+      "copper": { "role": "secondary", "displayName": "Copper", "canonical": "#ad392c", "tonalRamp": ["#37120d", "#571e16", "#7c2c21", "#ad392c", "#c45447", "#d67d72", "#e9aea7", "#f9eeec"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Page titles only — repository names, view heads, the login gate. One grotesque carries display and body alike." },
+      "headline": { "displayName": "Headline", "purpose": "Modal titles, empty-state titles, settings section leads." },
+      "title": { "displayName": "Title", "purpose": "Sidebar wordmark and strong card headers." },
+      "body": { "displayName": "Body", "purpose": "Rows, descriptions, badges' neighbors. Secondary copy at 13px." },
+      "label": { "displayName": "Label", "purpose": "Action-bar labels and quiet section labels." },
+      "mono": { "displayName": "Mono", "purpose": "Measured things only: paths, short SHAs, signed counters (↑n ↓n), join codes, proof reports — always with tabular numerals." }
+    },
+    "shadows": [
+      { "name": "plaque-rest", "value": "0 1px 2px rgba(37,39,44,0.04), 0 3px 10px rgba(37,39,44,0.05)", "purpose": "Cards, active nav, active tabs, status chips — plaques resting on porcelain." },
+      { "name": "kiln-float", "value": "0 4px 12px rgba(37,39,44,0.08), 0 16px 40px rgba(37,39,44,0.14)", "purpose": "Modals and the SSH directory browser — the deepest layer in the app." },
+      { "name": "fired-toast", "value": "0 1px 1px rgba(37,39,44,0.05), 0 10px 28px rgba(37,39,44,0.12)", "purpose": "Dark porcelain toasts." },
+      { "name": "button-rest", "value": "inset 0 1px 0 rgba(255,255,255,0.16), 0 1px 2px rgba(22,40,77,0.28)", "purpose": "Cobalt primary plaques at rest — glaze top-light plus a soft cobalt drop." },
+      { "name": "button-hover", "value": "inset 0 1px 0 rgba(255,255,255,0.16), 0 2px 5px rgba(22,40,77,0.32)", "purpose": "Cobalt primary plaques on hover — the drop deepens, the plaque darkens." },
+      { "name": "button-press", "value": "inset 0 2px 6px rgba(15,28,56,0.3)", "purpose": "Pressed state — the glaze sinks; the button drops 0.5px." },
+      { "name": "cta-float", "value": "inset 0 1px 0 rgba(255,255,255,0.14), 0 10px 30px rgba(28,50,96,0.18)", "purpose": "The cobalt CTA plaque — the app's one saturated block." },
+      { "name": "glaze-light", "value": "inset 0 1px 0 rgba(255,255,255,0.16)", "purpose": "Top light falling on glaze — cobalt primary buttons and the CTA plaque." }
+    ],
+    "motion": [
+      { "name": "ease-settle", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Modal entry (180ms rise + scale) and toast entry (240ms blur-to-sharp)." },
+      { "name": "sheen-busy", "value": "1.15s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite", "purpose": "The fired-glaze sheen sweeping primary buttons while busy — the one authored motion moment." },
+      { "name": "state-fade", "value": "120-140ms ease", "purpose": "All hover/active/route-state transitions; never bouncy, never staggered." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The cobalt plaque — the app's primary action. Busy state sweeps the fired-glaze sheen.",
+      "html": "<button class=\"ds-btn-primary\">커밋</button><button class=\"ds-btn-primary\" disabled>커밋</button>",
+      "css": ".ds-btn-primary { position: relative; overflow: hidden; background: var(--color-primary, #2c4b8f); color: #fff; border: 0; border-radius: 8px; padding: 0 24px; height: 40px; font-family: inherit; font-weight: 600; letter-spacing: -0.01em; box-shadow: var(--shadow-btn); cursor: pointer; transition: background-color 140ms ease; } .ds-btn-primary:hover { background: var(--color-primary-hover, #24407a); } .ds-btn-primary:active { background: var(--color-primary-deep, #1c3260); transform: translateY(0.5px); } .ds-btn-primary:focus-visible { outline: 2px solid var(--color-primary, #2c4b8f); outline-offset: 2px; } .ds-btn-primary:disabled { background: var(--color-clay-strong, #e1dccb); color: var(--color-ink-faint, #8f8a7d); box-shadow: none; cursor: not-allowed; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "The white plaque — secondary and cancel actions.",
+      "html": "<button class=\"ds-btn-secondary\">취소</button>",
+      "css": ".ds-btn-secondary { background: var(--color-surface, #ffffff); color: var(--color-ink, #25272c); border: 1px solid var(--color-border-strong, #d2cbb9); border-radius: 8px; padding: 0 20px; height: 40px; font-family: inherit; font-weight: 500; box-shadow: inset 0 1px 0 rgba(255,255,255,0.85); cursor: pointer; transition: background-color 120ms ease, border-color 120ms ease; } .ds-btn-secondary:hover { background: var(--color-surface-2, #faf9f5); border-color: var(--color-border-hover); } .ds-btn-secondary:focus-visible { outline: 2px solid var(--color-primary, #2c4b8f); outline-offset: 2px; } .ds-btn-secondary:disabled { opacity: 0.55; cursor: not-allowed; }"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "The engraved slot — white plaque, hairline, cobalt focus ring, cobalt caret.",
+      "html": "<input class=\"ds-input\" placeholder=\"예: /home/me/projects/foo\" />",
+      "css": ".ds-input { background: var(--color-surface, #ffffff); color: var(--color-ink, #25272c); border: 1px solid var(--color-border-strong, #d2cbb9); border-radius: 8px; padding: 0 16px; height: 40px; font-family: inherit; font-size: 16px; caret-color: var(--color-primary, #2c4b8f); transition: border-color 120ms ease, box-shadow 120ms ease; } .ds-input::placeholder { color: var(--color-ink-muted, #6c6a63); } .ds-input:focus { outline: none; border-color: var(--color-primary, #2c4b8f); box-shadow: 0 0 0 3px rgba(44,75,143,0.14); }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "The glazed plaque — every surface container rests on the porcelain body with a hairline and soft light.",
+      "html": "<div class=\"ds-card\"><div style=\"font-weight:600;font-size:16px\">demo-app</div><div style=\"font-family:ui-monospace,monospace;font-size:var(--text-display-sm);color:var(--color-ink-muted,#6c6a63);margin-top:2px\">/repo/a</div></div>",
+      "css": ".ds-card { background: var(--color-surface, #ffffff); border: 1px solid var(--color-hairline, #e6e1d4); border-radius: 12px; padding: 24px; box-shadow: 0 1px 2px rgba(37,39,44,0.04), 0 3px 10px rgba(37,39,44,0.05); font-family: inherit; color: var(--color-ink, #25272c); }"
+    },
+    {
+      "name": "Navigation Item",
+      "kind": "nav",
+      "refersTo": "nav-item-active",
+      "description": "Clay-field nav; active becomes a white plaque with a carved 3px cobalt tick.",
+      "html": "<nav style=\"background:var(--color-clay,#ece8dd);border-radius:10px;padding:8px;width:200px\"><button class=\"ds-nav\">저장소</button><button class=\"ds-nav ds-nav-active\">팀</button><button class=\"ds-nav\">설정</button></nav>",
+      "css": ".ds-nav { position: relative; display: flex; align-items: center; width: 100%; padding: 8px 12px; border: 0; border-radius: 8px; background: transparent; font-family: inherit; font-size: 14px; color: var(--color-ink, #25272c); text-align: left; cursor: pointer; } .ds-nav:hover { background: rgba(255,255,255,0.55); } .ds-nav-active { background: var(--color-surface, #ffffff); font-weight: 600; box-shadow: inset 0 0 0 1px var(--color-hairline, #e6e1d4), 0 1px 2px rgba(37,39,44,0.04), 0 3px 10px rgba(37,39,44,0.05); } .ds-nav-active::before { content: \"\"; position: absolute; left: -8px; top: 50%; transform: translateY(-50%); width: 3px; height: 15px; border-radius: 2px; background: var(--color-primary, #2c4b8f); }"
+    },
+    {
+      "name": "Badge",
+      "kind": "chip",
+      "refersTo": "badge",
+      "description": "Small glazed chip; the danger variant rides the cross-hatch mark so conflict never lives in color alone.",
+      "html": "<span class=\"ds-badge ds-badge-danger\">충돌 3개</span><span class=\"ds-badge\">변경 12개</span>",
+      "css": ".ds-badge { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 9px; border-radius: 9999px; background: var(--color-clay, #ece8dd); color: var(--color-ink-muted, #6c6a63); font-family: inherit; font-size: 11px; font-weight: 600; white-space: nowrap; letter-spacing: -0.01em; } .ds-badge-danger { background-color: var(--tint-danger, #f9eeec); color: var(--color-danger, #ad392c); background-image: repeating-linear-gradient(45deg, rgba(173,57,44,0.22) 0 2px, transparent 2px 5px), repeating-linear-gradient(-45deg, rgba(173,57,44,0.22) 0 2px, transparent 2px 5px); }"
+    },
+    {
+      "name": "Status Chip",
+      "kind": "chip",
+      "refersTo": "status-chip",
+      "description": "The signed counter — mono, tabular, painted on a white plaque. Value and trend together.",
+      "html": "<span class=\"ds-status-chip\">↑3 ↓1 12개 파일</span>",
+      "css": ".ds-status-chip { display: inline-flex; align-items: baseline; gap: 10px; padding: 4px 12px; border-radius: 8px; border: 1px solid var(--color-hairline, #e6e1d4); background: var(--color-surface, #ffffff); font-family: ui-monospace, SF Mono, Menlo, Consolas, monospace; font-size: var(--text-display-sm); font-variant-numeric: tabular-nums; color: var(--color-ink-muted, #6c6a63); box-shadow: inset 0 1px 0 rgba(255,255,255,0.85); }"
+    },
+    {
+      "name": "Tabs",
+      "kind": "nav",
+      "refersTo": "tab-active",
+      "description": "Underglaze plates — a clay plate holding white active segments.",
+      "html": "<div class=\"ds-tabs\"><button class=\"ds-tab ds-tab-active\">작업</button><button class=\"ds-tab\">병합</button><button class=\"ds-tab\">설정</button></div>",
+      "css": ".ds-tabs { display: inline-flex; gap: 3px; background: var(--color-clay, #ece8dd); border: 1px solid var(--color-hairline, #e6e1d4); border-radius: var(--radius-plate); padding: 3px; } .ds-tab { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 16px; border: 0; border-radius: var(--radius-tab); background: transparent; font-family: inherit; font-size: 14px; font-weight: 500; color: var(--color-ink-muted, #6c6a63); cursor: pointer; } .ds-tab:hover { color: var(--color-ink, #25272c); background: rgba(255,255,255,0.5); } .ds-tab-active { background: var(--color-surface, #ffffff); color: var(--color-ink, #25272c); box-shadow: inset 0 0 0 1px var(--color-hairline, #e6e1d4), 0 1px 2px rgba(37,39,44,0.04), 0 3px 10px rgba(37,39,44,0.05); }"
+    },
+    {
+      "name": "Toast",
+      "kind": "custom",
+      "refersTo": "toast",
+      "description": "Fired dark porcelain: enters with a blur-to-sharp settle; a tinted icon tile carries the kind.",
+      "html": "<div class=\"ds-toast\"><span class=\"ds-toast-ico\"><svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M20 6 9 17l-5-5\"/></svg></span>커밋 완료</div>",
+      "css": ".ds-toast { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: var(--radius-plate); background: var(--color-toast); color: var(--color-canvas); font-family: inherit; font-size: 14px; font-weight: 500; border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 1px 1px rgba(37,39,44,0.05), 0 10px 28px rgba(37,39,44,0.12); animation: dsToastIn 240ms cubic-bezier(0.22, 1, 0.36, 1); } @keyframes dsToastIn { from { opacity: 0; transform: translateY(-10px); filter: blur(4px); } to { opacity: 1; transform: none; filter: blur(0); } } .ds-toast-ico { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--color-success) 22%, transparent); color: var(--color-toast-celadon); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "청화백자 — the cobalt-white porcelain workbench",
+    "overview": "Git Companion is drawn as a precious record-keeping object rather than a gray SaaS dashboard: a moon-jar porcelain body with one cobalt underglaze accent, where the daily git loop — committing, pushing, merging, stashing — is the act of inscribing durable records on porcelain. Every surface is a ceramic material, never flat neutral: the workspace canvas is the warm-white porcelain body, cards are glazed plaques, the sidebar is unfired clay, and state is 'engraved' into the surface with 1px hairlines and hatch/cross-hatch marks so color is never the sole signal (a deliberate donation from instrument-world challengers at direction time: state must survive without color). The system is deliberately quiet: one saturated accent (cobalt), ceramic-status hues (celadon / iron / copper) held at legible-but-muted depth, warm-gray ink instead of pure black, and shadows soft enough to read as light falling on glaze. Density stays at developer-tool level — ledgers, tabular counters, mono hashes, tight rows — so the warmth never slides into decoration. The one authored motion moment is the fired-glaze sheen that sweeps a primary button while it is busy, and the toast that enters like a glaze setting (blur-to-sharp settle). The old pink-on-white travel-inventory look is the confirmed anti-reference.",
+    "keyCharacteristics": [
+      "One saturated accent — cobalt underglaze — used structurally (primary plaques, active ticks), never as decal.",
+      "Materials over colors: porcelain canvas, glazed plaques, clay sidebar, engraved hairlines.",
+      "State reads by pattern as well as color: cross-hatch = conflict, hatch = staged/active marks, solid = clean.",
+      "Signed tabular counters (↑n ↓n) and mono measurement chips instead of decorative stats.",
+      "Soft porcelain light: every shadow carries offset + blur; no hard or colored shadows.",
+      "Korean-first type: Pretendard Variable, one grotesque for display and body, system mono for paths/hashes/counters."
+    ],
+    "rules": [
+      { "name": "The One Cobalt Rule", "body": "Cobalt is scarce: one saturated block per screen (the Home CTA is the only full-cobalt plaque in the app). Everything else earns cobalt only as a mark — a tick, a ring, a tile, an icon.", "section": "colors" },
+      { "name": "The Pattern-Carry Rule", "body": "No state lives in color alone: conflict badges and conflict file items double-encode with the cross-hatch mark, the active nav item carries a carved cobalt tick, and staged/busy marks use hatched engraving. A user who cannot see hue still reads every state.", "section": "colors" },
+      { "name": "The Measurement Rule", "body": "Numbers that mean something are set in mono with font-variant-numeric: tabular-nums — counters, SHAs, ports, latencies. Numerals in a ledger never jitter.", "section": "typography" }
+    ],
+    "dos": [
+      "Do keep cobalt scarce — one saturated block per screen; elsewhere it is mark-sized (tick, ring, tile, icon).",
+      "Do engrave state: pair every hue with a pattern or mark (cross-hatch conflict, cobalt tick active, hatch for staged).",
+      "Do set counters, SHAs, ports, and paths in mono with tabular numerals.",
+      "Do use porcelain-white plaques over the warm canvas, separated by 1px hairlines and soft offset+blur shadows.",
+      "Do let glaze read as light: inset 0 1px 0 rgba(255,255,255,.14–.16) top highlights on cobalt and plaque buttons."
+    ],
+    "donts": [
+      "Don't use pure black ink, pure white flat canvases, or the old pink accent (#ff385c family) anywhere.",
+      "Don't put a colored edge thicker than 1px on cards, banners, or list rows.",
+      "Don't use gradient text, hard zero-blur offset shadows, or glow/halo effects.",
+      "Don't let a status exist in color alone — every state badge has its pattern or mark.",
+      "Don't use emoji or unicode glyphs where the icon system applies; icons are drawn Lucide strokes in one weight (2px, round caps).",
+      "Don't add kickers/eyebrows above headings, section numbers, or hero-metric stat cards — the world's information is ledger-dense, not poster-dense."
+    ]
+  }
+}

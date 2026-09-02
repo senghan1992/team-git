@@ -1,0 +1,223 @@
+{
+  "title": "Git Companion — 새 시각 세계",
+  "question": "주사위가 청화백자를 뽑았습니다. 유지하시겠어요, 아니면 다른 카드를 고르시겠어요? (라이트 톤 고정)",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "청화백자 (Cobalt-white Porcelain)",
+      "kicker": "THE ROLL",
+      "lineage": "조선 백자와 청화 언더글레이즈 — 달항아리의 곡선, 유약의 깊이, 코발트 한 색",
+      "thesis": "Git Companion을 귀중한 기록물로: 달항아리처럼 고요한 포슬린 위에 코드와 커밋을 새긴다.",
+      "palette": [
+        "#F5F3EC",
+        "#E7E1D2",
+        "#26407C",
+        "#1C1F24"
+      ],
+      "materials": [
+        "유약 바른 포슬린",
+        "코발트 언더글레이즈",
+        "새겨진 헤어라인",
+        "은은한 광택"
+      ],
+      "viewport": "포슬린 캔버스 위에 등록된 저장소들이 유약을 바른 명패처럼 놓이고, 코발트 플라크가 '프로젝트 추가'를 맡는다. 사이드바는 구운 질그릇(clay) 톤.",
+      "risk": "계기판 밀도(눈금·카운터·모노 라벨·헤어라인)를 끝까지 지키지 않으면 장식품처럼 읽힌다.",
+      "raised": [
+        {
+          "from": "challenger-jackfield",
+          "raise": "잭필드의 기여 — 상태는 색이 아니라 문양: 스테이징·충돌·정리를 실선/해칭/점선 부호로 새긴다. 색 못지않게 문양이 상태를 읽힌다."
+        },
+        {
+          "from": "challenger-night-flight",
+          "raise": "야간 비행의 기여 — 값과 추세: ahead/behind를 방향 부호 카운터(↑3 ↓1)로, 경고 전에 추세를 보여준다."
+        },
+        {
+          "from": "challenger-anime-command",
+          "raise": "지휘 벽의 기여 — 심각도는 눈금: 충돌·실패를 부호 숫자와 함께 채워지는 미터로, 배지만으로 넘기지 않는다."
+        },
+        {
+          "from": "challenger-cyclorama",
+          "raise": "사이클로라마의 기여 — 단계는 이름과 패턴: 전환/푸시 중 같은 상태를 색이 아닌 이름·패턴이 있는 단계로."
+        }
+      ]
+    },
+    {
+      "id": "model-pick",
+      "label": "청사진 설계도 (Blue-line Drafting)",
+      "kicker": "IMPECCABLE'S PICK",
+      "lineage": "제도용 벨룸과 청사진(cyanotype) — 공학자의 책상 위 문서 전통",
+      "thesis": "저장소 상태를 설계도처럼: 벨룸 위에 눈금자와 청사진 라인으로 그린다.",
+      "palette": [
+        "#FBF8F1",
+        "#2B5FB0",
+        "#D9E4F0",
+        "#1B1F27"
+      ],
+      "materials": [
+        "벨룸",
+        "청사진 라인",
+        "눈금자",
+        "제도용 문자"
+      ],
+      "viewport": "벨룸 시트 위의 도면: 저장소 카드는 눈금이 새겨진 도면 블록, 청사진 블루 라인이 상태와 액션을 그린다.",
+      "risk": "가장 세련된 라이트 개발 도구가 자주 도착하는 지점이기도 하다 — 익숙함을 넘어선 결이 필요하다."
+    },
+    {
+      "id": "challenger-design-annual",
+      "label": "인쇄 연감 플레이트 (Design Annual Plate Section)",
+      "verdict": "competitive",
+      "lineage": "디자인 연감의 플레이트 섹션 — 무광 근백색지, 레지스트레이션 장치",
+      "thesis": "전체가 한 장의 인쇄 시트: 근백색 지면에 십자선·도트·헤어라인, 그리고 한 색의 도장.",
+      "palette": [
+        "#F5F4F6",
+        "#16181A",
+        "#DCDDF3",
+        "#C9C7C4"
+      ],
+      "materials": [
+        "무광 근백색지",
+        "레지스트레이션 십자선",
+        "모노 라벨",
+        "1px 헤어라인"
+      ],
+      "viewport": "구석마다 십자선이 찍힌 한 장의 시트, 상단 72px 모노 토큰 바, 4열 헤어라인 행.",
+      "case": "융합은 깨끗하다 — 레지스트레이션 장치가 저장소 카드와 상태 행에 그대로 맞는다. 다만 문화적 동일시에서 밀린다: 디자인 쇼케이스로 읽힐 위험이 있고 '작업대' 느낌은 약하다.",
+      "risk": "그리드가 엄격하지 않으면 장식용 모노그램처럼 읽힌다.",
+      "hero": "https://impeccable.style/worlds/cards/design-annual-s-plate-section-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/design-annual-s-plate-section.webp"
+    },
+    {
+      "id": "challenger-miura",
+      "label": "미우라 접지 (Miura-fold Sheet)",
+      "verdict": "competitive",
+      "lineage": "미우라 오리가미 전개 — 한 번의 당김으로 펼쳐지는 정밀 시트",
+      "thesis": "접힌 패킷에서 시트가 펼쳐지듯, 저장소 목록이 크리이스 그리드 위에 전개된다.",
+      "palette": [
+        "#F7F6F2",
+        "#C09A3E",
+        "#AFC6D8",
+        "#16181A"
+      ],
+      "materials": [
+        "매트 화이트 시트",
+        "골드 포일 패킷",
+        "크리이스 기하",
+        "에어로스페이스 모노"
+      ],
+      "viewport": "접힌 패킷(내비)에서 펼쳐진 시트(저장소 그리드) — 산/골 크리이스가 블록을 나눈다.",
+      "case": "펼침/개폐 은유는 스태시·보관 흐름과 잘 붙지만, 크리이스 기하가 밀도 높은 상태 테이블과 충돌한다. 정밀성의 매력은 확실하다.",
+      "risk": "기하 장식이 기능을 덮으면 도구가 아니라 전시가 된다.",
+      "hero": "https://impeccable.style/worlds/cards/paper-folds-pleats-deployable-miura-orbit-sheet-hero.webp",
+      "board": "https://impeccable.style/worlds/cards/paper-folds-pleats-deployable-miura-orbit-sheet.webp"
+    },
+    {
+      "id": "challenger-cyclorama",
+      "label": "새벽 사이클로라마 (Dawn Cyclorama)",
+      "verdict": "declined",
+      "lineage": "극장 무대 조명 사이클로라마 — 밤에서 낮으로",
+      "thesis": "무대의 밤이 낮으로 번지는 광경을 상태 단계로 쓴다.",
+      "palette": [
+        "#0B0F1A",
+        "#3C5A99",
+        "#C98DA2",
+        "#FFF8EC"
+      ],
+      "materials": [
+        "사이클로라마 곡벽",
+        "호라이즌 밴드"
+      ],
+      "viewport": "깊은 밤의 무대, 코발트 호라이즌, 장면 단계 라벨.",
+      "case": "라이트 톤 확약과 정면 충돌 — 밤이 주인인 세계다.",
+      "kept": "단계는 이름과 패턴으로 — 색만으로 상태를 말하지 않는다.",
+      "hero": "https://impeccable.style/worlds/cards/stagecraft-theater-lighting-cyclorama-dawn-hero.webp"
+    },
+    {
+      "id": "challenger-night-flight",
+      "label": "야간 계기판 (Night Instrument Six-pack)",
+      "verdict": "declined",
+      "lineage": "소형기 야간 계기 여섯 개 — 신뢰의 대시보드",
+      "thesis": "여섯 계기가 각자 하나의 진실을 소유한다.",
+      "palette": [
+        "#0D0F12",
+        "#E8EAED",
+        "#9BD2A0",
+        "#E3A93C"
+      ],
+      "materials": [
+        "매트 블랙 패널",
+        "형광 문자",
+        "라듐 그린 니들"
+      ],
+      "viewport": "고정된 여섯 계기 별자리, 경고만 앰버·레드.",
+      "case": "다크 세계 — 라이트 톤 확약과 충돌한다.",
+      "kept": "값과 추세 — 경고 전에 추세를 보여주고, 경보 전에 니들이 먼저 기운다.",
+      "hero": "https://impeccable.style/worlds/cards/signals-instruments-night-flight-six-pack-hero.webp"
+    },
+    {
+      "id": "challenger-jackfield",
+      "label": "노멀링 잭필드 (Normalled Jackfield)",
+      "verdict": "declined",
+      "lineage": "기계실 패치 패널의 노멀링 스케줄",
+      "thesis": "모든 항목이 기본값에 연결된 상태를 링크 선으로 그린다.",
+      "palette": [
+        "#0A0C10",
+        "#E8A33D",
+        "#1F262E"
+      ],
+      "materials": [
+        "블랙 글라스",
+        "시그널 앰버",
+        "링크 레일"
+      ],
+      "viewport": "01–48 번호 래인의 무한 그리드, 앰버 링크 선.",
+      "case": "다크 세계 — 라이트 톤 확약과 충돌한다.",
+      "kept": "색이 상태를 짊어지지 않는다 — 상태는 문양 선(실선/크로스 틱/갭/링)으로 읽힌다.",
+      "hero": "https://impeccable.style/worlds/cards/operate-b-normalled-jackfield-hero.webp"
+    },
+    {
+      "id": "challenger-anime-command",
+      "label": "애니메이션 지휘 벽 (Anime Command Wall)",
+      "verdict": "declined",
+      "lineage": "90년대 메카 애니메이션 위기 대응 벽",
+      "thesis": "크리시스를 전체 화면의 봉인된 계기로.",
+      "palette": [
+        "#050505",
+        "#FF8C00",
+        "#B4FF3A",
+        "#E20000"
+      ],
+      "materials": [
+        "앱솔루트 블랙",
+        "포스포 오렌지",
+        "헤저드 셰브론"
+      ],
+      "viewport": "모뉴멘털 세븐세그먼트 카운트다운, 헤저드 밴드.",
+      "case": "다크·네온 세계, 그리고 '고급진'과 반대 방향.",
+      "kept": "심각도는 측정된 미터 — 부호가 붙은 카운터 아래 채워지는 조건 바로.",
+      "hero": "https://impeccable.style/worlds/cards/pop-culture-shelf-anime-command-center-hero.webp"
+    }
+  ],
+  "reroll": {
+    "registers": ["safer", "bolder"]
+  },
+  "buildPath": {
+    "value": "code"
+  },
+  "canon": true,
+  "canonCard": {
+    "label": "카테고리 표준 (Light SaaS Dashboard)",
+    "thesis": "이 카테고리가 늘 배송하는 것 — 흰 캔버스 + 인디고 액센트 + 소프트 섀도 카드.",
+    "palette": [
+      "#FFFFFF",
+      "#111827",
+      "#2563EB"
+    ],
+    "materials": [
+      "clean grid",
+      "soft shadow"
+    ],
+    "viewport": "기대하는 그 배치 그대로, 최고의 장인정신으로.",
+    "risk": "경쟁과 구분이 되지 않는다 — 디자인으로는."
+  },
+  "steer": true
+}
