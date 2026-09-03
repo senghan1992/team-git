@@ -172,17 +172,21 @@ pub fn push(
     let branch_ref = if let Some(b) = branch {
         b.to_string()
     } else {
-        run_at_target(target, ["rev-parse", "--abbrev-ref", "HEAD"])?
-            .stdout
-            .trim()
-            .to_string()
+        // symbolic-ref: detached 에서만 실패하고, 커밋 없는 새 저장소(unborn)
+        // 에서도 브랜치 이름을 준다. rev-parse 는 unborn 을 "HEAD"로 돌려줘
+        // 엉뚱한 detached 안내가 나갔다 — unborn 은 아래 push 가 실패하면서
+        // "푸시할 커밋이 없습니다" 안내로 이어진다.
+        let head = run_at_target(target, ["symbolic-ref", "-q", "--short", "HEAD"])?;
+        if !head.ok() || head.stdout.trim().is_empty() {
+            return Err(AppError::Git(
+                "지금 브랜치 위에 있지 않습니다(detached HEAD). 브랜치로 전환한 뒤 푸시하세요."
+                    .into(),
+            ));
+        }
+        head.stdout.trim().to_string()
     };
-    if branch_ref.is_empty() {
-        return Err(AppError::Git("현재 브랜치를 확인할 수 없습니다.".into()));
-    }
-    // detached HEAD 에서 refspec 이 "HEAD:HEAD" 가 되면 git 이 거부하는데,
-    // 그 오류가 "먼저 동기화하세요"로 잘못 번역돼 사용자를 헤매게 했다.
     if branch_ref == "HEAD" {
+        // 호출부가 branch 인자로 "HEAD"를 넘긴 경우까지 방어.
         return Err(AppError::Git(
             "지금 브랜치 위에 있지 않습니다(detached HEAD). 브랜치로 전환한 뒤 푸시하세요."
                 .into(),
@@ -355,12 +359,9 @@ fn write_askpass_local(path: &std::path::Path, script: &str) -> AppResult<()> {
 // ── pull ───────────────────────────────────────────────────────────────────────
 
 pub fn pull(target: &Target) -> AppResult<PullOutcome> {
-    let branch_ref = run_at_target(target, ["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let branch = branch_ref.stdout.trim();
-    if branch.is_empty() {
-        return Err(AppError::Git("현재 브랜치를 확인할 수 없습니다.".into()));
-    }
-    if branch == "HEAD" {
+    let head = run_at_target(target, ["symbolic-ref", "-q", "--short", "HEAD"])?;
+    let branch = head.stdout.trim();
+    if !head.ok() || branch.is_empty() {
         return Err(AppError::Git(
             "지금 브랜치 위에 있지 않습니다(detached HEAD). 브랜치로 전환한 뒤 받아오세요."
                 .into(),
@@ -705,10 +706,12 @@ pub fn friendly_git_error(stderr: &str) -> String {
     // git 은 "Updates were rejected" 처럼 대문자로 시작하기도 한다.
     let lower = s.to_lowercase();
     if lower.contains("non-fast-forward") || lower.contains("updates were rejected") {
-        return "푸시 거부됨: 원격 브랜치가 로컬보다 앞서 있습니다. 먼저 ‘동기화’로 최신 내용을 받은 뒤 다시 푸시하세요.".into();
+        // '동기화'는 병합 브랜치(origin/main)를 받아오는 버튼이라 내 원격
+        // 브랜치의 새 커밋은 안 가져온다 — 여기서 필요한 처방은 '풀'이다.
+        return "푸시 거부됨: 원격의 내 브랜치에 새 커밋이 있습니다. 먼저 ‘풀’로 받아온 뒤 다시 푸시하세요.".into();
     }
     if s.contains("failed to push some refs") {
-        return "푸시 실패: 원격에 새 변경이 있습니다. 먼저 ‘동기화’로 받은 뒤 다시 푸시하세요."
+        return "푸시 실패: 원격의 내 브랜치에 새 변경이 있습니다. 먼저 ‘풀’로 받아온 뒤 다시 푸시하세요."
             .into();
     }
     // ── 병합 진행 중 ──
@@ -718,6 +721,11 @@ pub fn friendly_git_error(stderr: &str) -> String {
     // ── 병합 대상 ref 없음 (원격 없음 / 방금 삭제됨) ──
     if s.contains("not something we can merge") {
         return "병합할 대상을 찾을 수 없습니다. 원격(origin)이 등록돼 있는지, 브랜치가 방금 삭제되지 않았는지 확인하고 목록을 새로고침하세요.".into();
+    }
+    // ── 작업 트리와 겹침 (pull/merge 가 dirty 상태에서 거부됨) ──
+    if dirty_tree_error(s) {
+        return "커밋하지 않은 변경과 겹칩니다. 먼저 커밋하거나 스태시한 뒤 다시 시도하세요."
+            .into();
     }
     // ── 네트워크 (인증보다 먼저 — 호스트를 못 찾은 것은 권한 문제가 아니다) ──
     if s.contains("Could not resolve host")

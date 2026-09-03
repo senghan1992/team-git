@@ -1430,7 +1430,7 @@ export async function renderMergeCenter(
     const desc = document.createElement("div");
     desc.className = "text-display-sm text-[color:var(--color-ink-muted)]";
     desc.textContent = inProgress
-      ? "자동 병합이 시작되기 전의 충돌 원본입니다. 복원하면 병합 상태는 유지됩니다."
+      ? "자동 병합이 시작되기 전의 충돌 원본입니다. 복원하면 병합 상태는 유지되지만, 이미 해결(스테이징)된 파일은 충돌 목록에 다시 나타나지 않으니 복원한 파일을 정리한 뒤 직접 다시 스테이징해야 합니다."
       : "자동 병합 전의 충돌 원본입니다. 이미 커밋된 뒤라면 복원 후 작업 탭에서 변경을 확인하고 새 커밋으로 정리하세요.";
     backupCard.appendChild(desc);
     for (const b of shown) {

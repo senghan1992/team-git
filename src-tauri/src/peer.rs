@@ -198,6 +198,92 @@ pub async fn list_projects(backend_url: &str, token: &str) -> AppResult<Vec<Peer
     Ok(body.projects)
 }
 
+// ── 오프라인 스풀 ────────────────────────────────────────────────────────────
+//
+// 팀 서버가 죽어 있는 동안 push 가 일어나면 알림 이벤트가 영영 사라졌다.
+// hook emit 이 전송에 실패한 이벤트를 한 줄(JSON)씩 여기 붙여 두고,
+// 앱의 주기 폴링(peer_poll_now)이 서버가 살아났을 때 재전송한다.
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpooledEvent {
+    pub project_id: String,
+    pub event_kind: String,
+    pub repo_name: String,
+    pub payload: String,
+}
+
+fn spool_path() -> AppResult<std::path::PathBuf> {
+    Ok(crate::config_store::config_dir()?.join("pending_events.jsonl"))
+}
+
+/// 전송 실패한 이벤트를 스풀에 덧붙인다 (append-only — hook 프로세스와
+/// 앱이 동시에 붙여도 안전하다).
+pub fn spool_event(ev: &SpooledEvent) -> AppResult<()> {
+    use std::io::Write;
+    let path = spool_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut line = serde_json::to_string(ev)
+        .map_err(|e| AppError::Internal(format!("스풀 직렬화 실패: {e}")))?;
+    line.push('\n');
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&path)?;
+    f.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+/// 스풀에 쌓인 이벤트를 재전송한다. 성공한 것만 지우고, 실패분과
+/// (읽는 사이 hook 이 새로 붙인) 꼬리 부분은 보존한다. 보낸 건수를 돌려준다.
+pub async fn flush_spooled_events(backend_url: &str, token: &str) -> AppResult<usize> {
+    let path = spool_path()?;
+    let data = match std::fs::read(&path) {
+        Ok(d) if !d.is_empty() => d,
+        _ => return Ok(0),
+    };
+    let read_len = data.len() as u64;
+    let text = String::from_utf8_lossy(&data);
+    let mut kept: Vec<String> = Vec::new();
+    let mut sent = 0usize;
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(ev) = serde_json::from_str::<SpooledEvent>(line) else {
+            continue; // 깨진 줄은 버린다 — 재전송할 방법이 없다.
+        };
+        match fanout_event(
+            backend_url,
+            token,
+            &ev.project_id,
+            &ev.event_kind,
+            &ev.repo_name,
+            &ev.payload,
+        )
+        .await
+        {
+            Ok(_) => sent += 1,
+            Err(_) => kept.push(line.to_string()),
+        }
+    }
+    // 처리하는 사이 hook 이 새 줄을 붙였을 수 있다 — 읽은 길이 이후의
+    // 꼬리를 그대로 보존한다.
+    let mut out = kept.join("\n");
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    if let Ok(now) = std::fs::read(&path) {
+        if now.len() as u64 > read_len {
+            out.push_str(&String::from_utf8_lossy(&now[read_len as usize..]));
+        }
+    }
+    if out.is_empty() {
+        let _ = std::fs::remove_file(&path);
+    } else {
+        std::fs::write(&path, out)?;
+    }
+    Ok(sent)
+}
+
 /// Fan out a push event to all project subscribers.
 pub async fn fanout_event(
     backend_url: &str,

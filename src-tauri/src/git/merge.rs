@@ -381,6 +381,11 @@ pub fn delete_remote_branch(
             )));
         }
     }
+    // 낡은 트래킹 ref 로 검사하면 마지막 fetch **이후**에 팀원이 push한
+    // 커밋이 보이지 않아 가드가 뚫린다 — 삭제 직전에 그 브랜치를 다시
+    // 받아 실제 tip 기준으로 확인한다. (fetch 실패는 관용: 오프라인이면
+    // 아래 push --delete 도 어차피 실패한다.)
+    let _ = run_at_target(target, ["fetch", remote, branch]);
     let branch_ref = format!("{remote}/{branch}");
     let base_ref = format!("{remote}/{base}");
     let ancestor = run_at_target(
@@ -647,9 +652,10 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
         Resolution::Manual { content } => {
             // 충돌 마커가 남은 본문이 그대로 스테이징·커밋되면 팀 전체에
             // 배포된다 — 자동 경로(valid_ai_body)와 같은 규칙으로 거부한다.
-            // `=======` 단독 줄은 정당한 내용(마크다운 밑줄 등)일 수 있으므로
-            // 시작/종료/베이스 마커가 있을 때만 미해결로 판정한다.
-            if has_unresolved_markers(content) {
+            // 단, 파일의 **원문**(스테이지 :1/:2/:3)에 원래 있던 마커-닮은
+            // 줄(문서의 git 예시 등)은 정당한 내용이다 — 그것 때문에 수동
+            // 병합이 영영 막히면 사용자는 파일 통째 선택으로 내몰린다.
+            if has_novel_markers(target, path, content) {
                 return Err(AppError::Git(
                     "충돌 표시(<<<<<<< 또는 >>>>>>>)가 아직 남아 있습니다. 모든 블록을 해결한 뒤 저장하세요."
                         .into(),
@@ -668,17 +674,40 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
     remaining_conflicts(target)
 }
 
-/// 줄 첫머리 기준의 미해결 충돌 마커 검사. `=======` 단독은 정당한 내용일 수
+/// 줄 첫머리 기준의 충돌 마커 줄 판정. `=======` 단독은 정당한 내용일 수
 /// 있어 제외하고, git이 항상 함께 쓰는 시작(`<<<<<<< `)·종료(`>>>>>>> `)·
 /// 베이스(`|||||||`) 마커만 본다.
+pub(crate) fn is_conflict_marker_line(l: &str) -> bool {
+    l.starts_with("<<<<<<< ")
+        || l.starts_with(">>>>>>> ")
+        || l.starts_with("|||||||")
+        || l == "<<<<<<<"
+        || l == ">>>>>>>"
+}
+
 pub(crate) fn has_unresolved_markers(content: &str) -> bool {
-    content.lines().any(|l| {
-        l.starts_with("<<<<<<< ")
-            || l.starts_with(">>>>>>> ")
-            || l.starts_with("|||||||")
-            || l == "<<<<<<<"
-            || l == ">>>>>>>"
-    })
+    content.lines().any(is_conflict_marker_line)
+}
+
+/// 본문에 남은 마커 줄 중, 파일 원문(충돌 스테이지 :1/:2/:3)에는 **없던**
+/// 것이 있는가. 원문에 이미 있던 마커-닮은 줄은 내용이고, 새로 생긴 마커는
+/// 해결되지 않은 블록이다.
+fn has_novel_markers(target: &Target, path: &str, content: &str) -> bool {
+    let mut markers = content.lines().filter(|l| is_conflict_marker_line(l)).peekable();
+    if markers.peek().is_none() {
+        return false;
+    }
+    let mut stage_lines: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for st in [":1:", ":2:", ":3:"] {
+        if let Ok(out) = run_at_target(target, ["show", &format!("{st}{path}")]) {
+            if out.ok() {
+                for l in out.stdout.lines().filter(|l| is_conflict_marker_line(l)) {
+                    stage_lines.insert(l.to_string());
+                }
+            }
+        }
+    }
+    markers.any(|l| !stage_lines.contains(l))
 }
 
 /// `git checkout --ours/--theirs` 가 "does not have our/their version" 으로
@@ -737,10 +766,17 @@ pub fn complete_merge(target: &Target, message: Option<&str>) -> AppResult<Merge
     }
 }
 
-/// `git merge --abort`. Tolerates "not in merging state" errors by ignoring
-/// non-zero exit codes — the UI calls this from the cancel banner.
+/// `git merge --abort`. Tolerates "not in merging state" (배너에서 병합이
+/// 없어도 호출된다) — 하지만 병합이 **아직 남아 있는데** 실패한 경우
+/// (index.lock 경합 등)를 성공으로 보고하면 UI 가 거짓 상태로 넘어간다.
 pub fn abort_merge(target: &Target) -> AppResult<()> {
-    let _ = run_at_target(target, ["merge", "--abort"]);
+    let out = run_at_target(target, ["merge", "--abort"])?;
+    if merge_in_progress(target)? {
+        return Err(AppError::Git(format!(
+            "병합 중단 실패: {}",
+            out.stderr.trim()
+        )));
+    }
     Ok(())
 }
 

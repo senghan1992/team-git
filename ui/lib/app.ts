@@ -196,7 +196,6 @@ export async function createApp(root: HTMLElement) {
         }
 
         // ── 시나리오 7: 팀원이 자기 브랜치를 푸시함 → 병합 관리자에게만 알린다.
-        //    관리자가 아닌 사람에게는 팀 수신함 배지로만 남는다.
         if (!repo) continue;
         const base = repo.default_branch || "main";
         const cfg = await projectCfgOf(repo.id);
@@ -205,7 +204,15 @@ export async function createApp(root: HTMLElement) {
         // 않는다 — 모두에게 알림이 가면 소음이 된다.
         const assigned = cfg?.config?.merge_managers?.[base];
         if (!assigned) continue;
-        if (!isMergeManagerFor(cfg, me?.email ?? null, base)) continue;
+        if (!isMergeManagerFor(cfg, me?.email ?? null, base)) {
+          // 서버는 프로젝트 전원에게 배달하므로, 관리자가 따로 있는 브랜치
+          // push는 내가 처리할 일이 아니다 — 읽음 처리해 배지가 남의 일로
+          // 부풀지 않게 한다 (수신함에는 읽음 상태로 남아 기록은 유지).
+          if (me) {
+            ipc_peer.markTeamRead(r.id).then(reloadTeamUnread).catch(() => undefined);
+          }
+          continue;
+        }
 
         const branch = branchOfEvent(r);
         notify(

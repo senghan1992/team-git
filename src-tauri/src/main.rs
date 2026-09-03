@@ -172,9 +172,10 @@ fn run_hook_subcommand(args: &[String]) -> anyhow::Result<()> {
         let project_ids_vec = repo_projects.projects_for(&repo_path.to_string_lossy());
         let payload = serde_json::to_string(&event).unwrap_or_default();
         let n_projects = project_ids_vec.len();
+        let mut posted = 0usize;
+        let mut spooled = 0usize;
         for project_id in project_ids_vec {
-            if let Ok(rt) = tokio::runtime::Runtime::new() {
-                let project_id = project_id.clone();
+            let sent = tokio::runtime::Runtime::new().ok().and_then(|rt| {
                 rt.block_on(git_companion::peer::fanout_event(
                     &peer_backend_url,
                     &peer_token,
@@ -183,10 +184,34 @@ fn run_hook_subcommand(args: &[String]) -> anyhow::Result<()> {
                     &peer_repo_name,
                     &payload,
                 ))
-                .ok();
+                .ok()
+            });
+            if sent.is_some() {
+                posted += 1;
+            } else {
+                // 서버가 죽어 있어도 알림을 버리지 않는다 — 스풀에 보관해
+                // 앱 폴링이 서버가 살아나면 재전송한다. (push 자체는 어떤
+                // 경우에도 막지 않는다 — fail-open.)
+                let ok = git_companion::peer::spool_event(&git_companion::peer::SpooledEvent {
+                    project_id: project_id.clone(),
+                    event_kind: peer_event_kind.to_string(),
+                    repo_name: peer_repo_name.clone(),
+                    payload: payload.clone(),
+                })
+                .is_ok();
+                if ok {
+                    spooled += 1;
+                }
             }
         }
-        println!("[OK] event posted to {} project(s)", n_projects);
+        // 예전에는 실패해도 "posted to N"을 찍었다 — 시도 수가 아니라
+        // 실제 결과를 말한다.
+        println!("[OK] event posted to {posted}/{n_projects} project(s)");
+        if spooled > 0 {
+            eprintln!(
+                "[WARN] 서버에 전송하지 못한 알림 {spooled}건을 보관했습니다 — 앱이 서버와 연결되면 자동 재전송됩니다."
+            );
+        }
     } else {
         println!("[OK] no peer backend configured; event not sent");
     }

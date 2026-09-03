@@ -123,7 +123,7 @@ fn auto_resolve_commits_merge_via_deterministic_fallback() {
     std::env::set_var("GC_BACKUP_DIR", tmp.path().join("backups"));
 
     // Simulate the crash: the user already started the merge and it conflicted.
-    let result = run_merge(&repo, "feature", None).expect("merge should start");
+    let result = run_merge(&repo, "feature").expect("merge should start");
     assert!(result.conflicted, "fixture should conflict on a.txt");
 
     let report = auto_resolve_merge(&local_target(&repo), &rule_based_opts(), ai_disabled())
@@ -180,7 +180,7 @@ fn auto_resolve_uses_ai_result_when_valid() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = setup_conflict(&tmp);
     std::env::set_var("GC_BACKUP_DIR", tmp.path().join("backups"));
-    let result = run_merge(&repo, "feature", None).unwrap();
+    let result = run_merge(&repo, "feature").unwrap();
     assert!(result.conflicted);
 
     let report = auto_resolve_merge(&local_target(&repo), &AutoResolveOptions::default(), |_| {
@@ -204,7 +204,7 @@ fn auto_resolve_rejects_marked_ai_output_and_falls_back_in_rule_based_mode() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = setup_conflict(&tmp);
     std::env::set_var("GC_BACKUP_DIR", tmp.path().join("backups"));
-    let result = run_merge(&repo, "feature", None).unwrap();
+    let result = run_merge(&repo, "feature").unwrap();
     assert!(result.conflicted);
 
     // AI returns a body still containing markers → must be rejected (safety).
@@ -233,7 +233,7 @@ fn auto_resolve_leaves_both_sides_changed_file_for_a_human_when_ai_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = setup_conflict(&tmp);
     std::env::set_var("GC_BACKUP_DIR", tmp.path().join("backups"));
-    let result = run_merge(&repo, "feature", None).unwrap();
+    let result = run_merge(&repo, "feature").unwrap();
     assert!(result.conflicted);
 
     let report = auto_resolve_merge(
@@ -293,7 +293,7 @@ fn auto_resolve_handles_binary_conflict_with_side_choice() {
     git(&repo, &["push", "-u", "origin", "main"]);
     git(&repo, &["push", "-u", "origin", "feature"]);
 
-    let result = run_merge(&repo, "feature", None).unwrap();
+    let result = run_merge(&repo, "feature").unwrap();
     assert!(result.conflicted, "binary files must conflict");
 
     let report = auto_resolve_merge(
@@ -338,7 +338,7 @@ fn backup_restore_roundtrip_recovers_pre_resolution_content() {
     let repo = setup_conflict(&tmp);
     let backups_dir = tmp.path().join("backups");
     std::env::set_var("GC_BACKUP_DIR", &backups_dir);
-    let result = run_merge(&repo, "feature", None).unwrap();
+    let result = run_merge(&repo, "feature").unwrap();
     assert!(result.conflicted);
 
     // Before running the resolver, capture the conflicted worktree content.

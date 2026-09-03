@@ -686,7 +686,7 @@ fn no_origin_repo_errors_are_friendly() {
     // BUG-7 아님 — 의도된 관대함: fetch_origin 은 일부러 종료 코드를 따지지
     // 않는다(오프라인에서도 동기화 흐름이 계속 굴러가야 해서, 실패는
     // best-effort 로 삼키고 stderr 만 돌려준다). 원격이 없어도 Ok.
-    let fetched = git::fetch_origin(td.path(), None).unwrap();
+    let fetched = git::fetch_origin(td.path()).unwrap();
     assert!(
         fetched.contains("does not appear to be a git repository")
             || fetched.contains("No such remote"),

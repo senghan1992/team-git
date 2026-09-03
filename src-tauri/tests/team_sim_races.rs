@@ -392,13 +392,14 @@ fn simultaneous_merges_second_push_rejected_then_sync_recovers() {
     // 관리자가 먼저 push — 성공.
     assert!(push(&mgr_t, Some("main"), None).unwrap().ok);
 
-    // 팀원의 push — non-fast-forward 로 거부, 메시지가 동기화를 안내해야 한다.
+    // 팀원의 push — non-fast-forward 로 거부, 받아오기(풀)를 안내해야 한다.
+    // (base 브랜치에서는 풀 == origin/main 받아오기라 동기화와 같은 결과.)
     let lost = push(&rogue_t, Some("main"), None).unwrap();
     assert!(!lost.ok, "두 번째 push 는 실패해야 한다");
     assert!(!lost.auth_required);
     assert!(
-        lost.message.contains("동기화"),
-        "복구 경로(동기화)를 안내해야 한다: {}",
+        lost.message.contains("풀"),
+        "복구 경로(풀)를 안내해야 한다: {}",
         lost.message
     );
 
@@ -501,8 +502,8 @@ fn two_members_push_same_branch_concurrently_one_wins_loser_gets_korean_message(
     let msg = &outcomes[loser].message;
     assert!(!outcomes[loser].auth_required);
     assert!(
-        msg.contains("동기화") && (msg.contains("푸시 거부됨") || msg.contains("푸시 실패")),
-        "진 쪽은 한국어 동기화 안내를 받아야 한다: {msg}"
+        msg.contains("풀") && (msg.contains("푸시 거부됨") || msg.contains("푸시 실패")),
+        "진 쪽은 한국어 '풀' 안내를 받아야 한다: {msg}"
     );
     assert!(
         !msg.contains("fast-forward") && !msg.contains("rejected"),

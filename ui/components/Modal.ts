@@ -98,21 +98,49 @@ export function openModal(props: ModalProps): ModalHandle {
     },
   };
 
+  // 커밋 메시지·충돌 편집처럼 타이핑한 내용은 백드롭 클릭/ESC/취소 오클릭
+  // 한 번에 사라지면 안 된다 — 텍스트를 입력한 적이 있을 때만 닫기 전에
+  // 한 번 확인한다. (프로그램이 채운 값은 input 이벤트가 없어 해당 없음.)
+  let typedSomething = false;
+  body.addEventListener("input", (e) => {
+    const t = e.target;
+    if (t instanceof HTMLTextAreaElement) {
+      typedSomething = true;
+    } else if (
+      t instanceof HTMLInputElement &&
+      ["text", "password", "email", "url", "search"].includes(t.type)
+    ) {
+      typedSomething = true;
+    }
+  });
+  const confirmDiscard = async (): Promise<boolean> => {
+    if (!typedSomething) return true;
+    return confirmDialog({
+      title: "입력한 내용이 있습니다",
+      message: "닫으면 입력한 내용이 사라집니다. 닫을까요?",
+      confirmLabel: "닫기",
+      destructive: true,
+    });
+  };
+
   dialog.addEventListener("click", (e) => {
     if (e.target === dialog) {
-      onCancel?.();
-      handle.close();
+      void confirmDiscard().then((ok) => {
+        if (!ok) return;
+        onCancel?.();
+        handle.close();
+      });
     }
   });
 
-  dialog.addEventListener("cancel", () => {
-    onCancel?.();
-    setTimeout(() => {
-      if (document.contains(dialog)) {
-        dialog.remove();
-        if (activeModal === dialog) activeModal = null;
-      }
-    }, 0);
+  dialog.addEventListener("cancel", (e) => {
+    // ESC — 바로 닫지 말고 입력 보호 확인을 거친다.
+    e.preventDefault();
+    void confirmDiscard().then((ok) => {
+      if (!ok) return;
+      onCancel?.();
+      handle.close();
+    });
   });
 
   if (submitBtn) {
@@ -136,8 +164,11 @@ export function openModal(props: ModalProps): ModalHandle {
 
   if (cancelBtn) {
     cancelBtn.addEventListener("click", () => {
-      onCancel?.();
-      handle.close();
+      void confirmDiscard().then((ok) => {
+        if (!ok) return;
+        onCancel?.();
+        handle.close();
+      });
     });
   }
 

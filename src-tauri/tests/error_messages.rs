@@ -112,14 +112,16 @@ fn no_commits_to_push_is_explained() {
 }
 
 #[test]
-fn rejected_push_points_at_sync() {
+fn rejected_push_points_at_pull() {
     let msg = friendly_git_error(
         "! [rejected] main -> main (non-fast-forward)\nerror: failed to push some refs\n",
     );
     assert_human(&msg);
+    // '동기화'는 병합 브랜치(origin/main)를 받아오는 버튼이라 내 원격
+    // 브랜치의 새 커밋은 안 가져온다 — non-FF 의 올바른 처방은 '풀'이다.
     assert!(
-        msg.contains("동기화"),
-        "앱 안의 다음 행동을 가리켜야 한다: {msg}"
+        msg.contains("풀"),
+        "앱 안의 다음 행동(풀)을 가리켜야 한다: {msg}"
     );
 }
 

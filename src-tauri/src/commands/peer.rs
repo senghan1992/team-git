@@ -234,15 +234,6 @@ pub async fn peer_set_backend_url(url: String) -> AppResult<()> {
 pub async fn peer_poll_now() -> AppResult<()> {
     use crate::notify::store::{new_id, Store, TeamEventRow};
 
-    #[derive(serde::Deserialize)]
-    struct PollEvent {
-        project_id: String,
-        sender_device_id: String,
-        event_kind: String,
-        repo_name: String,
-        payload: String,
-    }
-
     let store = Store::open()?;
     let cfg = crate::config_store::load()?;
     // 팀 서버를 설정한 적이 없으면 조용히 넘어간다 (알림은 선택 기능).
@@ -251,6 +242,8 @@ pub async fn peer_poll_now() -> AppResult<()> {
     }
     // 서버가 이 기기를 모르면 폴링은 영원히 401이다 — 필요하면 등록부터.
     let (backend, token) = ensure_device_registered().await?;
+    // 서버가 죽어 있는 동안 hook 이 보관해 둔 알림부터 재전송한다.
+    let _ = peer::flush_spooled_events(&backend, &token).await;
     let client = reqwest::Client::new();
     loop {
         let url = format!("{}/events/poll?wait=0", backend.trim_end_matches('/'));
@@ -275,17 +268,28 @@ pub async fn peer_poll_now() -> AppResult<()> {
             Some(serde_json::Value::Null) | None => break,
             Some(v) => v.clone(),
         };
-        let event: PollEvent = match serde_json::from_value(event_val) {
-            Ok(e) => e,
-            Err(_) => break,
+        // 서버는 poll 응답 시점에 이 이벤트를 '배달됨'으로 소비한다 — 여기서
+        // 파싱 실패로 버리면 재배달 없이 영영 사라진다. 필드가 빠져도 있는
+        // 것만으로 저장한다 (엄격한 구조체 파싱 금지).
+        let get = |k: &str| -> String {
+            event_val
+                .get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        // 보낸 사람은 이름이 우선 — 없으면(구버전 서버) 기기 id 라도 남긴다.
+        let sender = {
+            let name = get("sender_device_name");
+            if name.is_empty() { get("sender_device_id") } else { name }
         };
         let row = TeamEventRow {
             id: new_id(),
-            project_id: event.project_id,
-            sender_device_name: event.sender_device_id,
-            event_kind: event.event_kind,
-            repo_name: event.repo_name,
-            payload: event.payload,
+            project_id: get("project_id"),
+            sender_device_name: sender,
+            event_kind: get("event_kind"),
+            repo_name: get("repo_name"),
+            payload: get("payload"),
             received_at: chrono::Utc::now(),
             read: false,
         };

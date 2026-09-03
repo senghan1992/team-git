@@ -20,6 +20,22 @@ router = APIRouter()
 POLL_TIMEOUT = 25
 
 
+def _event_detail(db: Session, row: PushEvent) -> EventDetail:
+    """Poll responses must carry the sender's *name* like the push path does —
+    clients were showing the raw hex device id as the sender otherwise."""
+    sender = db.query(Device).filter(Device.id == row.sender_device_id).first()
+    return EventDetail(
+        id=row.id,
+        project_id=row.project_id,
+        sender_device_id=row.sender_device_id,
+        sender_device_name=sender.name if sender else None,
+        event_kind=row.event_kind,
+        repo_name=row.repo_name,
+        payload=row.payload,
+        created_at=row.created_at,
+    )
+
+
 @router.post("", response_model=EventCreateResponse)
 async def create_event(
     body: EventCreateRequest,
@@ -94,17 +110,7 @@ async def poll_events(
             delivery.delivered_at = datetime.utcnow()
             db.add(delivery)
             db.commit()
-            return PollResponse(
-                event=EventDetail(
-                    id=row.id,
-                    project_id=row.project_id,
-                    sender_device_id=row.sender_device_id,
-                    event_kind=row.event_kind,
-                    repo_name=row.repo_name,
-                    payload=row.payload,
-                    created_at=row.created_at,
-                )
-            )
+            return PollResponse(event=_event_detail(db, row))
 
     # Slow path: wait for a new event to be queued
     await poll_event(device.id, wait)
@@ -132,17 +138,7 @@ async def poll_events(
     db.add(delivery)
     db.commit()
 
-    return PollResponse(
-        event=EventDetail(
-            id=row.id,
-            project_id=row.project_id,
-            sender_device_id=row.sender_device_id,
-            event_kind=row.event_kind,
-            repo_name=row.repo_name,
-            payload=row.payload,
-            created_at=row.created_at,
-        )
-    )
+    return PollResponse(event=_event_detail(db, row))
 
 
 @router.post("/{event_id}/ack")

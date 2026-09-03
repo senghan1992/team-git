@@ -130,7 +130,7 @@ fn sync_with_base_detects_conflict() {
         "pre-condition: other should have 'other version'"
     );
 
-    let result = run_merge(&repo_other, "main", None).expect("run_merge should not return Err");
+    let result = run_merge(&repo_other, "main").expect("run_merge should not return Err");
 
     assert!(result.conflicted, "expected conflicted=true, got false");
     assert!(
@@ -169,7 +169,7 @@ fn sync_with_base_succeeds_when_no_conflict() {
     let b_exists = repo.join("b.txt").exists();
     assert!(b_exists, "pre-condition: b.txt should exist on topic");
 
-    let result = run_merge(&repo, "main", None).expect("run_merge should not return Err");
+    let result = run_merge(&repo, "main").expect("run_merge should not return Err");
 
     assert!(!result.conflicted, "expected conflicted=false, got true");
     assert!(
