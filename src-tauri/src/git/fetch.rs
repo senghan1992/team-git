@@ -20,7 +20,9 @@ pub fn fetch_origin(repo_path: &std::path::Path) -> AppResult<String> {
 pub fn fetch_target(target: &crate::git::Target, remote: &str) -> AppResult<String> {
     let out = crate::git::run_at_target(target, ["fetch", "--prune", remote])?;
     if !out.ok() {
-        return Err(crate::error::AppError::Git(out.stderr.trim().to_string()));
+        return Err(crate::error::AppError::Git(
+            crate::git::ops::friendly_git_error(&out.stderr),
+        ));
     }
     Ok(out.stderr)
 }

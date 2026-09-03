@@ -245,6 +245,7 @@ pub async fn peer_poll_now() -> AppResult<()> {
     // 서버가 죽어 있는 동안 hook 이 보관해 둔 알림부터 재전송한다.
     let _ = peer::flush_spooled_events(&backend, &token).await;
     let client = reqwest::Client::new();
+    let mut reregistered = false;
     loop {
         let url = format!("{}/events/poll?wait=0", backend.trim_end_matches('/'));
         let resp = client
@@ -254,6 +255,26 @@ pub async fn peer_poll_now() -> AppResult<()> {
             .send()
             .await
             .map_err(|e| AppError::Internal(format!("poll failed: {}", e)))?;
+        if resp.status().as_u16() == 401 && !reregistered {
+            // 서버 DB가 초기화(재설치)되면 로컬에 device_id 가 남아 있어도
+            // 서버는 이 기기를 모른다 — 같은 토큰으로 재등록하면(서버가
+            // 제시 토큰을 채택, 멱등) 폴링이 즉시 회복된다. 예전에는 401 이
+            // 영원히 반복되며 주기 폴링이 조용히 죽었다.
+            let name = if cfg.peer.device_name.trim().is_empty() {
+                "Git Companion".to_string()
+            } else {
+                cfg.peer.device_name.clone()
+            };
+            let info = peer::register_device(&backend, &token, &name).await?;
+            let mut c2 = crate::config_store::load()?;
+            c2.peer.backend_url = backend.clone();
+            c2.peer.device_token = token.clone();
+            c2.peer.device_id = info.id;
+            c2.peer.device_name = name;
+            crate::config_store::save(&c2)?;
+            reregistered = true;
+            continue;
+        }
         if !resp.status().is_success() {
             return Err(AppError::Internal(format!(
                 "poll returned {}",

@@ -655,8 +655,11 @@ fn no_origin_repo_errors_are_friendly() {
 
     let p = git::push(&target, None, None).unwrap();
     assert!(!p.ok);
+    // 문구 갱신: "없어서" → "접근할 수 없습니다" (원격 미등록과 접근 불가를
+    // 한 메시지로 — 같은 git 오류 문구가 두 경우 모두에 나오기 때문).
     assert!(
-        p.message.contains("원격(origin)이 없어서"),
+        p.message.contains("원격(origin)에 접근할 수 없습니다")
+            && p.message.contains("git remote add"),
         "friendly no-remote push message, got: {}",
         p.message
     );
@@ -665,7 +668,7 @@ fn no_origin_repo_errors_are_friendly() {
     assert!(!pl.ok);
     assert!(pl.conflicted_files.is_empty());
     assert!(
-        pl.message.contains("원격(origin)이 없어서"),
+        pl.message.contains("원격(origin)에 접근할 수 없"),
         "friendly no-remote pull message, got: {}",
         pl.message
     );

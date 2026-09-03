@@ -86,7 +86,7 @@ pub fn add(target: &Target, paths: &[String]) -> AppResult<()> {
         // 실패를 삼키면 "체크한 파일만 커밋"이 조용히 전체/빈 커밋이 된다.
         return Err(AppError::Git(format!(
             "스테이징 실패: {}",
-            out.stderr.trim()
+            friendly_git_error(&out.stderr)
         )));
     }
     Ok(())
@@ -138,8 +138,8 @@ pub fn explain_commit_failure(stdout: &str, stderr: &str) -> String {
     if all.contains("Please tell me who you are") || all.contains("unable to auto-detect email") {
         return "git 사용자 정보가 없어 커밋할 수 없습니다. 터미널에서 한 번 설정하세요:\n  git config --global user.name \"이름\"\n  git config --global user.email \"메일@example.com\"".into();
     }
-    if all.contains("index.lock") {
-        return "다른 git 작업이 진행 중입니다(.git/index.lock). 잠시 후 다시 시도하세요.".into();
+    if all.contains("index.lock") || all.contains("cannot lock ref") {
+        return "다른 git 작업이 진행 중입니다(.git 잠금 파일). 잠시 후 다시 시도하세요.".into();
     }
     if all.contains("unmerged") || all.contains("Unmerged paths") {
         return "해결하지 않은 충돌이 남아 있습니다. 병합 탭에서 먼저 마무리하세요.".into();
@@ -574,7 +574,10 @@ pub fn stash(target: &Target, action: StashAction) -> AppResult<()> {
                     .into(),
             ));
         }
-        Err(AppError::Git(format!("{what} 실패: {e}")))
+        Err(AppError::Git(format!(
+            "{what} 실패: {}",
+            friendly_git_error(e)
+        )))
     };
     match action {
         StashAction::Save { message } => {
@@ -683,13 +686,31 @@ pub(crate) fn dirty_tree_error(stderr: &str) -> bool {
 pub fn friendly_git_error(stderr: &str) -> String {
     let s = stderr.trim();
 
-    // ── 원격이 아예 없음 (혼자 만든 로컬 저장소에서 가장 흔하다) ──
+    // ── 다른 사람의 push 와 정확히 겹침 (원격 ref 잠금 경합) ──
+    // 원격 경합의 문구("cannot lock ref … is at X but expected Y",
+    // "failed to lock")는 로컬 잠금 파일("File exists")과 구분해야 한다 —
+    // 처방이 정반대다 (재시도 vs 잠금 파일 정리).
+    if s.contains("failed to lock")
+        || (s.contains("cannot lock ref") && !s.contains("File exists"))
+    {
+        return "다른 팀원의 푸시와 정확히 겹쳤습니다. 잠시 후 다시 푸시하세요.".into();
+    }
+    // ── 다른 git 작업의 잠금 파일 (에디터·다른 창·크래시 잔여물) ──
+    if s.contains("index.lock") || (s.contains(".lock") && s.contains("File exists")) {
+        return "다른 git 작업이 진행 중입니다(잠금 파일). 잠시 후 다시 시도하세요. 계속되면 저장소 폴더의 .git/index.lock 파일을 지우세요."
+            .into();
+    }
+    // ── 원격이 없거나 접근 불가 (같은 git 문구가 두 경우 모두에 나온다) ──
     if s.contains("does not appear to be a git repository")
         || s.contains("No such remote")
         || s.contains("'origin' does not appear")
     {
-        return "이 저장소에는 원격(origin)이 없어서 푸시할 곳이 없습니다.\n             터미널에서 원격을 한 번 등록하세요:\n  git remote add origin <저장소 주소>"
+        return "원격(origin)에 접근할 수 없습니다 — 원격이 등록되지 않았거나 주소가 살아 있지 않습니다.\n등록이 안 됐다면 터미널에서:  git remote add origin <저장소 주소>\n등록돼 있다면 주소·경로·네트워크를 확인하세요."
             .into();
+    }
+    // ── 원격에 아직 없는 브랜치를 pull ──
+    if s.contains("couldn't find remote ref") {
+        return "이 브랜치는 아직 원격에 없습니다. 받아올 것이 없으니 먼저 푸시하세요.".into();
     }
     // ── 아직 커밋이 없음 / 브랜치가 없음 ──
     if s.contains("src refspec") && s.contains("does not match any") {
@@ -709,6 +730,11 @@ pub fn friendly_git_error(stderr: &str) -> String {
         // '동기화'는 병합 브랜치(origin/main)를 받아오는 버튼이라 내 원격
         // 브랜치의 새 커밋은 안 가져온다 — 여기서 필요한 처방은 '풀'이다.
         return "푸시 거부됨: 원격의 내 브랜치에 새 커밋이 있습니다. 먼저 ‘풀’로 받아온 뒤 다시 푸시하세요.".into();
+    }
+    // ── 서버(훅/권한/읽기전용)가 푸시를 거부 — 풀로는 해결되지 않는다 ──
+    if s.contains("remote rejected") || s.contains("pre-receive hook declined") {
+        return "원격 서버가 푸시를 거부했습니다(서버 정책·권한·읽기 전용일 수 있습니다). 원격 관리자에게 확인하세요."
+            .into();
     }
     if s.contains("failed to push some refs") {
         return "푸시 실패: 원격의 내 브랜치에 새 변경이 있습니다. 먼저 ‘풀’로 받아온 뒤 다시 푸시하세요."

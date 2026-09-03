@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.delivery import queue_event, poll_event
 from app.deps import get_db, get_device
-from app.models import Device, Project, ProjectMember, PushEvent
+from app.models import Device, EventDelivery, Project, ProjectMember, PushEvent
 from app.schemas import (
     EventCreateRequest,
     EventCreateResponse,
@@ -70,10 +70,32 @@ async def create_event(
         payload=body.payload,
     )
     db.add(event)
+    db.flush()  # event.id 확보
+
+    # 배달 레코드는 이벤트와 **같은 트랜잭션**에서 만든다 — 예전에는
+    # create_task(queue_event)가 레코드를 커밋하기 전에 서버가 죽으면
+    # PushEvent만 남고 배달 0건이라, 그 push 알림은 아무에게도 가지 않았다.
+    members = (
+        db.query(ProjectMember)
+        .filter(
+            ProjectMember.project_id == body.project_id,
+            ProjectMember.device_id != device.id,
+        )
+        .all()
+    )
+    for member in members:
+        db.add(
+            EventDelivery(
+                event_id=event.id,
+                device_id=member.device_id,
+                delivered_at=None,
+                acked_at=None,
+            )
+        )
     db.commit()
     db.refresh(event)
 
-    # Fan out to all subscribers asynchronously
+    # 웨이터 깨우기 + 즉시 푸시만 비동기로 (레코드는 이미 커밋됨).
     asyncio.create_task(queue_event(event.id, body.project_id, device.id))
 
     return EventCreateResponse(id=event.id)

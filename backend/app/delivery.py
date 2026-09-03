@@ -36,14 +36,24 @@ async def queue_event(event_id: str, project_id: str, sender_device_id: str) -> 
         )
 
         for member in members:
-            # Persist pending delivery record for every subscriber
-            delivery = EventDelivery(
-                event_id=event_id,
-                device_id=member.device_id,
-                delivered_at=None,
-                acked_at=None,
+            # 요청 트랜잭션에서 이미 만들어졌으면 건너뛴다 (중복 배달 방지).
+            exists = (
+                db.query(EventDelivery)
+                .filter(
+                    EventDelivery.event_id == event_id,
+                    EventDelivery.device_id == member.device_id,
+                )
+                .first()
             )
-            db.add(delivery)
+            if exists is None:
+                db.add(
+                    EventDelivery(
+                        event_id=event_id,
+                        device_id=member.device_id,
+                        delivered_at=None,
+                        acked_at=None,
+                    )
+                )
 
         db.commit()
 

@@ -262,7 +262,16 @@ pub async fn flush_spooled_events(backend_url: &str, token: &str) -> AppResult<u
         .await
         {
             Ok(_) => sent += 1,
-            Err(_) => kept.push(line.to_string()),
+            Err(e) => {
+                // 서버가 4xx 로 거부한 줄(사라진 프로젝트, 권한 없음 등)은
+                // 영원히 성공할 수 없다 — 보존하면 매 폴링마다 재시도되는
+                // 독약이 된다. 네트워크 오류와 5xx(일시 장애)만 보존한다.
+                let msg = e.to_string();
+                let permanent = msg.contains("fanout failed: 4");
+                if !permanent {
+                    kept.push(line.to_string());
+                }
+            }
         }
     }
     // 처리하는 사이 hook 이 새 줄을 붙였을 수 있다 — 읽은 길이 이후의

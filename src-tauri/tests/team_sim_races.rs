@@ -501,9 +501,11 @@ fn two_members_push_same_branch_concurrently_one_wins_loser_gets_korean_message(
     // 진 쪽 메시지: friendly_git_error 를 거친 한국어 안내여야 한다.
     let msg = &outcomes[loser].message;
     assert!(!outcomes[loser].auth_required);
+    // 동시 push 의 패배 형태는 두 가지다: 늦게 도착해 non-FF(→'풀' 처방)
+    // 이거나, 정확히 겹쳐 서버 ref 잠금 경합(→'잠시 후 재시도' 처방).
     assert!(
-        msg.contains("풀") && (msg.contains("푸시 거부됨") || msg.contains("푸시 실패")),
-        "진 쪽은 한국어 '풀' 안내를 받아야 한다: {msg}"
+        msg.contains("풀") || msg.contains("잠시 후 다시 푸시"),
+        "진 쪽은 한국어 처방(풀 또는 재시도)을 받아야 한다: {msg}"
     );
     assert!(
         !msg.contains("fast-forward") && !msg.contains("rejected"),

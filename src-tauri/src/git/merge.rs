@@ -525,7 +525,7 @@ pub fn start_merge(
     if !checkout.ok() {
         return Err(AppError::Git(format!(
             "checkout {base} 실패: {}",
-            checkout.stderr.trim()
+            crate::git::ops::friendly_git_error(&checkout.stderr)
         )));
     }
 
@@ -633,7 +633,7 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
                 }
                 return Err(AppError::Git(format!(
                     "ours 해결 실패: {}",
-                    out.stderr.trim()
+                    crate::git::ops::friendly_git_error(&out.stderr)
                 )));
             }
         }
@@ -645,7 +645,7 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
                 }
                 return Err(AppError::Git(format!(
                     "theirs 해결 실패: {}",
-                    out.stderr.trim()
+                    crate::git::ops::friendly_git_error(&out.stderr)
                 )));
             }
         }
@@ -661,14 +661,29 @@ pub fn resolve_conflict(target: &Target, path: &str, r: &Resolution) -> AppResul
                         .into(),
                 ));
             }
+            // 아래 staging(add)이 실패하면(잠금 등) Err 를 돌려주면서도
+            // 워크트리는 이미 새 내용으로 바뀌어 있던 문제 — 실패 시 원래
+            // 바이트로 되돌려 "실패 = 상태 불변"을 지킨다.
+            let before = crate::git::read_file_at_target(target, path).ok();
             crate::git::write_file_at_target(target, path, content.as_bytes())?;
+            let add = run_at_target(target, ["add", "--", path])?;
+            if !add.ok() {
+                if let Some(orig) = before {
+                    let _ = crate::git::write_file_at_target(target, path, &orig);
+                }
+                return Err(AppError::Git(format!(
+                    "staging 실패: {}",
+                    crate::git::ops::friendly_git_error(&add.stderr)
+                )));
+            }
+            return remaining_conflicts(target);
         }
     }
     let add = run_at_target(target, ["add", "--", path])?;
     if !add.ok() {
         return Err(AppError::Git(format!(
             "staging 실패: {}",
-            add.stderr.trim()
+            crate::git::ops::friendly_git_error(&add.stderr)
         )));
     }
     remaining_conflicts(target)
@@ -774,7 +789,7 @@ pub fn abort_merge(target: &Target) -> AppResult<()> {
     if merge_in_progress(target)? {
         return Err(AppError::Git(format!(
             "병합 중단 실패: {}",
-            out.stderr.trim()
+            crate::git::ops::friendly_git_error(&out.stderr)
         )));
     }
     Ok(())
