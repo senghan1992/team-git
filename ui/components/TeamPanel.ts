@@ -40,7 +40,7 @@ function signInInvite(): HTMLElement {
   desc.className = "text-display-sm text-[color:var(--color-ink-muted)] whitespace-pre-line";
   desc.textContent =
     "팀원이 브랜치를 push했을 때 알림을 받으려면 누가 누구인지 서버가 알아야 합니다.\n" +
-    "커밋·푸시·병합·충돌 해결은 로그인 없이도 그대로 동작하니, 혼자 쓰는 중이라면 이 화면은 건너뛰어도 됩니다.";
+    "왼쪽 아래 내 이름 자리에서 로그인하면 이 화면이 곧바로 채워집니다.";
   box.appendChild(desc);
   const row = document.createElement("div");
   row.className = "flex gap-2";

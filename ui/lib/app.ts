@@ -286,33 +286,11 @@ export async function createApp(root: HTMLElement) {
 
   // ── 시작 화면 ────────────────────────────────────────────────────────────
   //
-  // 로그인은 **선택**이다. 예전에는 로그인하지 않으면 여기서 더 나아갈 수
-  // 없었는데, 계정이 팀 서버로 옮겨간 뒤에는 그 벽이 곧 "FastAPI 서버를 직접
-  // 띄워야 앱을 열 수 있다"는 뜻이 됐다. 처음 git 을 쓰는 사람에게는 사실상
-  // 사용 불가다.
-  //
-  // 커밋·푸시·병합·충돌 해결은 서버 없이 전부 동작한다. 계정이 실제로 필요한
-  // 것은 팀 알림과 구성원 검색뿐이므로, 그때 그 자리에서 로그인을 권한다.
-  const SKIP_LOGIN_KEY = "gc-skip-login";
-
-  function hasDismissedLogin(): boolean {
-    try {
-      return localStorage.getItem(SKIP_LOGIN_KEY) === "1";
-    } catch {
-      // 저장소를 못 쓰는 환경(사생활 보호 모드 등)에서도 앱은 열려야 한다.
-      return false;
-    }
-  }
-  function dismissLogin() {
-    try {
-      localStorage.setItem(SKIP_LOGIN_KEY, "1");
-    } catch {
-      /* 이번 실행에만 적용된다 */
-    }
-    skippedThisRun = true;
-  }
-  let skippedThisRun = false;
-
+  // 로그인은 **필수**다. 이 앱은 팀이 함께 쓰는 도구라 "누가 병합 관리자인가",
+  // "이 push 알림은 누구 것인가"가 전부 계정(이메일)으로 판정된다. 로그인 없이
+  // 들어오면 관리자 게이트가 통째로 비어 보이고 알림도 오지 않아, 팀원이
+  // "앱이 고장났다"고 느끼는 경우가 더 많았다. 한 번 로그인하면 토큰이 로컬에
+  // 남으므로 재시작·오프라인에서도 다시 묻지 않는다.
   function renderWelcome() {
     shell.innerHTML = "";
     const gate = document.createElement("div");
@@ -337,43 +315,32 @@ export async function createApp(root: HTMLElement) {
       "팀이 하나의 프로젝트를 각자 브랜치로 나눠 작업할 때,\n커밋·푸시·병합을 터미널 없이 처리하는 앱입니다.";
     plaque.appendChild(desc);
 
-    // 무엇이 로그인 없이 되고, 무엇이 안 되는지 미리 알려 준다.
-    const table = document.createElement("div");
-    table.className = "flex flex-col gap-1.5 text-display-sm w-full max-w-md mt-1";
+    // 왜 로그인이 필요한지 한 줄로 — 벽처럼 느껴지지 않게 이유를 먼저 말한다.
+    const why = document.createElement("div");
+    why.className = "flex flex-col gap-1.5 text-display-sm w-full max-w-md mt-1";
     const rows: [string, string][] = [
-      ["바로 사용", "저장소 등록 · 커밋 · 푸시 · 병합 · 충돌 해결"],
-      ["로그인 필요", "팀원 push 알림 · 구성원 검색"],
+      ["병합 관리자", "누가 main으로 병합하는지는 계정의 이메일로 정해집니다"],
+      ["팀 알림", "팀원 push · 병합 완료 알림이 로그인한 사람에게 옵니다"],
     ];
     for (const [tag, what] of rows) {
       const row = document.createElement("div");
       row.className = "flex items-start gap-2 text-left";
       const chip = document.createElement("span");
-      chip.className =
-        "gc-badge shrink-0 " + (tag === "바로 사용" ? "gc-badge--success" : "gc-badge--muted");
+      chip.className = "gc-badge gc-badge--muted shrink-0";
       chip.textContent = tag;
       row.appendChild(chip);
       const txt = document.createElement("span");
       txt.className = "text-[color:var(--color-ink-muted)]";
       txt.textContent = what;
       row.appendChild(txt);
-      table.appendChild(row);
+      why.appendChild(row);
     }
-    plaque.appendChild(table);
+    plaque.appendChild(why);
 
     const btnRow = document.createElement("div");
     btnRow.className = "flex flex-wrap items-center justify-center gap-2 mt-3";
-    const start = document.createElement("button");
-    start.className = "gc-button-primary";
-    start.id = "gate-start-btn";
-    start.textContent = "저장소 열고 시작하기";
-    start.addEventListener("click", () => {
-      dismissLogin();
-      page = { kind: "home" };
-      rerender();
-    });
-    btnRow.appendChild(start);
     const btn = document.createElement("button");
-    btn.className = "gc-button-secondary";
+    btn.className = "gc-button-primary";
     btn.id = "gate-login-btn";
     btn.textContent = "로그인";
     btn.addEventListener("click", () => openAccountModal());
@@ -389,7 +356,7 @@ export async function createApp(root: HTMLElement) {
     const note = document.createElement("p");
     note.className = "text-display-xs text-[color:var(--color-ink-muted)] max-w-md";
     note.textContent =
-      "계정은 팀이 함께 쓰는 서버에 저장됩니다. 나중에 왼쪽 아래에서 언제든 로그인할 수 있습니다.";
+      "계정은 팀이 함께 쓰는 서버에 저장됩니다. 처음이면 계정 만들기에서 팀에서 쓰는 이메일로 가입하세요. 서버 주소는 로그인 창에서 정합니다. 한 번 로그인하면 다음부터는 묻지 않습니다.";
     plaque.appendChild(note);
 
     gate.appendChild(plaque);
@@ -405,9 +372,8 @@ export async function createApp(root: HTMLElement) {
       shell.appendChild(renderPageLoadingFill());
       return;
     }
-    // 처음 실행에서 한 번만 소개 화면을 보여 준다. "시작하기"를 누른 뒤에는
-    // 로그아웃 상태여도 곧바로 앱으로 들어간다.
-    if (session === null && !hasDismissedLogin() && !skippedThisRun) {
+    // 로그인하지 않았으면 언제나 시작 화면 — 로그아웃해도 여기로 돌아온다.
+    if (session === null) {
       renderWelcome();
       return;
     }
