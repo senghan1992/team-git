@@ -102,26 +102,52 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
 
   function card(r: TeamEventRow): HTMLElement {
     const el = document.createElement("div");
-    el.className = "gc-card cursor-pointer " + (r.read ? "opacity-60" : "font-medium");
+    el.className = "gc-card cursor-pointer";
     el.innerHTML = `
       <div class="flex items-center gap-3">
+        <span class="gc-badge gc-badge--info" data-new-chip>새 알림</span>
         <span class="gc-badge gc-badge--neutral">${eventKindLabel(r.event_kind)}</span>
         <span class="text-display-sm text-[color:var(--color-ink-muted)]">${escape(r.sender_device_name)}</span>
         <span class="text-display-sm text-[color:var(--color-ink-muted)] ml-auto">${formatRelative(r.received_at)}</span>
       </div>
-      <div class="text-display-md mt-1">${escape(r.repo_name)}</div>
+      <div class="text-display-md mt-1" data-title>${escape(r.repo_name)}${summaryOf(r)}</div>
       <pre class="hidden mt-2 text-display-sm bg-[color:var(--color-surface)] p-3 rounded-md overflow-x-auto">${escape(r.payload)}</pre>
-      <div class="flex gap-2 mt-2">
+      <div class="flex flex-wrap gap-2 mt-2">
         <button class="gc-button-secondary" data-view-repo>리포 보기</button>
         <button class="gc-button-secondary inline-flex items-center gap-1" data-kind-action></button>
+        <button class="gc-button-secondary inline-flex items-center gap-1 ml-auto" data-mark-read title="처리하지 않고 읽음으로만 표시합니다"></button>
       </div>
     `;
+    // 읽음/안 읽음이 한눈에 갈리게 — 카드 톤과 "새 알림" 칩, "읽음 표시" 버튼을
+    // 상태에 맞춰 함께 바꾼다. 예전에는 흐린 톤 하나로만 구분해 읽음 처리가
+    // 됐는지 알아보기 어려웠다.
+    const applyReadStyle = () => {
+      el.classList.toggle("opacity-60", r.read);
+      el.classList.toggle("font-medium", !r.read);
+      const chip = el.querySelector<HTMLElement>("[data-new-chip]");
+      if (chip) chip.style.display = r.read ? "none" : "";
+      const mark = el.querySelector<HTMLElement>("[data-mark-read]");
+      if (mark) mark.style.display = r.read ? "none" : "";
+    };
+    applyReadStyle();
+    const markBtn = el.querySelector<HTMLButtonElement>("[data-mark-read]");
+    if (markBtn) {
+      markBtn.appendChild(icon("check", 14));
+      const lbl = document.createElement("span");
+      lbl.textContent = "읽음 표시";
+      markBtn.appendChild(lbl);
+      markBtn.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        await markRead(r);
+        applyReadStyle();
+      });
+    }
     const pre = el.querySelector("pre") as HTMLPreElement;
     el.addEventListener("click", (e) => {
-      if ((e.target as HTMLElement).tagName === "BUTTON") return;
+      if ((e.target as HTMLElement).closest("button")) return;
       pre.classList.toggle("hidden");
       // 내용을 펼쳐 봤다면 읽은 것이다.
-      void markRead(r).then(() => el.classList.add("opacity-60"));
+      void markRead(r).then(applyReadStyle);
     });
     const viewBtn = el.querySelector<HTMLButtonElement>("[data-view-repo]");
     viewBtn?.addEventListener("click", async (ev) => {
@@ -227,6 +253,21 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
 
   await refresh();
   return wrap;
+}
+
+/** 제목 옆에 붙는 한 줄 요약 — 브랜치와 커밋 메시지. payload 를 펼치지 않아도 무슨 일인지 보인다. */
+function summaryOf(r: TeamEventRow): string {
+  try {
+    const p = JSON.parse(r.payload) as { data?: { branch?: string; message?: string } };
+    const branch = p.data?.branch?.trim();
+    const message = p.data?.message?.trim();
+    const parts = [branch ? `<code>${escape(branch)}</code>` : "", message ? escape(message) : ""].filter(Boolean);
+    return parts.length
+      ? ` <span class="text-display-sm text-[color:var(--color-ink-muted)]">· ${parts.join(" — ")}</span>`
+      : "";
+  } catch {
+    return "";
+  }
 }
 
 function eventKindLabel(kind: string): string {

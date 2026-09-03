@@ -104,22 +104,44 @@ GC_ALLOWED_HOSTS=diehyb9eq4w2q.cloudfront.net pnpm dev:web
 - `~/gc-demo/origin.git` — 원격 역할을 하는 bare 저장소
 - `~/gc-demo/demo-app` — `main` + 팀원 3명이 push한 브랜치
   (`feature/login`, `feature/payment`, `fix/nav`)
-- 저장소에 커밋된 `.gpconfig` — 병합 대상 `main`, 병합 관리자 `test@example.com`
+- 저장소에 커밋된 `.gpconfig` — 병합 대상 `main`, 병합 관리자 `minji@example.com`
 - 앱 설정에 저장소 등록 + AI 자동 병합 켜기
+- (팀 서버가 떠 있으면) **팀 알림 데모** — 이 앱의 기기를 서버에 등록해
+  `demo-app 팀` 프로젝트를 만들고 저장소와 연결한 뒤, 가상 팀원 기기
+  (`~/gc-demo/teammate_token`)가 병합 대기 브랜치 3개의 push 알림을 보낸다.
+  알림은 **실제 배달 경로**(팀 서버 → 앱 폴링 → 수신함)로 도착한다.
 
 그래서 열자마자 이 순서로 눌러 볼 수 있다:
 
-1. 홈 카드의 **다음 할 일: 3건 병합하기**
-2. 병합 탭의 **변경 지도** — `src/api/user.ts` 를 `feature/login`(김민지)과
+1. 로그인하면 5초 안에 **우측 하단에 "… 브랜치가 병합을 기다립니다" 알림**과
+   사이드바 **알림 배지**가 뜬다 — 알림 탭에 들어가지 않아도 된다.
+   알림 탭에서는 카드별 **읽음 표시**·**모두 읽음**이 남는다 (새로 고쳐도 유지).
+2. 홈 카드의 **다음 할 일: 3건 병합하기**
+3. 병합 탭 맨 위의 **최근 7일 병합 흐름** — 브랜치들이 언제 작업되어 `main` 에
+   어떻게 합쳐졌는지 시간축으로 보인다 (병합 대기 브랜치는 점선).
+4. 병합 탭의 **변경 지도** — `src/api/user.ts` 를 `feature/login`(김민지)과
    `feature/payment`(박준호)가 같이 고치고 있다는 경고
-3. `feature/login` 병합 → 깨끗하게 통과
-4. `feature/payment` 병합 → **충돌** → 자동 해결이 켜져 있으므로 바로 실행됨
-5. `junho / junho-demo-pw` 로 바꿔 로그인 → 같은 저장소가 팀원 시점(커밋/푸시/동기화)으로 보인다
+5. `feature/login` 병합 → 깨끗하게 통과
+6. `feature/payment` 병합 → **충돌** → 자동 해결이 켜져 있으므로 바로 실행됨
+7. `junho / junho-demo-pw` 로 바꿔 로그인 → 같은 저장소가 팀원 시점(커밋/푸시/동기화)으로 보인다
+
+팀원이 **지금** push 하는 상황을 보고 싶으면 (브라우저를 보고 있는 채로):
+
+```bash
+pnpm demo:push                                   # 박준호가 새 브랜치에 커밋 → push → 알림
+pnpm demo:push -- --branch fix/typo --message "fix: 오타"
+pnpm seed:demo -- --notify                       # 병합 대기 3건의 알림을 다시 보내기
+```
 
 ```bash
 node dev/seed-demo.mjs --reset   # 처음 상태로 되돌리기
 node dev/seed-demo.mjs --clean   # 데모 삭제 + 등록 해제
 ```
+
+> 미리보기 브릿지는 저장소 명령을 **워커 스레드 4개**에서 돌린다. 느린 SSH
+> 저장소 하나가 다른 카드나 알림 폴링을 막지 않도록 — 실제 앱(Rust)도 커맨드를
+> 스레드 풀에서 돌리므로 같은 체감이다. 홈 카드는 상태를 먼저 그리고 "병합 대기
+> 확인 중…"만 뒤늦게 채운다.
 
 ## 알아 둘 점
 

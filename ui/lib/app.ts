@@ -160,80 +160,116 @@ export async function createApp(root: HTMLElement) {
       const rows = await ipc_peer.listTeamEvents(50, true);
       // 배지는 목록 길이(50에서 포화)가 아니라 실제 미읽음 총계를 쓴다.
       await reloadTeamUnread();
+      // 한 번에 띄우는 행동 알림은 셋까지 — 자리를 비운 사이 쌓인 백로그는
+      // 개별 토스트가 아니라 "N건 더" 한 줄로 묶어 알림 탭으로 보낸다.
+      // 예전에는 15분보다 오래된 알림을 조용히 건너뛰어서, 앱을 나중에 연
+      // 사람은 알림 탭에 들어가야만 무엇이 왔는지 알 수 있었다.
+      const MAX_ACTION_TOASTS = 3;
+      const FRESH_MS = 15 * 60 * 1000;
+      let shown = 0;
+      let deferred = 0;
       for (const r of rows) {
         if (seenEvents.has(r.id)) continue;
         seenEvents.add(r.id);
         if (r.read) continue;
-        // 오래된 백로그는 방해하지 않도록 최근 15분 이벤트만 알림으로 띄운다.
+
+        const plan = await planToast(r);
+        if (!plan) continue;
         const ageMs = Date.now() - new Date(r.received_at).getTime();
-        if (ageMs > 15 * 60 * 1000) continue;
-
-        const isMainPush =
-          r.event_kind === "main_push" || r.event_kind.endsWith("main_push");
-        const isBranchPush =
-          r.event_kind === "branch_push" || r.event_kind.endsWith("branch_push");
-        if (!isMainPush && !isBranchPush) continue;
-        if (isMyOwnEvent(r)) continue;
-
-        const repo = repoOfEvent(r);
-
-        // ── 시나리오 6: 병합 브랜치에 푸시됨 → 팀원은 내 브랜치에 동기화한다.
-        if (isMainPush) {
-          if (repo) {
-            notify(
-              `${r.repo_name}에 새 병합이 반영되었습니다`,
-              { label: "내 브랜치에 동기화", run: () => void runSyncFromEvent(r, repo) },
-              `${repo.default_branch || "main"}에 최신 코드가 푸시되었습니다. 내 브랜치에도 반영하세요.`,
-            );
-          } else {
-            notify(
-              `${r.repo_name}에 새 병합이 반영되었습니다`,
-              { label: "저장소 등록하기", run: () => { page = { kind: "home" }; rerender(); } },
-              "등록된 저장소가 없어 동기화할 수 없습니다.",
-            );
-          }
+        if (shown >= MAX_ACTION_TOASTS || ageMs > FRESH_MS) {
+          deferred += 1;
           continue;
         }
-
-        // ── 시나리오 7: 팀원이 자기 브랜치를 푸시함 → 병합 관리자에게만 알린다.
-        if (!repo) continue;
-        const base = repo.default_branch || "main";
-        const cfg = await projectCfgOf(repo.id);
-        const me = getSession();
-        // 관리자가 아직 지정되지 않았으면(설정 전 초기 상태) 알림으로 재촉하지
-        // 않는다 — 모두에게 알림이 가면 소음이 된다.
-        const assigned = cfg?.config?.merge_managers?.[base];
-        if (!assigned) continue;
-        if (!isMergeManagerFor(cfg, me?.email ?? null, base)) {
-          // 서버는 프로젝트 전원에게 배달하므로, 관리자가 따로 있는 브랜치
-          // push는 내가 처리할 일이 아니다 — 읽음 처리해 배지가 남의 일로
-          // 부풀지 않게 한다 (수신함에는 읽음 상태로 남아 기록은 유지).
-          if (me) {
-            ipc_peer.markTeamRead(r.id).then(reloadTeamUnread).catch(() => undefined);
-          }
-          continue;
-        }
-
-        const branch = branchOfEvent(r);
+        shown += 1;
+        notify(plan.text, plan.action, plan.detail);
+      }
+      if (deferred > 0) {
         notify(
-          branch
-            ? `${r.repo_name}: ${branch} 브랜치가 병합을 기다립니다`
-            : `${r.repo_name}에 새 푸시가 있습니다`,
+          `읽지 않은 팀 알림이 ${deferred}건 더 있습니다`,
           {
-            label: "병합하기",
+            label: "알림 보기",
             run: () => {
-              ipc_peer.markTeamRead(r.id).then(reloadTeamUnread).catch(() => undefined);
-              page = { kind: "repo", repoId: repo.id, tab: "merge" };
+              teamTab = "inbox";
+              page = { kind: "team" };
               rerender();
             },
           },
-          `${base}(으)로 병합할 수 있습니다.`,
+          "알림 탭에서 하나씩 처리하거나 모두 읽음으로 정리할 수 있습니다.",
         );
       }
     } catch {
       teamUnread = 0;
     }
     updateTeamBadge();
+  }
+
+  type ToastPlan = { text: string; action: { label: string; run: () => void }; detail: string };
+
+  /**
+   * 이 이벤트가 나에게 행동 알림이 되는지 판정하고, 되면 토스트 내용을 만든다.
+   * 내가 처리할 일이 아니면(남의 브랜치 push, 내 push) null — 필요하면 읽음
+   * 처리까지 여기서 끝낸다.
+   */
+  async function planToast(r: TeamEventRow): Promise<ToastPlan | null> {
+    const isMainPush =
+      r.event_kind === "main_push" || r.event_kind.endsWith("main_push");
+    const isBranchPush =
+      r.event_kind === "branch_push" || r.event_kind.endsWith("branch_push");
+    if (!isMainPush && !isBranchPush) return null;
+    if (isMyOwnEvent(r)) return null;
+
+    const repo = repoOfEvent(r);
+
+    // ── 시나리오 6: 병합 브랜치에 푸시됨 → 팀원은 내 브랜치에 동기화한다.
+    if (isMainPush) {
+      if (repo) {
+        return {
+          text: `${r.repo_name}에 새 병합이 반영되었습니다`,
+          action: { label: "내 브랜치에 동기화", run: () => void runSyncFromEvent(r, repo) },
+          detail: `${repo.default_branch || "main"}에 최신 코드가 푸시되었습니다. 내 브랜치에도 반영하세요.`,
+        };
+      }
+      return {
+        text: `${r.repo_name}에 새 병합이 반영되었습니다`,
+        action: { label: "저장소 등록하기", run: () => { page = { kind: "home" }; rerender(); } },
+        detail: "등록된 저장소가 없어 동기화할 수 없습니다.",
+      };
+    }
+
+    // ── 시나리오 7: 팀원이 자기 브랜치를 푸시함 → 병합 관리자에게만 알린다.
+    if (!repo) return null;
+    const base = repo.default_branch || "main";
+    const cfg = await projectCfgOf(repo.id);
+    const me = getSession();
+    // 관리자가 아직 지정되지 않았으면(설정 전 초기 상태) 알림으로 재촉하지
+    // 않는다 — 모두에게 알림이 가면 소음이 된다.
+    const assigned = cfg?.config?.merge_managers?.[base];
+    if (!assigned) return null;
+    if (!isMergeManagerFor(cfg, me?.email ?? null, base)) {
+      // 서버는 프로젝트 전원에게 배달하므로, 관리자가 따로 있는 브랜치
+      // push는 내가 처리할 일이 아니다 — 읽음 처리해 배지가 남의 일로
+      // 부풀지 않게 한다 (수신함에는 읽음 상태로 남아 기록은 유지).
+      if (me) {
+        ipc_peer.markTeamRead(r.id).then(reloadTeamUnread).catch(() => undefined);
+      }
+      return null;
+    }
+
+    const branch = branchOfEvent(r);
+    return {
+      text: branch
+        ? `${r.repo_name}: ${branch} 브랜치가 병합을 기다립니다`
+        : `${r.repo_name}에 새 푸시가 있습니다`,
+      action: {
+        label: "병합하기",
+        run: () => {
+          ipc_peer.markTeamRead(r.id).then(reloadTeamUnread).catch(() => undefined);
+          page = { kind: "repo", repoId: repo.id, tab: "merge" };
+          rerender();
+        },
+      },
+      detail: `${base}(으)로 병합할 수 있습니다.`,
+    };
   }
 
   function updateTeamBadge() {

@@ -359,3 +359,20 @@ fn merge_head_branch_name(target: &git::Target) -> AppResult<String> {
     }
     Ok(name)
 }
+
+/// 병합 탭 상단의 "최근 N일 병합 흐름" — base 로 무엇이 언제 합류했고,
+/// 어떤 브랜치가 아직 열려 있는지.
+#[tauri::command]
+pub async fn merge_timeline(
+    repo_id: Uuid,
+    base: String,
+    days: u32,
+) -> AppResult<git::timeline::MergeTimeline> {
+    let (target, _) = resolve_target(repo_id)?;
+    let mut tl = git::timeline::merge_timeline(&target, MERGE_REMOTE, &base, days)?;
+    // 다른 병합 대상(develop 기준일 때의 release/1.0 등)은 팀원의 작업
+    // 브랜치가 아니다 — "병합 대기" 레인으로 세우지 않는다.
+    let targets = merge_target_branches(&target, &base);
+    tl.open.retain(|b| !targets.contains(&b.name));
+    Ok(tl)
+}

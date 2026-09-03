@@ -22,6 +22,7 @@ import { getSession } from "../lib/session";
 import { parseConflictBlocks, reassemble, type ConflictBlock } from "./conflictParser";
 import { renderCommitList } from "./CommitList";
 import { renderChangeMap } from "./ChangeMap";
+import { renderMergeTimeline } from "./MergeTimeline";
 import { openPushCredentialFlow } from "./PushButton";
 
 interface BlockEdit {
@@ -211,6 +212,15 @@ export async function renderMergeCenter(
     }
   }, 20_000);
   root.appendChild(topRow);
+
+  // ── 최근 7일 병합 흐름 — base 로 무엇이 언제 합류했는지 상단에서 한눈에 ──
+  // `base` 는 아래 select 로 바뀔 수 있으므로 load 콜백이 현재 값을 읽는다.
+  const timeline = renderMergeTimeline({
+    base,
+    load: (days) => ipc.mergeTimeline(repo.id, base, days),
+  });
+  root.appendChild(timeline.el);
+
   // ── In-progress merge banner (warning tint) ──────────────────────────────
   const banner = document.createElement("div");
   banner.className = "gc-banner gc-banner--warning";
@@ -1497,6 +1507,8 @@ export async function renderMergeCenter(
   }
 
   async function refresh() {
+    // 타임라인은 병렬로 — 실패해도(스스로 삼킨다) 본 흐름을 막지 않는다.
+    void timeline.refresh();
     try {
       // 설정이 언제든 바뀔 수 있으므로 열 때마다 다시 읽는다.
       projectCfg = await ipc.projectConfigGet(repo.id).catch(() => null);

@@ -21,16 +21,26 @@
 //   account_current, push_credentials_list, push_credential_set, push_credential_delete,
 //   project_config_get, project_config_set, project_config_commit.
 //
-// Peer / team calls (`peer_*`) intentionally fall through to the dev shim
-// because they require the FastAPI backend to be running.
+// Peer / team calls (`peer_*`) talk to the same FastAPI backend the desktop
+// app uses (`backend/`), with the same device token file, so the inbox you
+// see in the browser is the real one. When no backend URL is configured they
+// degrade to "no notifications" exactly like the Rust commands.
+//
+// Repo-bound commands run on a small worker-thread pool (see BridgePool
+// below) so one slow SSH repository cannot freeze every other card.
 
 import type { Plugin, ViteDevServer } from "vite";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { normalizeRemoteUrl } from "../ui/lib/repoMatch";
+import { mergeTimeline } from "./bridge-timeline";
 
 // ── config.json read/write ──────────────────────────────────────────────────
 
@@ -704,32 +714,299 @@ const DEFAULT_EXTERNAL_TOOLS: ExternalToolRecord[] = [
   { id: "tmux", label: "Tmux", command_template: "tmux", args_template: "new-session -c {path}", enabled: true },
 ];
 
+// ── 팀 서버(peer) — Rust `peer.rs` / `commands/peer.rs` 와 같은 서버, 같은 파일 ──
+//
+// 예전에는 여기가 고정 데이터였다: 읽지 않은 알림은 언제나 2건, 읽음 처리는
+// 아무 일도 하지 않았고, 같은 가짜 알림 두 건이 매번 "새로" 도착했다.
+// 미리보기로 알림을 판단하던 사람에게는 "읽음 처리가 안 된다"로 보였다.
+// 지금은 데스크톱 앱과 같은 서버에 같은 기기 토큰(`peer_token`)으로 붙고,
+// 받은 알림은 `inbox.dev.json`(앱은 SQLite `inbox.db`)에 저장해 읽음 상태가
+// 남는다. 저장소↔프로젝트 연결(`repo_projects.json`)도 앱과 같은 파일이다.
+
+const PEER_TOKEN_FILE = "peer_token";
+const REPO_PROJECTS_FILE = "repo_projects.json";
+const DEV_INBOX_FILE = "inbox.dev.json";
+
+function appConfigDir(): string {
+  return dirname(configPath());
+}
+
+interface PeerSettings {
+  backend_url?: string;
+  device_token?: string;
+  device_id?: string;
+  device_name?: string;
+}
+
+function peerSettings(s: AppSettings): PeerSettings {
+  return (s.peer ?? {}) as PeerSettings;
+}
+
+/** Rust `load_or_create_token` — 기기 토큰 파일을 읽거나 새로 만든다. */
+function peerToken(): string {
+  const p = join(appConfigDir(), PEER_TOKEN_FILE);
+  if (existsSync(p)) {
+    const t = readFileSync(p, "utf8").trim();
+    if (t) return t;
+  }
+  const token = randomUUID() + randomUUID();
+  mkdirSync(appConfigDir(), { recursive: true });
+  writeFileSync(p, token);
+  return token;
+}
+
+async function peerFetch<T>(
+  backend: string,
+  token: string,
+  method: "GET" | "POST" | "PUT" | "DELETE",
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; json: T | null }> {
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  if (body !== undefined) headers["content-type"] = "application/json";
+  let resp: Response;
+  try {
+    resp = await fetch(`${backend.replace(/\/+$/, "")}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new Error(
+      `팀 서버에 연결할 수 없습니다 (${backend}). 서버가 실행 중인지 확인하세요: cd backend && uvicorn app.main:app`,
+    );
+  }
+  let json: T | null = null;
+  try {
+    json = (await resp.json()) as T;
+  } catch {
+    json = null;
+  }
+  return { status: resp.status, json };
+}
+
+/** 2xx 가 아니면 FastAPI 의 `detail` 문구로 Error 를 던진다. */
+function peerOk<T>(r: { status: number; json: T | null }, what: string): T {
+  if (r.status >= 200 && r.status < 300) return r.json as T;
+  const detail = (r.json as { detail?: unknown } | null)?.detail;
+  throw new Error(typeof detail === "string" ? `${what} 실패: ${detail}` : `${what} 실패 (${r.status})`);
+}
+
+function deviceNameFor(s: AppSettings): string {
+  return s.session?.user.name?.trim() || process.env.HOSTNAME || "Git Companion";
+}
+
+interface DeviceInfo {
+  id: string;
+  name: string;
+  user_id: string;
+}
+
+/** 서버에 이 기기를 (같은 토큰으로, 멱등) 등록하고 설정에 남긴다. */
+async function registerDevice(backend: string, token: string, name: string): Promise<DeviceInfo> {
+  const info = peerOk(
+    await peerFetch<DeviceInfo>(backend, token, "POST", "/devices/register", { name }),
+    "기기 등록",
+  );
+  const s = loadSettings();
+  s.peer = { ...(s.peer ?? {}), backend_url: backend, device_token: token, device_id: info.id, device_name: name };
+  saveSettings(s);
+  return info;
+}
+
+/** Rust `ensure_device_registered` — 서버가 이 기기를 모르면 등록부터 한다. */
+async function ensureDeviceRegistered(): Promise<{ backend: string; token: string; deviceId: string }> {
+  const s = loadSettings();
+  const peer = peerSettings(s);
+  const backend = String(peer.backend_url ?? "").trim() || "http://127.0.0.1:8000";
+  const token = peerToken();
+  if (peer.device_id) return { backend, token, deviceId: String(peer.device_id) };
+  const info = await registerDevice(backend, token, deviceNameFor(s));
+  return { backend, token, deviceId: info.id };
+}
+
+interface InboxRow {
+  id: string;
+  project_id: string;
+  sender_device_name: string;
+  event_kind: string;
+  repo_name: string;
+  payload: string;
+  received_at: string;
+  read: boolean;
+}
+
+function inboxPath(): string {
+  return join(appConfigDir(), DEV_INBOX_FILE);
+}
+
+function loadInbox(): InboxRow[] {
+  try {
+    const parsed = JSON.parse(readFileSync(inboxPath(), "utf8")) as unknown;
+    if (Array.isArray(parsed)) return parsed as InboxRow[];
+  } catch {
+    /* 없거나 깨졌으면 빈 수신함 */
+  }
+  return [];
+}
+
+function saveInbox(rows: InboxRow[]): void {
+  const p = inboxPath();
+  mkdirSync(dirname(p), { recursive: true });
+  const tmp = `${p}.tmp`;
+  writeFileSync(tmp, JSON.stringify(rows, null, 2));
+  renameSync(tmp, p);
+}
+
+interface EventDetail {
+  id?: string;
+  project_id?: string;
+  sender_device_id?: string;
+  sender_device_name?: string | null;
+  event_kind?: string;
+  repo_name?: string;
+  payload?: string;
+}
+
+/** Rust `peer_poll_now` — 서버에 쌓인 이벤트를 전부 끌어와 수신함에 저장한다. */
+async function pollTeamEventsOnce(): Promise<number> {
+  const peer = peerSettings(loadSettings());
+  // 팀 서버를 설정한 적이 없으면 조용히 넘어간다 (알림은 선택 기능).
+  if (!String(peer.backend_url ?? "").trim()) return 0;
+  const { backend, token } = await ensureDeviceRegistered();
+  const rows = loadInbox();
+  let added = 0;
+  let reregistered = false;
+  for (;;) {
+    const r = await peerFetch<{ event: EventDetail | null }>(backend, token, "POST", "/events/poll?wait=0");
+    if (r.status === 401 && !reregistered) {
+      // 서버 DB 가 초기화되면 로컬 device_id 가 남아 있어도 서버는 이 기기를
+      // 모른다 — 같은 토큰으로 재등록하면 폴링이 곧바로 회복된다.
+      const s = loadSettings();
+      await registerDevice(backend, token, String(peerSettings(s).device_name ?? "").trim() || deviceNameFor(s));
+      reregistered = true;
+      continue;
+    }
+    const body = peerOk(r, "알림 폴링");
+    const ev = body?.event;
+    if (!ev) break;
+    rows.push({
+      id: randomUUID(),
+      project_id: String(ev.project_id ?? ""),
+      sender_device_name: String(ev.sender_device_name || ev.sender_device_id || ""),
+      event_kind: String(ev.event_kind ?? ""),
+      repo_name: String(ev.repo_name ?? ""),
+      payload: String(ev.payload ?? ""),
+      received_at: new Date().toISOString(),
+      read: false,
+    });
+    added += 1;
+    // 서버는 응답 시점에 이 이벤트를 '배달됨'으로 소비한다 — 한 건마다 바로 저장한다.
+    saveInbox(rows);
+  }
+  return added;
+}
+
+// 저장소 ↔ 프로젝트 연결. Rust `RepoProjects` 와 같은 파일, 같은 열쇠(실제 경로).
+function canonicalRepoPath(r: RepoRecord): string {
+  if (r.ssh_host) return r.path;
+  try {
+    return realpathSync(r.path);
+  } catch {
+    return r.path;
+  }
+}
+
+function loadRepoProjects(): Record<string, string[]> {
+  try {
+    const parsed = JSON.parse(readFileSync(join(appConfigDir(), REPO_PROJECTS_FILE), "utf8")) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as Record<string, string[]>;
+  } catch {
+    /* 없으면 빈 매핑 */
+  }
+  return {};
+}
+
+function saveRepoProjects(m: Record<string, string[]>): void {
+  mkdirSync(appConfigDir(), { recursive: true });
+  writeFileSync(join(appConfigDir(), REPO_PROJECTS_FILE), JSON.stringify(m, null, 2));
+}
+
+function linkRepoProject(r: RepoRecord, projectId: string): void {
+  const m = loadRepoProjects();
+  const key = canonicalRepoPath(r);
+  const list = m[key] ?? [];
+  if (!list.includes(projectId)) list.push(projectId);
+  m[key] = list;
+  saveRepoProjects(m);
+}
+
+function unlinkRepoProject(r: RepoRecord, projectId: string): void {
+  const m = loadRepoProjects();
+  const key = canonicalRepoPath(r);
+  const list = (m[key] ?? []).filter((id) => id !== projectId);
+  if (list.length === 0) delete m[key];
+  else m[key] = list;
+  saveRepoProjects(m);
+}
+
+function projectsForRepo(r: RepoRecord): string[] {
+  return loadRepoProjects()[canonicalRepoPath(r)] ?? [];
+}
+
 /**
- * 미리보기용 알림 수신자 목록 (프로세스 메모리).
- *
- * 실제로는 백엔드가 들고 있다. 여기 두는 이유는 알림 화면의 "구성원 동기화"와
- * "제거"가 눌렀을 때 실제로 목록이 바뀌는 걸 보여 주기 위해서다 — 고정 배열을
- * 돌려주면 버튼이 동작하는지 아닌지 알 수 없다. 개발 서버를 재시작하면 초기화된다.
+ * 푸시가 성공하면 팀 서버에 이벤트를 보낸다 — 데스크톱 앱에서는 pre-push hook 이
+ * `git-companion hook emit` 으로 하는 일이다. 미리보기에는 그 실행 파일이 없으므로
+ * 여기서 같은 payload(`{kind, data:{author, message, sha, repo_name, url, branch}}`)를
+ * 같은 규칙(병합 대상 브랜치면 main_push, 아니면 branch_push)으로 만든다.
+ * hook 과 마찬가지로 실패해도 푸시 결과에는 영향을 주지 않는다(fail-open).
  */
-const devMembers = new Map<
-  string,
-  { device_id: string | null; email: string; name: string | null; role: string; joined_at: string | null }
->([
-  [
-    "test@example.com",
-    {
-      device_id: "dev-1",
-      email: "test@example.com",
-      name: "테스트 1",
-      role: "admin",
-      joined_at: new Date().toISOString(),
-    },
-  ],
-]);
+async function emitPushEvent(r: RepoRecord, t: GitTarget, branch: string): Promise<void> {
+  const peer = peerSettings(loadSettings());
+  const backend = String(peer.backend_url ?? "").trim();
+  const token = String(peer.device_token ?? "").trim() || (peer.device_id ? peerToken() : "");
+  if (!backend || !token) return;
+  const projects = projectsForRepo(r);
+  if (projects.length === 0) return;
+  const sha = tgGit(t, ["rev-parse", branch]).stdout.trim() || tgGit(t, ["rev-parse", "HEAD"]).stdout.trim();
+  const author = tgGit(t, ["log", "-1", "--format=%an", sha]).stdout.trim() || "unknown";
+  const message = tgGit(t, ["log", "-1", "--format=%s", sha]).stdout.trim();
+  const url = normalizeRemoteUrl(tgGit(t, ["remote", "get-url", "origin"]).stdout.trim());
+  const kind = (await isMergeTargetBranch(r, branch)) ? "main_push" : "branch_push";
+  const payload = JSON.stringify({ kind, data: { author, message, sha, repo_name: r.display_name, url, branch } });
+  for (const projectId of projects) {
+    try {
+      const res = await peerFetch(backend, token, "POST", "/events", {
+        project_id: projectId,
+        event_kind: kind,
+        repo_name: r.display_name,
+        payload,
+      });
+      if (res.status >= 300) console.warn(`[gc-bridge] 알림 전송 실패 (${res.status}) project=${projectId}`);
+    } catch (e) {
+      console.warn(`[gc-bridge] 알림 전송 실패: ${(e as Error).message}`);
+    }
+  }
+}
+
+/** Rust `gpconfig::is_merge_target` — merge_targets → default_base_branch → 등록 기본 브랜치. */
+async function isMergeTargetBranch(r: RepoRecord, branch: string): Promise<boolean> {
+  const res = (await dispatch({ cmd: "project_config_get", args: { repoId: r.id } })) as
+    | { exists?: boolean; config?: { default_base_branch?: string; merge_targets?: string[] } }
+    | { kind: string }
+    | null;
+  const registered = (r.default_branch || "main").trim();
+  if (!res || "kind" in res) return branch.trim() === registered;
+  const cfg = res.config;
+  const fallback = res.exists && cfg?.default_base_branch?.trim() ? cfg.default_base_branch.trim() : registered;
+  const targets = cfg?.merge_targets?.length ? cfg.merge_targets : [fallback];
+  return targets.includes(branch.trim());
+}
 
 // ── IPC dispatch ────────────────────────────────────────────────────────────
 
-interface InvokeArgs {
+export interface InvokeArgs {
   cmd: string;
   args: Record<string, unknown>;
 }
@@ -738,7 +1015,7 @@ function jsonError(kind: string, message: string): unknown {
   return { kind, message };
 }
 
-async function dispatch(invoke: InvokeArgs): Promise<unknown> {
+export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
   const { cmd, args } = invoke;
   try {
     switch (cmd) {
@@ -1059,69 +1336,179 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
           };
         }
       }
+      // ── 수신함 (앱의 inbox.db 에 해당) ────────────────────────────────
       case "peer_unread_count": {
-        return 2;
+        return loadInbox().filter((r) => !r.read).length;
       }
-      case "peer_poll_now":
+      case "peer_poll_now": {
+        try {
+          await pollTeamEventsOnce();
+        } catch (e) {
+          return jsonError("internal", (e as Error).message ?? String(e));
+        }
         return null;
-      case "peer_mark_team_read":
+      }
+      case "peer_list_team_events": {
+        const limit = Math.max(0, Number(args.limit ?? 50));
+        const unreadOnly = Boolean(args.unreadOnly ?? args.unread_only);
+        return loadInbox()
+          .filter((r) => !unreadOnly || !r.read)
+          .sort((a, b) => (a.received_at < b.received_at ? 1 : a.received_at > b.received_at ? -1 : 0))
+          .slice(0, limit);
+      }
+      case "peer_mark_team_read": {
+        const rows = loadInbox();
+        const row = rows.find((r) => r.id === String(args.id ?? ""));
+        if (!row) return jsonError("db", `team event ${String(args.id ?? "")} not found`);
+        if (!row.read) {
+          row.read = true;
+          saveInbox(rows);
+        }
         return null;
-      case "peer_mark_all_team_read":
-        return 2;
+      }
+      case "peer_mark_all_team_read": {
+        const rows = loadInbox();
+        let n = 0;
+        for (const r of rows) {
+          if (!r.read) {
+            r.read = true;
+            n += 1;
+          }
+        }
+        if (n > 0) saveInbox(rows);
+        return n;
+      }
+
+      // ── 기기 · 프로젝트 · 구성원 (팀 서버 그대로) ─────────────────────
+      case "peer_register_device": {
+        const backend = String(args.backendUrl ?? args.backend_url ?? "").trim().replace(/\/+$/, "");
+        if (!backend) return jsonError("bad_request", "서버 주소를 입력하세요.");
+        try {
+          return await registerDevice(backend, peerToken(), String(args.name ?? "").trim() || "Git Companion");
+        } catch (e) {
+          return jsonError("internal", (e as Error).message ?? String(e));
+        }
+      }
       case "peer_list_projects": {
-        return [{ id: "p1", display_name: "데모 팀", join_code: "TEAM-0001", role: "admin" }];
+        try {
+          const { backend, token } = await ensureDeviceRegistered();
+          const body = peerOk(
+            await peerFetch<{ projects: unknown[] }>(backend, token, "GET", "/projects"),
+            "프로젝트 목록",
+          );
+          return body?.projects ?? [];
+        } catch (e) {
+          return jsonError("internal", (e as Error).message ?? String(e));
+        }
       }
-      case "peer_list_members": {
-        return [...devMembers.values()];
+      case "peer_create_project":
+      case "peer_join_project": {
+        try {
+          const { backend, token } = await ensureDeviceRegistered();
+          const info = cmd === "peer_create_project"
+            ? peerOk(
+                await peerFetch<{ id: string }>(backend, token, "POST", "/projects", {
+                  display_name: String(args.name ?? "").trim(),
+                }),
+                "팀 만들기",
+              )
+            : peerOk(
+                await peerFetch<{ id: string }>(backend, token, "POST", "/projects/join", {
+                  join_code: String(args.code ?? "").trim(),
+                }),
+                "팀 합류",
+              );
+          const repoId = (args.repoId ?? args.repo_id) as string | null | undefined;
+          if (repoId) {
+            const r = repoById(repoId);
+            if (!("error" in r)) linkRepoProject(r, info.id);
+          }
+          return info;
+        } catch (e) {
+          return jsonError("internal", (e as Error).message ?? String(e));
+        }
       }
-      case "peer_invite_by_email": {
-        const email = String(args.email ?? "").trim().toLowerCase();
-        if (!email) return jsonError("bad_request", "이메일이 비어 있습니다.");
-        const entry = {
-          device_id: null,
-          email,
-          name: (args.name as string | null) ?? null,
-          role: (args.role as string | null) ?? "member",
-          joined_at: null,
-        };
-        devMembers.set(email, entry);
-        return entry;
+      case "peer_leave_project": {
+        const projectId = String(args.projectId ?? args.project_id ?? "");
+        try {
+          const { backend, token, deviceId } = await ensureDeviceRegistered();
+          peerOk(
+            await peerFetch(backend, token, "DELETE", `/projects/${projectId}/members/${deviceId}`),
+            "팀 나가기",
+          );
+        } catch (e) {
+          return jsonError("internal", (e as Error).message ?? String(e));
+        }
+        const m = loadRepoProjects();
+        for (const key of Object.keys(m)) {
+          const list = (m[key] ?? []).filter((id) => id !== projectId);
+          if (list.length === 0) delete m[key];
+          else m[key] = list;
+        }
+        saveRepoProjects(m);
+        return null;
       }
-      case "peer_remove_email_invite": {
-        devMembers.delete(String(args.email ?? "").trim().toLowerCase());
+      case "peer_link_repo_to_project":
+      case "peer_unlink_repo": {
+        const r = repoById(String(args.repoId ?? args.repo_id ?? ""));
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        const projectId = String(args.projectId ?? args.project_id ?? "");
+        if (cmd === "peer_link_repo_to_project") linkRepoProject(r, projectId);
+        else unlinkRepoProject(r, projectId);
         return null;
       }
       case "peer_repos_for_project": {
-        // dev stub: 등록된 첫 저장소를 연결된 것으로 보여준다.
-        const first = loadSettings().repositories[0];
-        return first
-          ? [{ repo_id: first.id, display_name: first.display_name, path: first.path }]
-          : [];
+        const projectId = String(args.projectId ?? args.project_id ?? "");
+        return loadSettings()
+          .repositories.filter((r) => projectsForRepo(r).includes(projectId))
+          .map((r) => ({ repo_id: r.id, display_name: r.display_name, path: r.path }));
       }
-      case "peer_list_team_events": {
-        const now = new Date().toISOString();
-        return [
-          {
-            id: "e1",
-            project_id: "p1",
-            sender_device_name: "alice",
-            event_kind: "branch_push",
-            repo_name: "e2e-app",
-            payload: JSON.stringify({ event: "branch_push", data: { branch: "feature", author: "alice" } }),
-            received_at: now,
-            read: false,
-          },
-          {
-            id: "e2",
-            project_id: "p1",
-            sender_device_name: "bob",
-            event_kind: "main_push",
-            repo_name: loadSettings().repositories[0]?.display_name ?? "aos-git",
-            payload: JSON.stringify({ event: "main_push", data: { branch: "main", author: "bob", message: "feature/x 브렌치 병합" } }),
-            received_at: now,
-            read: false,
-          },
-        ];
+      case "peer_list_members": {
+        const projectId = String(args.projectId ?? args.project_id ?? "");
+        try {
+          const { backend, token } = await ensureDeviceRegistered();
+          const body = peerOk(
+            await peerFetch<{ members: unknown[] }>(backend, token, "GET", `/projects/${projectId}/members/email`),
+            "구성원 목록",
+          );
+          return body?.members ?? [];
+        } catch (e) {
+          return jsonError("internal", (e as Error).message ?? String(e));
+        }
+      }
+      case "peer_invite_by_email": {
+        const projectId = String(args.projectId ?? args.project_id ?? "");
+        const email = String(args.email ?? "").trim().toLowerCase();
+        if (!email) return jsonError("bad_request", "이메일이 비어 있습니다.");
+        try {
+          const { backend, token } = await ensureDeviceRegistered();
+          const body: Record<string, unknown> = { email, role: String(args.role ?? "member") };
+          if (args.name) body.name = String(args.name);
+          return peerOk(
+            await peerFetch(backend, token, "POST", `/projects/${projectId}/members/email`, body),
+            "초대",
+          );
+        } catch (e) {
+          return jsonError("internal", (e as Error).message ?? String(e));
+        }
+      }
+      case "peer_remove_email_invite": {
+        const projectId = String(args.projectId ?? args.project_id ?? "");
+        const email = String(args.email ?? "").trim().toLowerCase();
+        try {
+          const { backend, token } = await ensureDeviceRegistered();
+          peerOk(
+            await peerFetch(backend, token, "DELETE", `/projects/${projectId}/members/email/${encodeURIComponent(email)}`),
+            "초대 제거",
+          );
+          return null;
+        } catch (e) {
+          return jsonError("internal", (e as Error).message ?? String(e));
+        }
+      }
+      case "peer_local_url": {
+        // 미리보기에는 푸시 배달용 sidecar 가 없다 — 앱과 같은 문구로 알린다.
+        return jsonError("config", "peer listener not started");
       }
 
       // ── branch / commit / status ─────────────────────────────────────
@@ -1162,6 +1549,17 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         const r = repoById(args.repoId as string);
         if ("error" in r) return jsonError("repo_not_found", r.error);
         return listCommits(targetOf(r), args.branch as string, args.count as number);
+      }
+      // 병합 탭 상단의 "최근 7일 병합 흐름" (Rust `git::timeline::merge_timeline` 의 쌍둥이).
+      case "merge_timeline": {
+        const r = repoById(args.repoId as string);
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        const t = targetOf(r);
+        try {
+          return mergeTimeline((a) => tgGit(t, a), "origin", String(args.base ?? r.default_branch ?? "main"), Number(args.days ?? 7));
+        } catch (e) {
+          return jsonError("git", (e as Error).message ?? String(e));
+        }
       }
       case "status": {
         const r = repoById(args.repoId as string);
@@ -1212,6 +1610,8 @@ async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         } else {
           out = tgGit(t, ["push", "-u", "origin", `HEAD:${branch}`]);
         }
+        // pre-push hook 의 알림 전송에 해당한다 (실행 파일이 없는 미리보기용).
+        if (out.ok) await emitPushEvent(r, t, branch);
         if (out.ok && args.saveCredential && cred) {
           const s = loadSettings();
           s.push_credentials ??= {};
@@ -2246,10 +2646,124 @@ function workingTreeStatus(t: GitTarget, base?: string): WorkingTreeStatus {
 
 // ── plugin ──────────────────────────────────────────────────────────────────
 
+// ── 워커 풀 ─────────────────────────────────────────────────────────────────
+//
+// git 호출은 전부 spawnSync 다. vite 개발 서버는 스레드가 하나라서, SSH
+// 저장소의 병합 대기 조회(수 초)가 도는 동안 다른 저장소 카드·알림 폴링·
+// 버튼 응답까지 전부 멈췄다 — 화면이 통째로 얼어 보이던 원인. 실제 앱(Rust)은
+// 커맨드를 스레드 풀에서 돌리므로 그런 일이 없다. 미리보기도 같게 보이도록
+// 저장소 명령을 워커 스레드에서 돌린다.
+//
+// 같은 저장소(repoId)의 명령은 항상 같은 워커로 보내 순서를 지킨다(병합 시작 →
+// 상태 조회 같은 연쇄가 어긋나지 않게). `peer_*` 는 fetch 기반이라 막히지
+// 않고, 수신함 파일을 한 곳에서만 고치도록 메인 스레드에 남긴다.
+// 번들에 실패하면(esbuild 없음 등) 예전처럼 단일 스레드로 동작한다.
+
+const WORKER_COUNT = 4;
+
+function bundleWorker(): string | null {
+  try {
+    const require = createRequire(import.meta.url);
+    const esbuild = require("esbuild") as { buildSync: (o: Record<string, unknown>) => void };
+    const here = dirname(fileURLToPath(import.meta.url));
+    const entry = [
+      join(here, "bridge-worker.ts"),
+      join(here, "dev", "bridge-worker.ts"),
+      join(process.cwd(), "dev", "bridge-worker.ts"),
+    ].find((p) => existsSync(p));
+    if (!entry) return null;
+    const outfile = join(tmpdir(), `gc-bridge-worker-${process.pid}.mjs`);
+    esbuild.buildSync({
+      entryPoints: [entry],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      target: "node20",
+      outfile,
+      logLevel: "silent",
+      external: ["vite"],
+    });
+    return outfile;
+  } catch (e) {
+    console.warn(`[gc-bridge] 워커 번들 실패 — 단일 스레드로 동작합니다: ${(e as Error).message}`);
+    return null;
+  }
+}
+
+interface PoolSlot {
+  worker: Worker;
+  pending: Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>;
+  dead: boolean;
+}
+
+class BridgePool {
+  private readonly slots: PoolSlot[] = [];
+  private seq = 0;
+  private closed = false;
+
+  constructor(private readonly bundle: string, size: number) {
+    for (let i = 0; i < size; i++) this.slots.push(this.spawn(i));
+  }
+
+  private spawn(index: number): PoolSlot {
+    const slot: PoolSlot = { worker: new Worker(this.bundle), pending: new Map(), dead: false };
+    slot.worker.on("message", (m: { id: number; result: unknown }) => {
+      const p = slot.pending.get(m.id);
+      if (!p) return;
+      slot.pending.delete(m.id);
+      p.resolve(m.result);
+    });
+    const die = (why: string) => {
+      if (slot.dead) return;
+      slot.dead = true;
+      for (const p of slot.pending.values()) {
+        p.reject(new Error(`미리보기 브리지 워커가 중단되었습니다: ${why}`));
+      }
+      slot.pending.clear();
+      if (!this.closed) this.slots[index] = this.spawn(index);
+    };
+    slot.worker.on("error", (e) => die(e.message));
+    slot.worker.on("exit", (code) => {
+      if (code !== 0) die(`exit ${code}`);
+    });
+    return slot;
+  }
+
+  run(body: InvokeArgs): Promise<unknown> {
+    const key = String(body.args?.repoId ?? body.args?.repo_id ?? body.cmd);
+    let h = 0;
+    for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    const slot = this.slots[h % this.slots.length]!;
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      slot.pending.set(id, { resolve, reject });
+      slot.worker.postMessage({ id, body });
+    });
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const s of this.slots) void s.worker.terminate();
+  }
+}
+
+/** 메인 스레드에서 처리할 명령 — 수신함 파일의 단일 작성자를 지킨다. */
+function runsOnMainThread(cmd: string): boolean {
+  return cmd.startsWith("peer_");
+}
+
 export function gitBridgePlugin(): Plugin {
   return {
     name: "git-companion-bridge",
     configureServer(server: ViteDevServer) {
+      const bundle = bundleWorker();
+      const pool = bundle ? new BridgePool(bundle, WORKER_COUNT) : null;
+      server.httpServer?.once("close", () => pool?.close());
+      console.log(
+        pool
+          ? `[gc-bridge] 저장소 명령을 워커 ${WORKER_COUNT}개에서 처리합니다 (${bundle})`
+          : "[gc-bridge] 워커를 띄우지 못해 단일 스레드로 동작합니다 — 느린 저장소가 화면 전체를 멈출 수 있습니다.",
+      );
       // 경로를 접두사로 마운트하지 않고 직접 비교한다. code-server 같은
       // 리버스 프록시 뒤에서 볼 때는 vite 를 base(`/absproxy/5173/`) 아래에서
       // 띄우므로 요청 경로가 `/absproxy/5173/__gc/invoke` 로 들어온다.
@@ -2263,7 +2777,7 @@ export function gitBridgePlugin(): Plugin {
         }
         try {
           const body = (await readBody(req)) as InvokeArgs;
-          const result = await dispatch(body);
+          const result = pool && !runsOnMainThread(body.cmd) ? await pool.run(body) : await dispatch(body);
           send(res, 200, result);
         } catch (e) {
           send(res, 400, jsonError("bad_request", (e as Error).message ?? String(e)));

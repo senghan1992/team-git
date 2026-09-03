@@ -113,6 +113,7 @@ pub fn run() {
             commands::git::base_unpushed_count,
             commands::git::branch_file_diff,
             commands::git::list_merged_remote_branches,
+            commands::git::merge_timeline,
             commands::git::delete_remote_branch,
             commands::git::conflict_detail,
             commands::git::resolve_conflict,

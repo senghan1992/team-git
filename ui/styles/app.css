@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "pretendard/dist/web/variable/pretendardvariable.css";
 @import "./tokens.css";
+@import "./timeline.css";
 
 /* ── Base — porcelain body ─────────────────────────────────────────────── */
 html,
@@ -1043,7 +1044,12 @@ select.gc-input--ghost:hover {
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: none; }
 }
-.gc-spin { animation: gc-spin 0.9s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite; }
+.gc-spin {
+  animation: gc-spin 0.9s cubic-bezier(0.45, 0.05, 0.55, 0.95) infinite;
+  transform-origin: 50% 50%;
+  transform-box: fill-box;
+  will-change: transform;
+}
 .gc-loading-ring {
   position: relative;
   width: 44px;
@@ -1179,11 +1185,17 @@ textarea.gc-input {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .gc-spin,
   .gc-page-loading,
   .gc-toast,
   .gc-modal__panel,
   .gc-button-primary[aria-busy="true"]::after {
     animation: none;
+  }
+  /* 스피너는 장식이 아니라 "아직 일하고 있다"는 유일한 신호다 — OS 의
+     "애니메이션 줄이기"(Windows 애니메이션 효과 끄기 등)에서도 멈추면 화면이
+     얼어 보인다. 속도만 낮추고 계속 돈다. */
+  .gc-spin {
+    animation-duration: 1.8s;
+    animation-timing-function: linear;
   }
 }

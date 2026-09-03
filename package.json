@@ -7,6 +7,7 @@
     "dev": "vite",
     "dev:web": "node dev/serve-web.mjs",
     "seed:demo": "node dev/seed-demo.mjs",
+    "demo:push": "node dev/demo-teammate.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",

@@ -136,6 +136,42 @@ export async function fetchUser(id: string): Promise<User> {
 
   git(REPO, "add", "-A");
   git(REPO, "commit", "-qm", "chore: 초기 구조와 프로젝트 설정");
+
+  // ── 지난주의 병합 이력 — 병합 탭 상단 "최근 7일 병합 흐름"에 보이도록 ──────
+  // 날짜를 거슬러 커밋해 "언제 작업해서 언제 main 에 합쳐졌는지"가 시간축에
+  // 나타난다 (병합 커밋 메시지는 앱과 같은 "<브랜치> 브렌치 병합").
+  const gitAt = (iso, name, email, ...a) =>
+    execFileSync("git", a, {
+      cwd: REPO,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      env: {
+        ...process.env,
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_AUTHOR_DATE: iso,
+        GIT_COMMITTER_DATE: iso,
+        GIT_AUTHOR_NAME: name,
+        GIT_AUTHOR_EMAIL: email,
+        GIT_COMMITTER_NAME: name,
+        GIT_COMMITTER_EMAIL: email,
+      },
+    });
+  const history = [
+    { name: "feature/onboarding", author: "이도윤", email: "doyoon@example.com", daysAgo: 5, message: "feat: 온보딩 화면 추가", file: "ui/views/OnboardingView.ts", body: 'export function renderOnboarding(): string {\n  return "onboarding";\n}\n' },
+    { name: "fix/api-timeout", author: "박준호", email: "junho@example.com", daysAgo: 3, message: "fix: API 타임아웃 10초로 조정", file: "src/api/client.ts", body: "export const TIMEOUT_MS = 10_000;\n" },
+    { name: "feature/settings-page", author: "김민지", email: "minji@example.com", daysAgo: 1, message: "feat: 설정 화면 골격", file: "ui/views/SettingsView.ts", body: 'export function renderSettings(): string {\n  return "settings";\n}\n' },
+  ];
+  for (const h of history) {
+    const worked = new Date(Date.now() - (h.daysAgo + 1) * 86400_000).toISOString();
+    const merged = new Date(Date.now() - h.daysAgo * 86400_000).toISOString();
+    gitAt(worked, h.author, h.email, "checkout", "-q", "-b", h.name, "main");
+    write(h.file, h.body);
+    gitAt(worked, h.author, h.email, "add", "-A");
+    gitAt(worked, h.author, h.email, "commit", "-qm", h.message);
+    gitAt(merged, "김민지", "minji@example.com", "checkout", "-q", "main");
+    gitAt(merged, "김민지", "minji@example.com", "merge", "-q", "--no-ff", "-m", `${h.name} 브렌치 병합`, h.name);
+    gitAt(merged, "김민지", "minji@example.com", "branch", "-q", "-D", h.name);
+  }
   git(REPO, "push", "-q", "-u", "origin", "main");
 
   // ── 팀원 3명이 각자 브랜치에서 작업하고 push ─────────────────────────────
@@ -343,4 +379,141 @@ if (serverUp && (usable.length > 0 || existsWithOtherPassword.length > 0)) {
   console.log("  ./.venv/bin/uvicorn app.main:app --port 8000");
   console.log("그리고 다시: pnpm seed:demo");
 }
+// ── 팀 알림 데모 ─────────────────────────────────────────────────────────────
+//
+// 알림은 "다른 기기의 push" 가 있어야 도착한다. 브라우저 하나로 보는 사람에게도
+// 실제 배달 경로(팀 서버 → 앱 수신함)를 보여 주기 위해:
+//   ① 이 앱(기기 토큰 peer_token)을 서버에 등록하고 "demo-app 팀" 프로젝트를 만들어
+//      demo-app 저장소와 연결한다 (repo_projects.json — 앱과 같은 파일).
+//   ② 가상 팀원 기기(~/gc-demo/teammate_token)를 만들어 같은 팀에 합류시킨다.
+//   ③ 팀원 기기가 병합 대기 브랜치 3개의 branch_push 알림을 보낸다
+//      (데모를 처음 만들 때, 또는 --notify 를 줬을 때).
+// 이후 `pnpm demo:push` 로 팀원의 새 push 를 언제든 흘려 넣을 수 있다.
+const DEMO_PROJECT_NAME = "demo-app 팀";
+const APP_TOKEN_FILE = join(CONFIG_DIR, "peer_token");
+const TEAMMATE_TOKEN_FILE = join(DEMO_ROOT, "teammate_token");
+const REPO_PROJECTS = join(CONFIG_DIR, "repo_projects.json");
+
+function loadOrCreateToken(file) {
+  if (existsSync(file)) {
+    const t = readFileSync(file, "utf8").trim();
+    if (t) return t;
+  }
+  const token = randomUUID() + randomUUID();
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, token);
+  return token;
+}
+
+async function api(token, method, path, body) {
+  const r = await fetch(`${BACKEND_URL}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  let json = null;
+  try {
+    json = await r.json();
+  } catch {
+    json = null;
+  }
+  return { ok: r.ok, status: r.status, json };
+}
+
+/** ui/lib/repoMatch.ts 의 normalizeRemoteUrl 과 같은 규칙 (로컬 경로 원격이면 .git 만 떨어진다). */
+function normalizeRemoteUrl(url) {
+  let s = url.trim();
+  const scheme = s.indexOf("://");
+  if (scheme >= 0) s = s.slice(scheme + 3);
+  const at = s.lastIndexOf("@");
+  if (at >= 0) s = s.slice(at + 1);
+  const colon = s.indexOf(":");
+  if (colon >= 0) {
+    const head = s.slice(colon + 1).split("/")[0] ?? "";
+    if (!/^[0-9]+$/.test(head)) s = s.slice(0, colon) + "/" + s.slice(colon + 1);
+  }
+  s = s.replace(/\/+$/, "");
+  if (s.endsWith(".git")) s = s.slice(0, -4);
+  s = s.replace(/\/+$/, "");
+  const slash = s.indexOf("/");
+  return slash >= 0 ? s.slice(0, slash).toLowerCase() + s.slice(slash) : s.toLowerCase();
+}
+
+if (serverUp) {
+  try {
+    // ① 앱 기기 + 프로젝트
+    const appToken = loadOrCreateToken(APP_TOKEN_FILE);
+    const dev = await api(appToken, "POST", "/devices/register", { name: "김민지 (미리보기)" });
+    if (!dev.ok) throw new Error(`기기 등록 실패 (${dev.status})`);
+    const cfg2 = loadConfig();
+    cfg2.peer = {
+      ...(cfg2.peer ?? {}),
+      backend_url: BACKEND_URL,
+      device_token: appToken,
+      device_id: dev.json.id,
+      device_name: cfg2.peer?.device_name || "김민지 (미리보기)",
+    };
+    saveConfig(cfg2);
+
+    const list = await api(appToken, "GET", "/projects");
+    let project = (list.json?.projects ?? []).find((p) => p.display_name === DEMO_PROJECT_NAME) ?? null;
+    let created = false;
+    if (!project) {
+      const made = await api(appToken, "POST", "/projects", { display_name: DEMO_PROJECT_NAME });
+      if (!made.ok) throw new Error(`팀 만들기 실패 (${made.status})`);
+      project = made.json;
+      created = true;
+    }
+    let links = {};
+    try {
+      links = JSON.parse(readFileSync(REPO_PROJECTS, "utf8"));
+    } catch {
+      links = {};
+    }
+    const repoKey = REPO; // 앱은 canonicalize 한 실제 경로를 열쇠로 쓴다 — 데모 경로에는 심볼릭 링크가 없다.
+    const linked = links[repoKey] ?? [];
+    if (!linked.includes(project.id)) links[repoKey] = [...linked, project.id];
+    writeFileSync(REPO_PROJECTS, JSON.stringify(links, null, 2));
+
+    // ② 팀원 기기
+    const mateToken = loadOrCreateToken(TEAMMATE_TOKEN_FILE);
+    const mate = await api(mateToken, "POST", "/devices/register", { name: "박준호 (데모 팀원)" });
+    if (!mate.ok) throw new Error(`팀원 기기 등록 실패 (${mate.status})`);
+    const joined = await api(mateToken, "POST", "/projects/join", { join_code: project.join_code });
+    if (!joined.ok && joined.status !== 409) throw new Error(`팀 합류 실패 (${joined.status})`);
+
+    // ③ 병합 대기 브랜치의 push 알림
+    const wantEvents = created || args.has("--notify") || !existsSync(join(DEMO_ROOT, ".notified"));
+    let sent = 0;
+    if (wantEvents) {
+      const refs = git(REPO, "for-each-ref", "refs/remotes/origin", "--format=%(refname:short)%09%(objectname)%09%(authorname)%09%(subject)")
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => l.split("\t"))
+        .filter(([name]) => name !== "origin/main" && name !== "origin/HEAD" && name !== "origin");
+      for (const [name, sha, author, subject] of refs) {
+        const branch = name.replace(/^origin\//, "");
+        const payload = JSON.stringify({
+          kind: "branch_push",
+          data: { author, message: subject, sha, repo_name: "demo-app", url: normalizeRemoteUrl(ORIGIN), branch },
+        });
+        const ev = await api(mateToken, "POST", "/events", {
+          project_id: project.id,
+          event_kind: "branch_push",
+          repo_name: "demo-app",
+          payload,
+        });
+        if (ev.ok) sent += 1;
+      }
+      writeFileSync(join(DEMO_ROOT, ".notified"), new Date().toISOString());
+    }
+    console.log("");
+    console.log(`팀 알림 데모: 프로젝트 "${DEMO_PROJECT_NAME}" (합류 코드 ${project.join_code}) — demo-app 저장소 연결됨`);
+    if (sent > 0) console.log(`  팀원 기기가 branch_push 알림 ${sent}건을 보냈습니다 — 앱이 5초 안에 받아 우측 하단에 띄웁니다.`);
+    console.log("  팀원의 새 push 를 흘려 넣으려면: pnpm demo:push   (알림을 다시 보내려면: pnpm seed:demo -- --notify)");
+  } catch (e) {
+    console.log(`\n⚠ 팀 알림 데모를 준비하지 못했습니다: ${e.message}`);
+  }
+}
+
 console.log("데모를 지우려면: node dev/seed-demo.mjs --clean");

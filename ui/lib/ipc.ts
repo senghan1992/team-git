@@ -118,6 +118,47 @@ export interface MergedRemoteBranch {
   unix_time: number;
 }
 
+/** 타임라인에 실리는 커밋 한 줄 — `date` 는 RFC3339 작성일. */
+export interface TimelineCommit {
+  sha: string;
+  subject: string;
+  author: string;
+  date: string;
+}
+
+/** base 로 들어온 병합 하나 — `date` 는 병합 커밋의 커밋일(합류 지점). */
+export interface TimelineMerge {
+  sha: string;
+  date: string;
+  author: string;
+  subject: string;
+  /** 병합 커밋 제목에서 복원한 브랜치 이름 (컨벤션을 못 읽으면 null). */
+  branch: string | null;
+  commits: TimelineCommit[];
+  files: string[];
+  /** 들어온 커밋 중 가장 이른 작성일 — 레인의 시작점. */
+  first_commit_date: string | null;
+}
+
+/** 아직 base 에 병합되지 않은 원격 브랜치. */
+export interface TimelineOpenBranch {
+  name: string;
+  commits: TimelineCommit[];
+  files: string[];
+  first_date: string;
+  last_date: string;
+}
+
+/** 병합 탭 상단의 "최근 N일 병합 흐름" 데이터. */
+export interface MergeTimeline {
+  base: string;
+  since: string;
+  until: string;
+  merges: TimelineMerge[];
+  direct: TimelineCommit[];
+  open: TimelineOpenBranch[];
+}
+
 export interface MergeOutcome {
   ok: boolean;
   conflicted: boolean;
@@ -413,6 +454,8 @@ export const ipc = {
     invoke<number>("base_unpushed_count", { repoId, base }),
   listMergedRemoteBranches: (repoId: Uuid, base: string) =>
     invoke<MergedRemoteBranch[]>("list_merged_remote_branches", { repoId, base }),
+  mergeTimeline: (repoId: Uuid, base: string, days: number) =>
+    invoke<MergeTimeline>("merge_timeline", { repoId, base, days }),
   deleteRemoteBranch: (repoId: Uuid, base: string, branch: string) =>
     invoke<void>("delete_remote_branch", { repoId, base, branch }),
   branchFileDiff: (repoId: Uuid, base: string, branchRef: string, path: string) =>

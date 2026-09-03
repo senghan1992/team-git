@@ -21,6 +21,7 @@ pub mod ops;
 pub mod push;
 pub mod status;
 pub mod sync;
+pub mod timeline;
 
 pub use branches::{list_branches, list_branches_at, Branch};
 pub use fetch::fetch_origin;

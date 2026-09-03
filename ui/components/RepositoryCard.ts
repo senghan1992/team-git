@@ -174,35 +174,43 @@ export function renderRepoCard(
     }
   }
 
-  // ── 로드: 상태 → (관리자일 때만) 병합 대기 수 ────────────────────────────
+  // ── 로드: 상태 + 팀 규칙(동시에) → 화면 먼저 → (관리자일 때만) 병합 대기 수 ──
   //
-  // 병합 대기 조회는 원격 ref를 훑기 때문에 SSH에서 비싸다. 그래서 내가
-  // 관리자일 때만 물어보고, 실패하면 조용히 넘긴다 (카드가 죽지 않게).
+  // 병합 대기 조회는 원격 ref를 브랜치마다 훑기 때문에 SSH 저장소에서는
+  // 수 초가 걸린다. 예전에는 상태·설정·병합 대기를 차례로 기다린 뒤에야
+  // 첫 그림을 그려서, 느린 저장소 하나가 "확인 중…"을 10초 넘게 붙잡았다.
+  // 지금은 상태와 설정을 동시에 묻고 도착하는 즉시 그리고, 병합 대기 수는
+  // 그 뒤에 따로 채운다 (실패하면 조용히 넘긴다 — 카드가 죽지 않게).
   async function load() {
-    let status: WorkingTreeStatus | null = null;
-    try {
-      status = await ipc.status(repo.id);
-    } catch {
-      status = null;
-    }
-    let cfg: ProjectConfigResult | null = null;
-    try {
-      cfg = await ipc.projectConfigGet(repo.id);
-    } catch {
-      cfg = null;
-    }
+    const [status, cfg] = await Promise.all([
+      ipc.status(repo.id).catch((): WorkingTreeStatus | null => null),
+      ipc.projectConfigGet(repo.id).catch((): ProjectConfigResult | null => null),
+    ]);
     const me = getSession();
     const isManager = isMergeManagerFor(cfg, me?.email ?? null, baseBranch);
+    const wantPending = isManager && !!status;
+
+    paintPills(status, null);
+    if (wantPending) {
+      const checking = document.createElement("span");
+      checking.className = "gc-badge gc-badge--muted inline-flex items-center gap-1";
+      checking.appendChild(spinner(12));
+      checking.appendChild(document.createTextNode("병합 대기 확인 중…"));
+      pills.appendChild(checking);
+    }
+    paintTodo(
+      computeNextAction({ status, pendingCount: null, isMergeManager: isManager, baseBranch }),
+      status,
+    );
+    if (!wantPending) return;
 
     let pending: number | null = null;
-    if (isManager && status) {
-      try {
-        pending = (await ipc.listPendingBranches(repo.id, baseBranch)).length;
-      } catch {
-        pending = null;
-      }
+    try {
+      pending = (await ipc.listPendingBranches(repo.id, baseBranch)).length;
+    } catch {
+      pending = null;
     }
-
+    if (!card.isConnected) return;
     paintPills(status, pending);
     paintTodo(
       computeNextAction({ status, pendingCount: pending, isMergeManager: isManager, baseBranch }),
