@@ -46,9 +46,24 @@ git clone https://github.com/senghan1992/team-git.git
 ### 0-1. 팀 서버 띄우기 — 팀에서 한 사람만, 한 번만
 
 알림(팀원 push → 관리자에게, 병합 push → 전원에게 "동기화하세요")과 계정은
-작은 팀 서버가 중계합니다. **팀원 모두가 접속할 수 있는 컴퓨터** 한 대(사무실
-서버, 늘 켜 두는 PC, 작은 VM)에서 아래를 그대로 실행하면 됩니다. Python 3.11
-이상만 있으면 되고, Rust나 Node는 필요 없습니다.
+작은 팀 서버(FastAPI)가 중계합니다. **팀원 모두가 접속할 수 있는 컴퓨터** 한
+대(사무실 서버, 늘 켜 두는 PC, 작은 VM)에서 띄웁니다. 두 방법 중 하나만 고르세요.
+
+**방법 A — Docker (권장, 세 줄)**. [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+이나 docker 엔진만 있으면 됩니다.
+
+```bash
+git clone https://github.com/senghan1992/team-git.git
+cd team-git
+docker compose up -d
+```
+
+처음 한 번은 이미지를 빌드하느라 1~2분 걸립니다. 계정·팀·알림은
+`team-git/data/gc_peer.db` 파일 하나에 남고, 컴퓨터를 재시작해도 서버가 자동으로
+다시 뜹니다. 로그는 `docker compose logs -f`, 내리기는 `docker compose down`(데이터는
+남음), 다른 포트는 `GC_PORT=9000 docker compose up -d`.
+
+**방법 B — Docker 없이 (Python 3.11 이상)**. Rust나 Node는 필요 없습니다.
 
 Linux / macOS:
 
@@ -75,10 +90,10 @@ py -3 -m venv .venv; .\.venv\Scripts\pip install -e ".[dev]"
 2. 방화벽에서 **8000 포트를 열고**, 팀원들에게 `http://서버IP:8000` 을 알려
    줍니다. 각자 앱의 로그인 화면 **서버 주소**에 넣고 **연결 확인** → "서버에
    연결됩니다"가 나오면 가입·로그인합니다.
-3. 터미널을 닫아도 살아 있게 하려면 Linux는
+3. (방법 B만) 터미널을 닫아도 살아 있게 하려면 Linux는
    `nohup ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > server.log 2>&1 &`,
    Windows는 창을 최소화해 두거나 **작업 스케줄러**에 "로그온 시 실행"으로
-   등록합니다.
+   등록합니다. Docker는 이미 자동 재시작으로 떠 있습니다.
 4. **팀 만들기(관리자) → 참여 코드로 합류(팀원)** — 앱의 사이드바 **알림 →
    알림 설정**에서 관리자가 **팀 만들기**를 누르고 나온 **참여 코드**를 팀원에게
    알려 줍니다. 팀원은 같은 화면에서 **참여 코드로 합류**합니다. 그리고 각자
@@ -87,8 +102,9 @@ py -3 -m venv .venv; .\.venv\Scripts\pip install -e ".[dev]"
 
 알아 둘 점:
 
-- 계정·팀·알림은 `backend/gc_peer.db` **SQLite 한 파일**에 저장됩니다. 백업은 이
-  파일을 복사하면 되고, 지우면 계정부터 다시 만들어야 합니다.
+- 계정·팀·알림은 **SQLite 한 파일**에 저장됩니다 — Docker는 `team-git/data/gc_peer.db`,
+  Python 직접 실행은 `backend/gc_peer.db`. 백업은 이 파일을 복사하면 되고, 지우면
+  계정부터 다시 만들어야 합니다.
 - 서버가 꺼져 있어도 팀원들의 **커밋·푸시·병합·충돌 해결은 전부 정상**입니다.
   알림만 각자 컴퓨터에 보관되다가 서버가 살아나면 자동으로 재전송됩니다.
 - 사무실 밖(인터넷)에서 접속하게 한다면 nginx/Caddy 같은 **HTTPS 리버스

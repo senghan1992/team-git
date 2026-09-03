@@ -162,7 +162,9 @@ git-program/
 │   │   ├── git/{mod,ops,branches,log,status,merge,auto,sync,fetch,push,timeline}.rs
 │   │   └── notify/{mod,store,webhook}.rs
 │   └── tests/*.rs
+├── docker-compose.yml               # `docker compose up -d` — team server on :8000, data in ./data
 ├── backend/                         # team backend (FastAPI)
+│   ├── Dockerfile                   # python:3.11-slim + uvicorn, SQLite at /data/gc_peer.db
 │   ├── app/
 │   │   ├── models.py                # User, UserSession, Device, Project, …
 │   │   ├── auth.py                  # PBKDF2 password hashing + token hashing

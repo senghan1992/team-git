@@ -1,0 +1,24 @@
+# Git Companion 팀 서버 — 팀에서 한 사람이, 모두가 접속할 수 있는 컴퓨터에서 한 번만.
+#
+#   docker compose up -d                 # 띄우기 (처음엔 이미지 빌드 1~2분)
+#   docker compose logs -f team-server   # 로그
+#   docker compose down                  # 내리기 — ./data 의 계정·팀·알림은 그대로 남는다
+#   GC_PORT=9000 docker compose up -d    # 다른 포트로
+#
+# 확인: 브라우저로 http://<서버IP>:8000/healthz → {"status":"ok"}
+# 팀원은 앱 로그인 화면의 "서버 주소"에 http://<서버IP>:8000 을 넣는다.
+#
+# 백업: ./data/gc_peer.db 파일 하나를 복사하면 끝이다.
+services:
+  team-server:
+    build: ./backend
+    image: git-companion-team-server:latest
+    container_name: git-companion-team-server
+    ports:
+      - "${GC_PORT:-8000}:8000"
+    volumes:
+      # 계정·팀·알림이 든 SQLite 파일. 컨테이너를 지우거나 새로 빌드해도 남는다.
+      - ./data:/data
+    environment:
+      - GC_PEER_DB_URL=sqlite+pysqlite:////data/gc_peer.db
+    restart: unless-stopped

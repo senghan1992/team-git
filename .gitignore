@@ -15,6 +15,12 @@ __pycache__/
 *.pyc
 .venv/
 .pytest_cache/
+*.egg-info/
+
+# 팀 서버 데이터 (계정·팀·알림) — 절대 저장소에 올리지 않는다
+backend/*.db
+backend/*.db-journal
+data/
 
 # Editor / OS
 .DS_Store

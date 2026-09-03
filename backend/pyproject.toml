@@ -12,6 +12,15 @@ dependencies = [
     "python-multipart>=0.0.20",
 ]
 
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+# 패키지는 `app` 하나뿐이다 — 자동 탐색에 맡기면 옆에 생긴 폴더(빌드 산출물 등)
+# 때문에 "Multiple top-level packages" 로 설치가 멈출 수 있어 명시한다.
+[tool.setuptools]
+packages = ["app", "app.routes"]
+
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
