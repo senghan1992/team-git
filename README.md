@@ -35,19 +35,62 @@ git clone https://github.com/senghan1992/team-git.git
 ![첫 실행 화면](docs/images/01-welcome.png)
 
 **저장소 열고 시작하기**를 누르면 커밋·푸시·병합 전부 바로 쓸 수 있습니다.
-로그인은 **팀 알림**(push 알림, 동기화 알림)에만 필요하니, 팀으로 쓸 거라면
-관리자가 서버를 띄운 뒤 각자 **계정 만들기**로 가입하세요:
+로그인은 **팀 알림**(push 알림, 동기화 알림)에만 필요합니다. 팀으로 쓸 거라면
+아래 **0-1. 팀 서버 띄우기**를 한 사람이 끝낸 뒤, 각자 **계정 만들기**로
+가입하세요. 로그인 창의 **서버 주소**에 그 컴퓨터 주소(`http://서버IP:8000`)를
+넣으면 **연결 확인**이 바로 됩니다. **이메일이 곧 팀 안의 신분**입니다 — 병합
+관리자 지정이 이메일로 매칭되므로 팀에서 쓰는 이메일로 가입하세요.
+
+### 0-1. 팀 서버 띄우기 — 팀에서 한 사람만, 한 번만
+
+알림(팀원 push → 관리자에게, 병합 push → 전원에게 "동기화하세요")과 계정은
+작은 팀 서버가 중계합니다. **팀원 모두가 접속할 수 있는 컴퓨터** 한 대(사무실
+서버, 늘 켜 두는 PC, 작은 VM)에서 아래를 그대로 실행하면 됩니다. Python 3.11
+이상만 있으면 되고, Rust나 Node는 필요 없습니다.
+
+Linux / macOS:
 
 ```bash
-# 팀에서 한 명이, 모두가 접속할 수 있는 컴퓨터에서 (한 번만)
+git clone https://github.com/senghan1992/team-git.git
 cd team-git/backend
 python3 -m venv .venv && ./.venv/bin/pip install -e ".[dev]"
 ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-로그인 창의 **서버 주소**에 그 컴퓨터 주소(`http://서버IP:8000`)를 넣습니다.
-**이메일이 곧 팀 안의 신분**입니다 — 병합 관리자 지정이 이메일로 매칭되므로
-팀에서 쓰는 이메일로 가입하세요.
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/senghan1992/team-git.git
+cd team-git\backend
+py -3 -m venv .venv; .\.venv\Scripts\pip install -e ".[dev]"
+.\.venv\Scripts\uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+그다음 확인할 것:
+
+1. 같은 컴퓨터에서 브라우저로 `http://127.0.0.1:8000/healthz` 를 열어
+   `{"status":"ok"}` 가 보이면 서버는 정상입니다.
+2. 방화벽에서 **8000 포트를 열고**, 팀원들에게 `http://서버IP:8000` 을 알려
+   줍니다. 각자 앱의 로그인 화면 **서버 주소**에 넣고 **연결 확인** → "서버에
+   연결됩니다"가 나오면 가입·로그인합니다.
+3. 터미널을 닫아도 살아 있게 하려면 Linux는
+   `nohup ./.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 > server.log 2>&1 &`,
+   Windows는 창을 최소화해 두거나 **작업 스케줄러**에 "로그온 시 실행"으로
+   등록합니다.
+4. **팀 만들기(관리자) → 참여 코드로 합류(팀원)** — 앱의 사이드바 **알림 →
+   알림 설정**에서 관리자가 **팀 만들기**를 누르고 나온 **참여 코드**를 팀원에게
+   알려 줍니다. 팀원은 같은 화면에서 **참여 코드로 합류**합니다. 그리고 각자
+   **알림 받을 저장소**에서 등록한 저장소를 체크합니다. 이 연결이 있어야 그
+   저장소의 push 알림이 팀에 흐릅니다 (한 번만 하면 됩니다).
+
+알아 둘 점:
+
+- 계정·팀·알림은 `backend/gc_peer.db` **SQLite 한 파일**에 저장됩니다. 백업은 이
+  파일을 복사하면 되고, 지우면 계정부터 다시 만들어야 합니다.
+- 서버가 꺼져 있어도 팀원들의 **커밋·푸시·병합·충돌 해결은 전부 정상**입니다.
+  알림만 각자 컴퓨터에 보관되다가 서버가 살아나면 자동으로 재전송됩니다.
+- 사무실 밖(인터넷)에서 접속하게 한다면 nginx/Caddy 같은 **HTTPS 리버스
+  프록시** 뒤에 두세요 — 로그인 토큰이 그대로 오가기 때문입니다.
 
 ### 1. 관리자가 한 번만 — 저장소 등록 + 팀 규칙
 
@@ -74,15 +117,21 @@ python3 -m venv .venv && ./.venv/bin/pip install -e ".[dev]"
 
 ### 3. 관리자의 하루 — 알림 받고 병합
 
-팀원이 푸시하면 관리자의 홈 카드에 **"N건 병합하기"**로 쌓입니다.
+팀원이 푸시하면 관리자가 **어느 화면에 있든** 오른쪽 아래에 "○○ 브랜치가
+병합을 기다립니다" 알림이 뜨고(**병합하기** 버튼으로 바로 이동), 사이드바
+**알림** 배지에 읽지 않은 수가 남습니다. 홈 카드에는 **"N건 병합하기"**로
+쌓입니다. 알림 탭에서는 카드별 **읽음 표시**와 **모두 읽음**으로 정리합니다.
 
-![홈 — 다음 할 일](docs/images/02-home.png)
+![홈 — 다음 할 일과 push 알림](docs/images/02-home.png)
 
-병합 탭의 **변경 지도**가 "누가 어느 파일을 고치고 있는지"를 파일 기준으로
-보여 주고, 같은 파일을 여러 명이 고치면 **충돌이 덜 나는 병합 순서까지
-제안**합니다. 파일 칩을 누르면 실제 변경(diff)을 보고 나서 병합할 수 있습니다.
+병합 탭 맨 위의 **최근 7일 병합 흐름**은 어떤 브랜치가 언제 작업돼 언제 main에
+합쳐졌는지 시간축으로 보여 줍니다(아직 병합되지 않은 브랜치는 점선, 레인을
+누르면 커밋·파일 목록). 그 아래 **변경 지도**가 "누가 어느 파일을 고치고
+있는지"를 파일 기준으로 보여 주고, 같은 파일을 여러 명이 고치면 **충돌이 덜
+나는 병합 순서까지 제안**합니다. 파일 칩을 누르면 실제 변경(diff)을 보고 나서
+병합할 수 있습니다.
 
-![병합 탭 — 변경 지도와 권장 순서](docs/images/03-merge.png)
+![병합 탭 — 7일 병합 흐름, 변경 지도와 권장 순서](docs/images/03-merge.png)
 
 **main(으)로 병합**을 누르면 병합→push→팀원 전원에게 "동기화하세요" 알림까지
 한 번에 진행됩니다.
@@ -141,13 +190,8 @@ python3 -m venv .venv && ./.venv/bin/pip install -e ".[dev]"
   로그인이 유지되고, 새 로그인·회원가입·프로필 변경은 서버가 필요합니다.
 - 마이페이지(사이드바의 내 이름) — 프로필 수정, 비밀번호 변경, 로그아웃,
   다른 계정으로 로그인, 회원 탈퇴.
-- 서버 주소는 로그인 화면의 **서버 주소**에서 정합니다.
-
-```bash
-cd backend
-python3.11 -m venv .venv && ./.venv/bin/pip install -e ".[dev]"
-./.venv/bin/uvicorn app.main:app --port 8000
-```
+- 서버 주소는 로그인 화면의 **서버 주소**에서 정합니다. 서버를 띄우는 방법은
+  위 **0-1. 팀 서버 띄우기**에 있습니다.
 
 ## 그 밖의 기능
 
@@ -326,168 +370,8 @@ pnpm dev:web      # 접속 주소를 출력합니다
 pnpm demo:push    # (보면서) 팀원이 지금 push 하는 상황 → 우측 하단 알림
 ```
 
-## First-run flow
+## 개발자 문서
 
-1. Launch the app — the Home view appears.
-2. **프로젝트 추가** — enter the repository path. Optionally, fill in SSH host,
-   user, and key path if the repo is accessed over SSH. If you authenticate
-   with a **user + password** instead of a key, leave the key path empty and
-   type the password into **SSH 비밀번호** (this needs `sshpass` on the
-   machine; the app tells you when it is missing). Password auth is also
-   available from **설정 → SSH 연결 테스트**. For SSH repos you can
-   also click **SSH로 찾아보기**: the app connects over SSH and shows a remote
-   directory browser (breadcrumb path, up-navigation, hidden/git folders, a
-   "git 저장소" badge when the current path is inside a work tree) so you can
-   walk to the project instead of typing its path. **이 경로 사용** fills the
-   path field with the resolved absolute remote path.
-3. Click **등록** — Git Companion pings the remote, reads the remote URL and
-   current branch, then saves the repository.
-4. **브랜치 선택** — pick the working branch from the dropdown.
-5. The repo card on Home now shows **다음 할 일** — press it and the app takes
-   you to the right tab (resolve conflicts → merge → commit → push → sync).
-6. Optional but recommended for teams: open the repo's **설정** tab and set the
-   merge target branch(es) and the per-branch merge manager. It is committed
-   into the repo as `.gpconfig`, so everyone sees the same rules.
-7. Optional: **설정 → AI 자동 병합** — save the resolver prompt *before* you
-   need it, and turn on "충돌이 나면 곧바로 자동 해결".
-
-## Architecture
-
-- **Rust core (`src-tauri/`)** — Tauri commands; git CLI wrapper via `Target`
-  enum that routes to either local git or `ssh user@host git -C /path`. SSH
-  argv is always passed as separate arguments, never as a shell string.
-- **SSH target** — `git::Target::Local(PathBuf)` or
-  `git::Target::Ssh { user, host, key, password, path }`. Every git op takes
-  `&Target`. Auth: SSH key (`-i`) or user/password via `sshpass -e` (the
-  password travels in the `SSHPASS` env var, never on the command line).
-  Known-host checking is `StrictHostKeyChecking=accept-new` in both modes
-  (`BatchMode=yes` for keys): the first connection to a host records its key
-  in `~/.ssh/known_hosts` (TOFU), and every later connection verifies the
-  key strictly, so a changed server key still fails loudly.
-- **Auth fallback** — when both a key path and a password are set, the app
-  tries the password first and falls back to the key if the server rejects
-  it (e.g. Ubuntu's default `PermitRootLogin prohibit-password` blocks root
-  password logins while still accepting keys). Password auth never puts the
-  password on the command line: it is passed via the `SSHPASS` env var to
-  `sshpass -e` (`PreferredAuthentications=password`, `PubkeyAuthentication=no`,
-  `NumberOfPasswordPrompts=1`).
-- **UI (`ui/`)** — Vite + TypeScript + Tailwind v4, no framework. Views: Home
-  (repo cards with the suggested next action), Repo (work / merge / project
-  config tabs), Team (inbox), Settings (SSH profile, sub-tool launcher, AI
-  auto-merge, push credentials). The "next action" rule lives in
-  `ui/components/nextAction.ts` as a pure function; the merge-time change map
-  in `ui/components/ChangeMap.ts`.
-- **pre-push hook** — embedded in the binary via `include_str!`, installed to
-  `<config_dir>/com.gitcompanion.app/hooks/pre-push`, symlinked into each
-  registered repo's `.git/hooks/`, and re-installed on every app launch so a
-  changed template lands without a manual step. Fires `git-companion hook emit`
-  for every pushed ref; the binary POSTs the event to the team backend via the
-  fan-out API. The shell script carries no branch policy — `hook emit` reads
-  `.gpconfig` and decides whether the pushed branch is a merge target
-  (`main_push`, notify everyone) or a work branch (`branch_push`, notify the
-  merge manager). See `docs/HOOKS.md`.
-- **Team backend** (`backend/`) — FastAPI + SQLAlchemy over SQLite. Owns the
-  `users` table (login accounts; PBKDF2-hashed passwords, revocable session
-  tokens in `user_sessions`) and the notification fan-out. `/auth/*` handles
-  register, login, profile, password, logout, delete, and teammate lookup.
-- **Accounts in the app** — `src-tauri/src/accounts.rs` talks to `/auth/*` and
-  caches only the signed-in user + token in `config.json` (`session`), so the
-  app stays signed in offline. It never stores a password or password hash.
-
-## Security notes
-
-- **Login passwords never reach this app.** They are sent once to the team
-  server over the wire and stored there as PBKDF2-HMAC-SHA256 (16-byte salt,
-  210k iterations). `config.json` holds a revocable session token, not a
-  password or its hash. Run the backend over HTTPS in production — the token
-  is a bearer credential.
-- SSH private keys, SSH passwords, and SSH profile settings are stored in
-  plaintext in `~/.config/com.gitcompanion.app/config.json`. Store only key
-  files with restricted permissions (`chmod 600`); prefer SSH keys over
-  passwords where possible.
-- The `tauri.conf.json` CSP restricts `script-src` to `'self'`.
-- All team backend communication is over HTTPS in production.
-
-## Testing
-
-```bash
-# Rust — git ops, config schema, hook emission, merge/auto-merge, AI transport
-cargo test --manifest-path src-tauri/Cargo.toml
-
-# Frontend — pure logic (no DOM): conflict parser, commit-graph lanes,
-#            change map, next-action priority
-pnpm test:ui
-
-# Type check only
-pnpm typecheck
-
-# 브라우저에서 눌러 보며 확인 (docs/PREVIEW.md)
-pnpm seed:demo && pnpm dev:web
-
-# Team backend (계정·알림) — 33 tests
-cd backend && ./.venv/bin/python -m pytest -q
-```
-
-`pnpm test:ui` bundles every `ui/**/*.test.ts` with esbuild and runs it under
-node — see `dev/run-ui-tests.mjs`. The tests use plain assertions, so no test
-framework is in the dependency tree.
-
-> Building the Rust crate needs the WebKitGTK development headers
-> (`javascriptcoregtk-4.1`); see **System dependencies** above. `cargo test`
-> cannot link without them.
-
-## Layout
-
-```
-git-program/
-├── Cargo.toml                       # workspace root
-├── package.json                     # ui deps
-├── vite.config.ts
-├── tsconfig.json
-├── index.html
-├── ui/                              # frontend sources
-│   ├── main.ts
-│   ├── lib/{ipc,format,app,session,sshTest}.ts
-│   ├── components/{Sidebar,RepositoryCard,nextAction,ChangeMap,
-│   │              MergeCenter,ProjectConfigPanel,TeamInbox,TeamPanel,
-│   │              StatusTable,GitGraph,conflictParser,Modal,Toast}.ts
-│   ├── views/{HomeView,RepoView,SettingsView}.ts
-│   └── styles/{tokens,app}.css
-├── dev/                             # browser preview + tooling
-│   ├── git-bridge.ts                # Vite plugin: real git behind the app's IPC
-│   ├── serve-web.mjs                # `pnpm dev:web` — vite behind a proxy path
-│   ├── seed-demo.mjs                # `pnpm seed:demo` — demo repo + branches
-│   └── run-ui-tests.mjs             # `pnpm test:ui`
-├── docs/{PREVIEW,WORKFLOW,HOOKS,PEER}.md
-├── src-tauri/
-│   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   ├── build.rs
-│   ├── capabilities/main.json
-│   ├── icons/
-│   ├── templates/pre-push
-│   ├── src/
-│   │   ├── main.rs                  # GUI launcher + `hook emit` subcommand
-│   │   ├── lib.rs                   # tauri builder + invoke_handler
-│   │   ├── error.rs
-│   │   ├── config_store.rs          # Repository, SshProfile, AiConfig,
-│   │   │                             # ExternalTool, Account, AppSettings
-│   │   ├── pre_push_hook.rs
-│   │   ├── accounts.rs               # /auth/* client (login, profile, search)
-│   │   ├── gpconfig.rs               # .gpconfig: merge targets + managers
-│   │   ├── ai.rs                     # resolver prompt + OpenAI-compatible call
-│   │   ├── commands/{mod,repo,git,auto,config,project,account,
-│   │   │            external,peer,ai}.rs
-│   │   ├── git/{mod,ops,branches,log,status,merge,auto,sync,fetch,push}.rs
-│   │   └── notify/{mod,store,webhook}.rs
-│   └── tests/*.rs
-├── backend/                         # team backend (FastAPI)
-│   ├── app/
-│   │   ├── models.py                # User, UserSession, Device, Project, …
-│   │   ├── auth.py                  # PBKDF2 password hashing + token hashing
-│   │   ├── routes/{auth,events,members,projects,devices}.py
-│   │   ├── models.py
-│   │   └── schemas.py
-│   └── tests/
-└── PRODUCT.md / DESIGN.md           # product brief + design system
-```
+코드 구조(Architecture), 보안 메모, 테스트 실행, 디렉터리 배치 등 **개발자용 내용은**
+**[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** 로 옮겼습니다. 앱을 쓰는 사람은 여기까지만
+읽으면 됩니다.
