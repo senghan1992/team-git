@@ -286,12 +286,12 @@ fn parse_probe_output(stdout: &str) -> Result<(String, String, String), String> 
 
 pub fn fetch_ed25519_fingerprint(host: &str, port: u16) -> String {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     if host.is_empty() {
         return String::new();
     }
-    let scan_out = match Command::new("ssh-keyscan")
+    let scan_out = match crate::git::new_command("ssh-keyscan")
         .arg("-p")
         .arg(port.to_string())
         .arg("-T")
@@ -304,7 +304,7 @@ pub fn fetch_ed25519_fingerprint(host: &str, port: u16) -> String {
         Ok(o) => o,
         Err(_) => return String::new(),
     };
-    let mut keygen = match Command::new("ssh-keygen")
+    let mut keygen = match crate::git::new_command("ssh-keygen")
         .arg("-lf")
         .arg("-")
         .stdin(Stdio::piped())

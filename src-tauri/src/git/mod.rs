@@ -9,9 +9,32 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AppError, AppResult};
+
+/// Windows `CREATE_NO_WINDOW` — 콘솔 프로그램(git·ssh·sshpass·ssh-keyscan…)을
+/// spawn할 때 콘솔 창을 만들지 않는다. 이 앱은 GUI 서브시스템(`windows_subsystem
+/// = "windows"`)이라 부모에게 상속할 콘솔이 없어서, 플래그 없이는 SSH 연결·
+/// 저장소 작업마다 검은 cmd 창이 깞박였다 사라졌다 한다. 창만 없을 뿐
+/// stdout/stderr 파이프는 그대로 동작하므로 출력 수집·타임아웃 로직은
+/// 영향을 받지 않는다.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 모든 자식 프로세스는 이 생성자로 만든다 — Windows에서는 자동으로
+/// `CREATE_NO_WINDOW`가 걸린다. (외부 도구 실행은 예외: 사용자가 연 프로그램의
+/// 창이니 보여야 한다.)
+pub fn new_command(program: &str) -> Command {
+    #[allow(unused_mut)] // Windows에서만 creation_flags 호출로 mut가 필요하다.
+    let mut cmd = Command::new(program);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
 
 pub mod auto;
 pub mod branches;
@@ -306,7 +329,7 @@ pub fn build_ssh_cmd_timeout(
     let password_auth = !password.is_empty();
     let mut cmd = if password_auth {
         if sshpass_available() {
-            let mut c = std::process::Command::new("sshpass");
+            let mut c = new_command("sshpass");
             c.arg("-e").arg("ssh");
             c.arg("-o")
                 .arg("StrictHostKeyChecking=accept-new")
@@ -322,7 +345,7 @@ pub fn build_ssh_cmd_timeout(
             // sshpass 가 없는 환경 (Windows, 기본 macOS): ssh 자체의
             // SSH_ASKPASS 헬퍼로 비밀번호를 넘긴다. 헬퍼는 이 앱의 실행
             // 파일(askpass 서브커맨드) — 별도 배포 파일이 필요 없다.
-            let mut c = std::process::Command::new("ssh");
+            let mut c = new_command("ssh");
             c.arg("-o")
                 .arg("StrictHostKeyChecking=accept-new")
                 .arg("-o")
@@ -337,7 +360,7 @@ pub fn build_ssh_cmd_timeout(
             c
         }
     } else {
-        let mut c = std::process::Command::new("ssh");
+        let mut c = new_command("ssh");
         if !key.is_empty() {
             c.arg("-i").arg(key);
         }
@@ -368,7 +391,7 @@ pub fn build_ssh_cmd_timeout(
 pub fn sshpass_available() -> bool {
     static OK: OnceLock<bool> = OnceLock::new();
     *OK.get_or_init(|| {
-        std::process::Command::new("sshpass")
+        new_command("sshpass")
             .arg("-V")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -570,7 +593,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut cmd = Command::new("git");
+    let mut cmd = new_command("git");
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -602,7 +625,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut cmd = Command::new("git");
+    let mut cmd = new_command("git");
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }

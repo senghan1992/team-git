@@ -1,7 +1,6 @@
 //! Tauri commands for repository management.
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::process::Command;
 use uuid::Uuid;
 
 use crate::commands::config::fetch_ed25519_fingerprint;
@@ -218,7 +217,7 @@ fn git_over_ssh(
 
 /// Run a git command locally.
 fn git_local(repo_path: &str, git_cmd: &[&str]) -> AppResult<std::process::Output> {
-    let mut c = Command::new("git");
+    let mut c = crate::git::new_command("git");
     c.arg("-C").arg(repo_path);
     c.args(git_cmd);
     Ok(c.output()?)

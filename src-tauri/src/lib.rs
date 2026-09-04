@@ -53,7 +53,7 @@ pub fn run() {
                     .ok()
                     .and_then(|p| p.parent().map(|p| p.join("gc-peer-listener")))
                     .unwrap_or_else(|| std::path::PathBuf::from("gc-peer-listener"));
-                let child = std::process::Command::new(&sidecar_path)
+                let child = crate::git::new_command(&sidecar_path.to_string_lossy())
                     .env(
                         "GC_PEER_DB",
                         dir.join("inbox.db").to_string_lossy().to_string(),
