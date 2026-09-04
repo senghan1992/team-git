@@ -1,0 +1,8 @@
+# pnpm 10+ 는 package.json 의 `pnpm` 필드를 더 이상 읽지 않습니다
+# (https://pnpm.io/settings) — 워크스페이스 설정은 이 파일로 옮겼습니다.
+# esbuild 의 설치 스크립트(postinstall) 실행을 허용합니다.
+# pnpm 10 은 onlyBuiltDependencies 를, pnpm 11 은 allowBuilds 를 읽습니다.
+onlyBuiltDependencies:
+  - esbuild
+allowBuilds:
+  esbuild: true
