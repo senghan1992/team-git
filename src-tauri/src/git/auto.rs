@@ -276,13 +276,16 @@ where
             let branch = branch.unwrap_or_else(|_| "(병합 대상)".to_string());
             // 팀 컨벤션 커밋 메시지 — "<브랜치> 브렌치 병합" (aos-git과 동일한 문구).
             let short = branch.strip_prefix("origin/").unwrap_or(&branch);
-            let commit_msg = format!("{short} 브렌치 병합");
+            let commit_title = format!("{short} 브렌치 병합");
+            // 무엇이 충돌했고 어떻게 풀었는지 본문에 남긴다 — 나중에 git log로
+            // "이 코드가 왜 이 모양인가"를 추적할 수 있게 하는 게 목적이다.
+            let commit_msg = auto_commit_message(&commit_title, &resolved);
             match merge::complete_merge(target, Some(&commit_msg)) {
                 Ok(out) if out.ok => {
                     committed = true;
                     message = format!(
-                        "충돌 {total}개를 자동 해결하고 ‘{}’로 커밋했습니다.",
-                        commit_msg
+                        "충돌 {total}개를 자동 해결하고 '{}'로 커밋했습니다.",
+                        commit_title
                     );
                 }
                 Ok(out) => {
@@ -338,6 +341,32 @@ where
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// 자동 해결 병합의 커밋 메시지 — 제목은 팀 컨벤션("<브랜치> 브렌치 병합"),
+/// 본문에 충돌 파일과 채택한 해결 방안을 파일별로 기록한다. "무슨 충돌이
+/// 났고 어떻게 고쳤는지"가 git log 한 번에 보이게 하는 게 목적이다.
+fn auto_commit_message(title: &str, resolved: &[FileResolution]) -> String {
+    if resolved.is_empty() {
+        return title.to_string();
+    }
+    let mut body = String::from("충돌이 난 파일을 자동으로 해결했습니다:");
+    for r in resolved {
+        let how = match r.method.as_str() {
+            "ai" => "AI가 양쪽 수정을 모두 반영해 병합",
+            "ours" => "나의 것(현재 브랜치)으로 해결",
+            "theirs" => "상대 것(가져온 브랜치)으로 해결",
+            other => other,
+        };
+        body.push_str(&format!("\n- {} — {}", r.path, how));
+        if let Some(note) = &r.note {
+            let note = note.trim();
+            if !note.is_empty() {
+                body.push_str(&format!(" ({note})"));
+            }
+        }
+    }
+    format!("{title}\n\n{body}")
+}
 
 /// 한쪽만 base에서 바뀐 충돌이면 그 바뀐 쪽을 돌려준다.
 ///
@@ -645,6 +674,29 @@ mod tests {
         assert_eq!("ours".parse::<SideChoice>().unwrap(), SideChoice::Ours);
         assert_eq!("theirs".parse::<SideChoice>().unwrap(), SideChoice::Theirs);
         assert!("bogus".parse::<SideChoice>().is_err());
+    }
+
+    #[test]
+    fn commit_message_records_what_crashed_and_how_it_was_fixed() {
+        let resolved = vec![
+            FileResolution {
+                path: "src/api/user.ts".into(),
+                method: "ai".into(),
+                note: None,
+            },
+            FileResolution {
+                path: "src/pay/retry.ts".into(),
+                method: "theirs".into(),
+                note: Some("AI 결과를 사용할 수 없어 규칙 기반으로 선택했습니다.".into()),
+            },
+        ];
+        let msg = auto_commit_message("feature/login 브렌치 병합", &resolved);
+        assert!(msg.starts_with("feature/login 브렌치 병합\n\n"));
+        assert!(msg.contains("- src/api/user.ts — AI가 양쪽 수정을 모두 반영해 병합"));
+        assert!(msg.contains("- src/pay/retry.ts — 상대 것(가져온 브랜치)으로 해결"));
+        assert!(msg.contains("(AI 결과를 사용할 수 없어 규칙 기반으로 선택했습니다.)"));
+        // 해결한 파일이 없으면 제목만 — 빈 본문을 붙이지 않는다.
+        assert_eq!(auto_commit_message("main 브렌치 병합", &[]), "main 브렌치 병합");
     }
 
     #[test]

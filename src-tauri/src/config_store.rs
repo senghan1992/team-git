@@ -158,6 +158,13 @@ pub struct AiConfig {
     /// auto-resolver instead of waiting for the user to press the button.
     #[serde(default)]
     pub auto_resolve: bool,
+    /// When true, a merge commit made by the auto-resolver is pushed to
+    /// origin without waiting for the manager's confirmation — the fully
+    /// automatic loop (resolve → commit → push → sync notifications).
+    /// Default is false: a bad automatic resolution reaches the whole team
+    /// the moment it is pushed, so someone should look at it first.
+    #[serde(default)]
+    pub auto_push: bool,
     /// Side used for binary / oversized files during auto-resolve:
     /// "theirs" (default) or "ours".
     #[serde(default = "default_binary_strategy")]
@@ -177,6 +184,7 @@ impl Default for AiConfig {
             model: String::new(),
             system_prompt: String::new(),
             auto_resolve: false,
+            auto_push: false,
             binary_strategy: default_binary_strategy(),
         }
     }

@@ -10,8 +10,10 @@
 2. **프로젝트 추가** — enter the repository path. Optionally, fill in SSH host,
    user, and key path if the repo is accessed over SSH. If you authenticate
    with a **user + password** instead of a key, leave the key path empty and
-   type the password into **SSH 비밀번호** (this needs `sshpass` on the
-   machine; the app tells you when it is missing). Password auth is also
+   type the password into **SSH 비밀번호**. Password auth works on every OS:
+   Linux uses `sshpass`, and Windows·macOS use the built-in OpenSSH
+   `SSH_ASKPASS` helper (the app's own executable) — no extra install needed.
+   Password auth is also
    available from **설정 → SSH 연결 테스트**. For SSH repos you can
    also click **SSH로 찾아보기**: the app connects over SSH and shows a remote
    directory browser (breadcrumb path, up-navigation, hidden/git folders, a
@@ -36,8 +38,11 @@
   argv is always passed as separate arguments, never as a shell string.
 - **SSH target** — `git::Target::Local(PathBuf)` or
   `git::Target::Ssh { user, host, key, password, path }`. Every git op takes
-  `&Target`. Auth: SSH key (`-i`) or user/password via `sshpass -e` (the
-  password travels in the `SSHPASS` env var, never on the command line).
+  `&Target`. Auth: SSH key (`-i`) or user/password — via `sshpass -e` when
+  sshpass is installed, otherwise via OpenSSH `SSH_ASKPASS` with the app's
+  own executable as the helper (`git-companion askpass` subcommand reads the
+  `SSHPASS` env var). Either way the password travels only in environment
+  variables, never on the command line.
   Known-host checking is `StrictHostKeyChecking=accept-new` in both modes
   (`BatchMode=yes` for keys): the first connection to a host records its key
   in `~/.ssh/known_hosts` (TOFU), and every later connection verifies the
@@ -47,8 +52,8 @@
   it (e.g. Ubuntu's default `PermitRootLogin prohibit-password` blocks root
   password logins while still accepting keys). Password auth never puts the
   password on the command line: it is passed via the `SSHPASS` env var to
-  `sshpass -e` (`PreferredAuthentications=password`, `PubkeyAuthentication=no`,
-  `NumberOfPasswordPrompts=1`).
+  `sshpass -e` or the askpass helper (`PreferredAuthentications=password`,
+  `PubkeyAuthentication=no`, `NumberOfPasswordPrompts=1`).
 - **UI (`ui/`)** — Vite + TypeScript + Tailwind v4, no framework. Views: Home
   (repo cards with the suggested next action), Repo (work / merge / project
   config tabs), Team (inbox), Settings (SSH profile, sub-tool launcher, AI

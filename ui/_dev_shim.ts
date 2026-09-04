@@ -228,6 +228,7 @@ const mockData: Record<string, any> = {
     model: "gpt-4o-mini",
     system_prompt: "",
     auto_resolve: true,
+    auto_push: true,
     binary_strategy: "theirs",
   },
   set_ai_config: undefined,

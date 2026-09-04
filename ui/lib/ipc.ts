@@ -230,6 +230,8 @@ export interface AiConfig {
   system_prompt: string;
   /** 병합/동기화가 충돌로 끝나면 바로 자동 해결을 실행한다. */
   auto_resolve: boolean;
+  /** AI(또는 규칙) 자동 해결로 만든 병합 커밋을 확인 없이 곧바로 push한다 — 완전 자동 루프. */
+  auto_push: boolean;
   /** 바이너리·대용량 파일 처리: "theirs" | "ours" */
   binary_strategy: string;
 }

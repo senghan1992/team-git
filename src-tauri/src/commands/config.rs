@@ -128,42 +128,26 @@ pub struct SshTestReport {
     pub error: Option<String>,
 }
 
-/// Build the ssh command line for `test_ssh_connection`. Password auth is
-/// driven by `sshpass -e` (password via `SSHPASS` env, never on argv); the
-/// key branch is fully non-interactive (`BatchMode=yes`).
+/// Build the ssh command line for `test_ssh_connection`. Auth follows the
+/// app-wide policy in `git::build_ssh_cmd_timeout`: password auth runs through
+/// `sshpass -e` where available (Linux), and through OpenSSH `SSH_ASKPASS`
+/// with this app's own `askpass` subcommand as the helper on machines without
+/// sshpass (Windows, macOS). The password is never on argv.
 fn build_test_cmd(args: &TestSshArgs, use_password: bool) -> std::process::Command {
-    let mut cmd = if use_password {
-        let mut c = std::process::Command::new("sshpass");
-        c.arg("-e").arg("ssh");
-        c.env("SSHPASS", &args.password);
-        c.arg("-o")
-            .arg("StrictHostKeyChecking=accept-new")
-            .arg("-o")
-            .arg("PreferredAuthentications=password")
-            .arg("-o")
-            .arg("PubkeyAuthentication=no")
-            .arg("-o")
-            .arg("NumberOfPasswordPrompts=1");
-        c
+    // use_password=false 인 재시도(키 폴백)에서는 비밀번호를 빈 값으로 둔다.
+    let password = if use_password {
+        args.password.clone()
     } else {
-        let mut c = std::process::Command::new("ssh");
-        if !args.key_path.is_empty() {
-            c.arg("-i").arg(&args.key_path);
-        }
-        c.arg("-o").arg("BatchMode=yes");
-        c.arg("-o").arg("StrictHostKeyChecking=accept-new");
-        c
+        String::new()
     };
-    if args.port != 22 {
-        cmd.arg("-p").arg(args.port.to_string());
-    }
-    cmd.arg("-o")
-        .arg(format!("ConnectTimeout={}", args.timeout_secs));
-    if args.user.is_empty() {
-        cmd.arg(&args.host);
-    } else {
-        cmd.arg(format!("{}@{}", args.user, args.host));
-    }
+    let mut cmd = crate::git::build_ssh_cmd_timeout(
+        &args.user,
+        &args.host,
+        &args.key_path,
+        args.port,
+        &password,
+        args.timeout_secs,
+    );
     cmd.arg("echo __GC_OK__; whoami; hostname; uname -sr");
     cmd
 }
@@ -205,10 +189,6 @@ pub async fn test_ssh_connection(args: TestSshArgs) -> AppResult<SshTestReport> 
     let probe = match probe {
         Some(o) => o,
         None => {
-            let sshpass_missing = last_spawn_err
-                .as_ref()
-                .map(|e| e.kind() == std::io::ErrorKind::NotFound)
-                .unwrap_or(false);
             return Ok(SshTestReport {
                 ok: false,
                 latency_ms: start.elapsed().as_millis() as u64,
@@ -216,13 +196,21 @@ pub async fn test_ssh_connection(args: TestSshArgs) -> AppResult<SshTestReport> 
                 hostname: String::new(),
                 system: String::new(),
                 fingerprint: String::new(),
-                error: Some(if sshpass_missing {
-                    "비밀번호 인증에는 sshpass가 필요합니다. (sudo apt install sshpass)".to_string()
-                } else if let Some(e) = last_spawn_err {
-                    format!("ssh spawn failed: {}", e)
-                } else {
-                    "ssh failed to start".to_string()
-                }),
+                error: Some(
+                    if last_spawn_err
+                        .as_ref()
+                        .map(|e| e.kind() == std::io::ErrorKind::NotFound)
+                        .unwrap_or(false)
+                    {
+                        // sshpass 는 있는 환경에서만 쓰므로 이 시점의 NotFound 는
+                        // ssh 자체가 없다는 뜻이다 (Windows: Git for Windows 미설치).
+                        "SSH를 실행할 수 없습니다 — ssh 명령이 PATH에 없습니다. Windows라면 Git for Windows를 설치하세요.".to_string()
+                    } else if let Some(e) = last_spawn_err {
+                        format!("ssh spawn failed: {}", e)
+                    } else {
+                        "ssh failed to start".to_string()
+                    },
+                ),
             });
         }
     };

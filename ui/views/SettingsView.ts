@@ -380,6 +380,18 @@ export async function renderSettingsView(): Promise<HTMLElement> {
         </span>
       </label>
 
+      <label class="gc-check">
+        <input id="ai-auto-push" type="checkbox" />
+        <span class="flex flex-col">
+          <span class="text-display-md">자동 해결 후 곧바로 push</span>
+          <span class="text-display-xs text-[color:var(--color-ink-muted)]">
+            AI가 고친 병합도 확인 단계 없이 병합 브랜치에 push하고 팀원에게 동기화 알림을 보냅니다 —
+            커밋 메시지에 무슨 충돌을 어떻게 풀었는지 기록됩니다.
+            끄면 결과를 확인한 뒤 “확인했어요 — push”를 눌러야 팀에 반영됩니다.
+          </span>
+        </span>
+      </label>
+
       <label class="flex flex-col gap-1">
         <span class="text-display-sm text-[color:var(--color-ink-muted)]">바이너리·대용량 파일은 어느 쪽을 쓸까요</span>
         <select id="ai-binary" class="gc-input">
@@ -441,6 +453,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
     (aiSection.querySelector<HTMLInputElement>("#ai-model")!).value = aiCfg.model ?? "";
     (aiSection.querySelector<HTMLInputElement>("#ai-api-key")!).value = aiCfg.api_key ?? "";
     (aiSection.querySelector<HTMLInputElement>("#ai-auto")!).checked = !!aiCfg.auto_resolve;
+    (aiSection.querySelector<HTMLInputElement>("#ai-auto-push")!).checked = !!aiCfg.auto_push;
     (aiSection.querySelector<HTMLSelectElement>("#ai-binary")!).value =
       aiCfg.binary_strategy === "ours" ? "ours" : "theirs";
     // 저장된 지침이 없으면 기본 지침을 채워 보여 준다 — 무엇을 편집하는지
@@ -462,6 +475,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
       // 기본 지침과 같으면 빈 값으로 저장해, 기본값이 바뀌면 자동으로 따라간다.
       system_prompt: typedPrompt === aiDefaultPrompt.trim() ? "" : typedPrompt,
       auto_resolve: aiSection.querySelector<HTMLInputElement>("#ai-auto")!.checked,
+      auto_push: aiSection.querySelector<HTMLInputElement>("#ai-auto-push")!.checked,
       binary_strategy: aiSection.querySelector<HTMLSelectElement>("#ai-binary")!.value === "ours"
         ? "ours"
         : "theirs",
@@ -474,7 +488,9 @@ export async function renderSettingsView(): Promise<HTMLElement> {
       await ipc.setAiConfig(cfg);
       toast(
         cfg.enabled && cfg.auto_resolve
-          ? "저장했습니다. 이제 충돌이 나면 AI가 곧바로 해결을 시도합니다."
+          ? cfg.auto_push
+            ? "저장했습니다. 이제 충돌이 나면 AI가 해결·커밋·push까지 자동으로 진행합니다."
+            : "저장했습니다. 이제 충돌이 나면 AI가 곧바로 해결을 시도합니다."
           : "AI 설정을 저장했습니다.",
         "success",
       );

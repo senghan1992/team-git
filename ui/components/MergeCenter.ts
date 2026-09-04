@@ -103,6 +103,14 @@ export async function renderMergeCenter(
   let aiEnabled = false;
   // 설정에서 미리 켜 둔 "충돌 나면 곧바로 자동 해결" 스위치 (시나리오 5).
   let aiAutoResolve = false;
+  // 설정에서 켜 둔 "자동 해결 후 곧바로 push" — AI가 고친 병합도 확인 단계
+  // 없이 팀에 배포한다 (완전 자동 루프). 끄면 결과 확인 후 push한다.
+  let aiAutoPush = false;
+  // 이 진행 중 병합에 자동 해결을 이미 시도했는가 — 동기화 충돌로 병합 탭에
+  // 진입했을 때 한 번 자동으로 돌려 주되, 부분 실패 후 refresh가 같은 병합을
+  // 몇 번이고 재시도해 무한 루프에 빠지지 않게 하는 장치다. 병합이
+  // 끝나면(또는 중단되면) 리셋한다.
+  let autoTriedThisMerge = false;
   // Auto-resolve backups (safety net) for the current merge.
   let backups: BackupEntry[] = [];
   // 병합이 끝나 정리해도 되는 원격 브랜치들.
@@ -114,9 +122,11 @@ export async function renderMergeCenter(
     const cfg = await ipc.getAiConfig();
     aiEnabled = cfg.enabled;
     aiAutoResolve = cfg.enabled && cfg.auto_resolve;
+    aiAutoPush = cfg.enabled && cfg.auto_push;
   } catch {
     aiEnabled = false;
     aiAutoResolve = false;
+    aiAutoPush = false;
   }
   projectCfg = await ipc.projectConfigGet(repo.id).catch(() => null);
 
@@ -1053,6 +1063,9 @@ export async function renderMergeCenter(
   async function runAutoResolveNow(conflictCount: number) {
     if (autoRunning) return;
     autoRunning = true;
+    // 이 병합에 대한 시도를 기록한다 — 성공해도 실패해도 자동 트리거는
+    // 병합당 한 번만이다 (무한 재시도 방지, refresh의 트리거 조건 참고).
+    autoTriedThisMerge = true;
     // 해결 중에는 충돌 편집 패널을 숨긴다 — 파일이 바뀌는 동안 낡은 본문을
     // 편집하게 두면 사용자가 작업을 잃는다.
     panel.style.display = "none";
@@ -1109,6 +1122,9 @@ export async function renderMergeCenter(
       onSubmit: async (close) => {
         m.setSubmitting(true);
         try {
+          // 수동 실행도 병합당 시도 기록에 포함 — 실패해도 20초 자동 감지가
+          // 몰래 자동 해결을 다시 돌리는 일이 없게 한다.
+          autoTriedThisMerge = true;
           const report = await ipc.mergeAutoResolve(repo.id, strategy);
           close();
           await afterAutoResolve(report);
@@ -1157,17 +1173,20 @@ export async function renderMergeCenter(
   }
 
   async function afterAutoResolve(report: AutoResolveReport) {
-    // AI가 파일을 고쳐 커밋까지 만든 경우, push는 관리자가 결과를 확인한
-    // 다음이다 — push되는 순간 팀원 전원에게 동기화 알림이 가므로, 잘못된
-    // AI 결과를 확인 없이 팀에 배포하면 되돌릴 길이 없다. 한쪽 규칙만으로
-    // 풀린 병합(사람이 이미 아는 내용)은 그대로 바로 push한다.
+    // 규칙만으로 풀린 병합(사람이 이미 아는 내용, 잃는 것이 없음)은 그대로
+    // 바로 push한다. AI가 고친 병합은 기본적으로 결과 확인 후 push — push되는
+    // 순간 팀원 전원에게 동기화 알림이 가고 잘못된 결과를 되돌릴 길이 없기
+    // 때문이다. 단, 설정에서 "자동 해결 후 곧바로 push"를 켠 팀은 확인 단계를
+    // 건너뛰고 완전 자동 루프(해결 → 커밋 → push → 팀원 동기화 알림)로 진행한다.
+    // push가 실패하면 배너가 남아 재시도할 수 있다. 무슨 충돌을 어떻게
+    // 풀었는지는 자동 해결이 병합 커밋 본문에 기록한다.
     const aiTouched = report.resolved.some((r) => r.method === "ai");
     if (report.committed) {
       conflictCache.clear();
       knownConflicts = new Set();
       selectedPath = null;
       mergeState = null;
-      if (!aiTouched) {
+      if (!aiTouched || aiAutoPush) {
         await pushMergedBranch();
       }
     } else if (report.remaining.length > 0) {
@@ -1178,7 +1197,7 @@ export async function renderMergeCenter(
       renderBanner();
     }
     await refresh();
-    showAutoResolveReport(report, report.committed && aiTouched);
+    showAutoResolveReport(report, report.committed && aiTouched && !aiAutoPush);
   }
 
   function showAutoResolveReport(report: AutoResolveReport, offerPush = false) {
@@ -1541,7 +1560,20 @@ export async function renderMergeCenter(
         }
         await loadConflicts();
         void loadBackups();
+        // 동기화(sync) 중 충돌로 병합 탭에 온 팀원도 버튼을 찾을 필요가 없다
+        // — 설정에서 자동 해결이 켜져 있고 이 병합에 아직 시도한 적이 없으면
+        // 곧바로 돌린다. (병합 시작 직후 경로는 runAutoResolveNow가 이미
+        // 기록하므로 여기서 다시 걸리지 않는다. 부분 실패 시에는 사람이
+        // 나서서 마무리한다 — 자동 재시도 루프를 만들지 않는다.)
+        if (
+          aiAutoResolve &&
+          !autoTriedThisMerge &&
+          mergeState.conflicted_files.length > 0
+        ) {
+          void runAutoResolveNow(mergeState.conflicted_files.length);
+        }
       } else {
+        autoTriedThisMerge = false;
         knownConflicts = new Set();
         conflictCache.clear();
         selectedPath = null;

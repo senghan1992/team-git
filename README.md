@@ -324,7 +324,7 @@ setx GIT_COMPANION_BIN "$PWD\target\release\git-companion.exe"
 | 빌드가 20분 넘게 걸린다 | 첫 빌드는 원래 깁니다. 멈춘 게 아니라 컴파일 중이면 그대로 두세요. |
 | `pnpm install`에서 `[EISDIR] ... symlink ...` 에러 (Windows) | 이전 설치가 중간에 끊겨 pnpm 스토어에 잔재(실제 폴더)가 남은 것. 스토어 경로는 `pnpm config get store-dir`로 확인하고, 그 스토어 폴더와 프로젝트의 `node_modules`를 지운 뒤(`Remove-Item -Recurse -Force <스토어폴더>`, `Remove-Item -Recurse -Force .\node_modules`) `pnpm install` 재실행. 스토어는 캐시라 지워도 다시 받습니다. 스토어를 프로젝트와 같은 드라이브에 두는 것도 도움이 됩니다. |
 | 앱은 뜨는데 저장소 등록·커밋이 전부 실패 | Git for Windows가 없는 컴퓨터입니다 — `git --version`으로 확인하고 설치하세요. |
-| SSH 저장소에 비밀번호 인증이 안 됨 | Windows에서는 SSH **키 인증만** 지원합니다 (`sshpass` 없음). |
+| SSH 저장소에 비밀번호 인증이 안 됨 | Windows·macOS에는 `sshpass`가 없어 예전에는 안 됐습니다. 지금은 앱이 자체 내장 askpass 헬퍼로 비밀번호를 넘기므로 **Windows에서도 비밀번호 SSH 인증이 됩니다** — 단, Git for Windows(ssh 포함)는 설치되어 있어야 합니다. |
 
 ### Linux에서 빌드하기 (Debian/Ubuntu)
 

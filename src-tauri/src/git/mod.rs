@@ -7,6 +7,7 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -275,10 +276,14 @@ mod unquote_tests {
     }
 }
 
-/// Build an `ssh` (or `sshpass … ssh` for password auth) command targeting
-/// `user@host`, pre-loaded with the same auth options the rest of the app
-/// uses. Call sites append their remote command. The password is passed via
-/// the `SSHPASS` env var so it never appears on the process command line.
+/// Build an `ssh` command targeting `user@host`, pre-loaded with the same auth
+/// options the rest of the app uses. Call sites append their remote command.
+/// The password is passed via environment variables only, never on argv:
+/// - `sshpass -e` where sshpass is installed (Linux desktop, dev server);
+/// - otherwise OpenSSH's `SSH_ASKPASS` mechanism (Windows, plain macOS) — the
+///   helper is this app's own executable (`askpass` subcommand), which prints
+///   the `SSHPASS` env var. `SSH_ASKPASS_REQUIRE=force` makes ssh call it even
+///   without a console or DISPLAY (OpenSSH ≥ 8.4; Git for Windows ≥ 8.4).
 pub fn build_ssh_cmd(
     user: &str,
     host: &str,
@@ -286,20 +291,51 @@ pub fn build_ssh_cmd(
     port: u16,
     password: &str,
 ) -> std::process::Command {
+    build_ssh_cmd_timeout(user, host, key, port, password, 5)
+}
+
+/// `build_ssh_cmd` + 커넥션 타임아웃(초) 지정 — SSH 연결 테스트가 쓴다.
+pub fn build_ssh_cmd_timeout(
+    user: &str,
+    host: &str,
+    key: &str,
+    port: u16,
+    password: &str,
+    connect_timeout_secs: u16,
+) -> std::process::Command {
     let password_auth = !password.is_empty();
     let mut cmd = if password_auth {
-        let mut c = std::process::Command::new("sshpass");
-        c.arg("-e").arg("ssh");
-        c.arg("-o")
-            .arg("StrictHostKeyChecking=accept-new")
-            .arg("-o")
-            .arg("PreferredAuthentications=password")
-            .arg("-o")
-            .arg("PubkeyAuthentication=no")
-            .arg("-o")
-            .arg("NumberOfPasswordPrompts=1");
-        c.env("SSHPASS", password);
-        c
+        if sshpass_available() {
+            let mut c = std::process::Command::new("sshpass");
+            c.arg("-e").arg("ssh");
+            c.arg("-o")
+                .arg("StrictHostKeyChecking=accept-new")
+                .arg("-o")
+                .arg("PreferredAuthentications=password")
+                .arg("-o")
+                .arg("PubkeyAuthentication=no")
+                .arg("-o")
+                .arg("NumberOfPasswordPrompts=1");
+            c.env("SSHPASS", password);
+            c
+        } else {
+            // sshpass 가 없는 환경 (Windows, 기본 macOS): ssh 자체의
+            // SSH_ASKPASS 헬퍼로 비밀번호를 넘긴다. 헬퍼는 이 앱의 실행
+            // 파일(askpass 서브커맨드) — 별도 배포 파일이 필요 없다.
+            let mut c = std::process::Command::new("ssh");
+            c.arg("-o")
+                .arg("StrictHostKeyChecking=accept-new")
+                .arg("-o")
+                .arg("PreferredAuthentications=password")
+                .arg("-o")
+                .arg("PubkeyAuthentication=no")
+                .arg("-o")
+                .arg("NumberOfPasswordPrompts=1");
+            c.env("SSHPASS", password);
+            c.env("SSH_ASKPASS", askpass_helper_path());
+            c.env("SSH_ASKPASS_REQUIRE", "force");
+            c
+        }
     } else {
         let mut c = std::process::Command::new("ssh");
         if !key.is_empty() {
@@ -309,7 +345,8 @@ pub fn build_ssh_cmd(
         c.arg("-o").arg("StrictHostKeyChecking=accept-new");
         c
     };
-    cmd.arg("-o").arg("ConnectTimeout=5");
+    cmd.arg("-o")
+        .arg(format!("ConnectTimeout={connect_timeout_secs}"));
     // 연결 후 네트워크가 끊기면 TCP만으로는 몇 분씩 매달린다 — keepalive 로
     // 죽은 세션을 ~15초(5s×3회) 안에 끊는다. 데이터가 오가는 동안에는
     // 발동하지 않으므로 오래 걸리는 정상 push/fetch 는 죽이지 않는다.
@@ -318,9 +355,36 @@ pub fn build_ssh_cmd(
     if port != 22 {
         cmd.arg("-p").arg(port.to_string());
     }
-    cmd.arg(format!("{user}@{host}"));
+    if user.is_empty() {
+        cmd.arg(host);
+    } else {
+        cmd.arg(format!("{user}@{host}"));
+    }
     cmd.env("LC_ALL", "C.UTF-8").env("LANG", "C.UTF-8");
     cmd
+}
+
+/// sshpass 가 PATH 에 있는지 — 최초 한 번만 프로세스 확인 후 캐시한다.
+pub fn sshpass_available() -> bool {
+    static OK: OnceLock<bool> = OnceLock::new();
+    *OK.get_or_init(|| {
+        std::process::Command::new("sshpass")
+            .arg("-V")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// SSH_ASKPASS 헬퍼 경로 — 이 앱 실행 파일 자체 (`askpass` 서브커맨드).
+/// 번들(설치) 환경에서도 current_exe 가 설치본을 가리키므로 추가 파일이
+/// 필요 없다. OpenSSH 는 헬퍼를 `<경로> <프롬프트>` 로 호출한다.
+pub fn askpass_helper_path() -> String {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| "git-companion".into())
 }
 
 /// Run one remote command, returning its output. When both a key and a

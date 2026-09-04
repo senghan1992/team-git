@@ -69,6 +69,8 @@ interface AiConfigRecord {
   system_prompt?: string;
   /** 충돌이 나면 버튼을 누르지 않고 곧바로 자동 해결한다. */
   auto_resolve?: boolean;
+  /** 자동 해결로 만든 병합 커밋을 확인 없이 곧바로 push한다. */
+  auto_push?: boolean;
   /** 바이너리·대용량 파일 처리: "theirs" | "ours" */
   binary_strategy?: string;
 }
@@ -1693,6 +1695,7 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
           model: saved?.model ?? "",
           system_prompt: saved?.system_prompt ?? "",
           auto_resolve: saved?.auto_resolve ?? false,
+          auto_push: saved?.auto_push ?? false,
           binary_strategy: saved?.binary_strategy || "theirs",
         };
       }

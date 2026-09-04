@@ -23,6 +23,25 @@ fn main() {
         };
         std::process::exit(code);
     }
+    // OpenSSH SSH_ASKPASS 헬퍼 — sshpass 가 없는 환경(Windows, 기본 macOS)에서
+    // 비밀번호 SSH 인증을 가능하게 하는 통로다. ssh 는 헬퍼를 서브커맨드 인자
+    // 없이 `<이 앱> <프롬프트>` 형태로 호출한다 (프롬프트는 "password" /
+    // "passphrase" 를 담는 문장). 그 모양일 때만 askpass 로 동작하고, 평소 GUI
+    // 실행(인자 없음)이나 `hook` 서브커맨드와는 겹치지 않는다. 비밀번호는
+    // 부모(앱의 ssh 실행)가 `SSHPASS` 환경변수로 내려 준 값을 그대로 출력한다.
+    let is_askpass = args.get(1).map(|s| s.as_str() == "askpass").unwrap_or(false)
+        || (args.len() == 2
+            && args[1] != "hook"
+            && (args[1].ends_with(':') || {
+                let lower = args[1].to_ascii_lowercase();
+                lower.contains("password") || lower.contains("passphrase")
+            }));
+    if is_askpass {
+        if let Ok(p) = std::env::var("SSHPASS") {
+            println!("{p}");
+        }
+        return;
+    }
     run_gui();
 }
 
