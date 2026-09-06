@@ -26,8 +26,7 @@ use crate::error::{AppError, AppResult};
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// 모든 자식 프로세스는 이 생성자로 만든다 — Windows에서는 자동으로
-/// `CREATE_NO_WINDOW`가 걸린다. (외부 도구 실행은 예외: 사용자가 연 프로그램의
-/// 창이니 보여야 한다.)
+/// `CREATE_NO_WINDOW`가 걸린다.
 pub fn new_command(program: &str) -> Command {
     #[allow(unused_mut)] // Windows에서만 creation_flags 호출로 mut가 필요하다.
     let mut cmd = Command::new(program);

@@ -400,7 +400,6 @@ export async function createApp(root: HTMLElement) {
         myPage.repoId,
         myPage.tab ?? "work",
         onTab,
-        () => { page = { kind: "settings" }; rerender(); },
       ).then((m) => {
         if (page !== myPage) return; // 로딩 중 다른 페이지로 이동 시 폐기
         loading.replaceWith(m);

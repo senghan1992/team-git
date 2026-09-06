@@ -2,7 +2,6 @@ pub mod account;
 pub mod ai;
 pub mod auto;
 pub mod config;
-pub mod external;
 pub mod git;
 pub mod peer;
 pub mod project;

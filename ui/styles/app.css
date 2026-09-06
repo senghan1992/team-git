@@ -1135,40 +1135,6 @@ textarea.gc-input {
   border-style: dashed;
 }
 
-/* 작은 드롭다운 메뉴 — "열기 ▾" 처럼 버튼 아래에 붙는 목록. */
-.gc-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 30;
-  min-width: 200px;
-  display: flex;
-  flex-direction: column;
-  padding: var(--space-1, 4px);
-  border-radius: var(--radius-plate);
-  background: var(--color-surface);
-  border: 1px solid var(--color-hairline);
-  box-shadow: 0 8px 24px rgba(28, 50, 96, 0.14);
-}
-.gc-menu__item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 7px 10px;
-  border-radius: var(--radius-xs);
-  font-size: var(--text-display-sm);
-  text-align: left;
-  transition: background-color 120ms ease;
-}
-.gc-menu__item:hover {
-  background: var(--color-clay);
-}
-.gc-menu__sep {
-  height: 1px;
-  margin: 4px 6px;
-  background: var(--color-hairline);
-}
-
 /* 위험 구역 — 되돌릴 수 없는 동작(회원 탈퇴 등)을 접어서 맨 아래에 둔다. */
 .gc-danger {
   padding: var(--space-3);

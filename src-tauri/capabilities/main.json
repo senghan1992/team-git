@@ -11,7 +11,6 @@
     "core:app:default",
     "core:path:default",
     "dialog:default",
-    "notification:default",
-    "shell:allow-open"
+    "notification:default"
   ]
 }

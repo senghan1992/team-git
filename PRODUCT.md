@@ -41,7 +41,6 @@ Confirmed functionality (from README and code):
 - Notifications view: received events, plus the delivery config (server URL, team + join code, which repositories notify, and recipients synced from `.gpconfig` with one button). Desktop notifications are role-aware: a push to the merge branch notifies every member ("내 브랜치에 동기화"); a push to a work branch notifies only that branch's merge manager ("병합하기").
 - Per-repo 설정 tab writes `.gpconfig` into the repository (merge target branches, per-branch merge managers, members), so every collaborator sees the same rules with no server. The merge branch need not be `main`, and push-notification classification follows the same config.
 - Tabs per repository: 작업/병합/설정. Global nav: 저장소/알림/설정. Sidebar lists registered repos + account chip.
-- Sub-tool launcher: configure external tools (VS Code, Cursor, tmux…) and open them at the repository path.
 
 Technical constraints:
 

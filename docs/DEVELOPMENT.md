@@ -157,13 +157,12 @@ git-program/
 │   │   ├── lib.rs                   # tauri builder + invoke_handler
 │   │   ├── error.rs
 │   │   ├── config_store.rs          # Repository, SshProfile, AiConfig,
-│   │   │                             # ExternalTool, Account, AppSettings
+│   │   │                                     # Account, AppSettings
 │   │   ├── pre_push_hook.rs
 │   │   ├── accounts.rs               # /auth/* client (login, profile, search)
 │   │   ├── gpconfig.rs               # .gpconfig: merge targets + managers
 │   │   ├── ai.rs                     # resolver prompt + OpenAI-compatible call
-│   │   ├── commands/{mod,repo,git,auto,config,project,account,
-│   │   │            external,peer,ai}.rs
+│   │   ├── commands/{mod,repo,git,auto,config,project,account,peer,ai}.rs
 │   │   ├── git/{mod,ops,branches,log,status,merge,auto,sync,fetch,push,timeline}.rs
 │   │   └── notify/{mod,store,webhook}.rs
 │   └── tests/*.rs

@@ -1,4 +1,4 @@
-//! Persistent app config — repositories, projects, SSH profiles, external tools.
+//! Persistent app config — repositories, projects, SSH profiles.
 //!
 //! Stored at the OS-conventional config dir under `com.gitcompanion.app/`.
 use std::fs;
@@ -104,32 +104,6 @@ pub struct Repository {
 
 fn default_repo_ssh_port() -> u16 {
     22
-}
-
-// ── External tools ─────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ExternalTool {
-    pub id: String,
-    pub label: String,
-    /// Command template; `{path}` is replaced with the repo path.
-    pub command_template: String,
-    /// Args template; `{path}` is replaced with the repo path.
-    pub args_template: String,
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-impl Default for ExternalTool {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            label: String::new(),
-            command_template: String::new(),
-            args_template: String::new(),
-            enabled: true,
-        }
-    }
 }
 
 // ── AI ────────────────────────────────────────────────────────────────────────
@@ -261,9 +235,6 @@ pub struct AppSettings {
     /// Team projects owned / joined by this device.
     #[serde(default)]
     pub projects: Vec<Project>,
-    /// External tool launchers.
-    #[serde(default)]
-    pub external_tools: Vec<ExternalTool>,
     #[serde(default)]
     pub ssh_profile: SshProfile,
     #[serde(default)]
@@ -288,50 +259,6 @@ impl Default for AppSettings {
             schema_version: CURRENT_SCHEMA,
             repositories: vec![],
             projects: vec![],
-            external_tools: vec![
-                ExternalTool {
-                    id: "code".into(),
-                    label: "VS Code".into(),
-                    command_template: "code".into(),
-                    args_template: "{path}".into(),
-                    enabled: true,
-                },
-                ExternalTool {
-                    id: "cursor".into(),
-                    label: "Cursor".into(),
-                    command_template: "cursor".into(),
-                    args_template: "{path}".into(),
-                    enabled: true,
-                },
-                ExternalTool {
-                    id: "sublime".into(),
-                    label: "Sublime Text".into(),
-                    command_template: "subl".into(),
-                    args_template: "{path}".into(),
-                    enabled: true,
-                },
-                ExternalTool {
-                    id: "gnome-terminal".into(),
-                    label: "GNOME Terminal".into(),
-                    command_template: "gnome-terminal".into(),
-                    args_template: "--working-directory={path}".into(),
-                    enabled: true,
-                },
-                ExternalTool {
-                    id: "xterm".into(),
-                    label: "XTerm".into(),
-                    command_template: "xterm".into(),
-                    args_template: r#"-e "cd {path} && bash""#.into(),
-                    enabled: true,
-                },
-                ExternalTool {
-                    id: "tmux".into(),
-                    label: "Tmux".into(),
-                    command_template: "tmux".into(),
-                    args_template: "new-session -c {path}".into(),
-                    enabled: true,
-                },
-            ],
             ssh_profile: SshProfile::default(),
             peer: PeerConfig::default(),
             ai: AiConfig::default(),
@@ -443,12 +370,6 @@ pub fn load() -> AppResult<AppSettings> {
     if cfg.schema_version < CURRENT_SCHEMA {
         migrate(&mut cfg)?;
     }
-    // Seed default external tools for configs that already had schema_version == CURRENT_SCHEMA
-    // (e.g. upgraded installs that ran migrate() before this seed was added, or fresh installs
-    // that loaded before the default() seeding was in place)
-    if cfg.external_tools.is_empty() {
-        cfg.external_tools = AppSettings::default().external_tools;
-    }
     Ok(cfg)
 }
 
@@ -488,7 +409,6 @@ mod tests {
         assert_eq!(back.schema_version, CURRENT_SCHEMA);
         assert!(back.repositories.is_empty());
         assert!(back.projects.is_empty());
-        assert_eq!(back.external_tools.len(), 6);
         assert!(back.ssh_profile.default_key_path.is_empty());
         assert_eq!(back.ssh_profile.default_port, 22);
     }

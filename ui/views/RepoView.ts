@@ -9,12 +9,10 @@ import { getSession } from "../lib/session";
 import { icon } from "../components/Icon";
 import { setBusy } from "../components/Busy";
 import type { RepoTab } from "../components/Sidebar";
-import { renderOpenWithButton } from "../components/OpenWithButton";
 export async function renderRepoView(
   repoId: string,
   tab: RepoTab = "work",
   onTab?: (t: RepoTab) => void,
-  onNavSettings?: () => void,
 ): Promise<HTMLElement> {
   const main = document.createElement("main");
   main.className = "flex-1 overflow-y-auto p-8 flex flex-col gap-6";
@@ -44,15 +42,6 @@ export async function renderRepoView(
   head.appendChild(sub);
   headRow.appendChild(head);
   main.appendChild(headRow);
-  // "이 저장소를 에디터/터미널로 열기" — 저장소를 보고 있을 때가 그 동작을
-  // 원하는 순간이다. 도구가 없거나 SSH 저장소면 아무것도 붙지 않는다.
-  // `main` 은 아직 document 에 붙지 않은 상태로 반환되므로 isConnected 로
-  // 가드하면 안 된다 — 만들고 있는 트리에 그대로 붙인다.
-  void renderOpenWithButton(repo, {
-    onEditTools: () => onNavSettings?.(),
-  }).then((btn) => {
-    if (btn) headRow.appendChild(btn);
-  });
   // ── Tabs (work / merge / config) — segmented control ────────────────────
   const tabs = document.createElement("div");
   tabs.className = "gc-tabs";

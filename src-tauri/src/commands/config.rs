@@ -1,4 +1,4 @@
-//! Tauri commands for SSH profile and external tool management.
+//! Tauri commands for SSH profile management.
 use serde::{Deserialize, Serialize};
 
 use crate::config_store::{self, SshProfile};
@@ -41,34 +41,6 @@ pub fn set_ssh_profile(patch: SshProfilePatch) -> AppResult<SshProfile> {
     }
     config_store::save(&cfg)?;
     Ok(cfg.ssh_profile)
-}
-
-#[tauri::command]
-pub fn list_external_tools() -> AppResult<Vec<crate::config_store::ExternalTool>> {
-    let cfg = config_store::load()?;
-    Ok(cfg.external_tools)
-}
-
-#[tauri::command]
-pub fn set_external_tool(
-    tool: crate::config_store::ExternalTool,
-) -> AppResult<crate::config_store::ExternalTool> {
-    let mut cfg = config_store::load()?;
-    if let Some(pos) = cfg.external_tools.iter().position(|t| t.id == tool.id) {
-        cfg.external_tools[pos] = tool.clone();
-    } else {
-        cfg.external_tools.push(tool.clone());
-    }
-    config_store::save(&cfg)?;
-    Ok(tool)
-}
-
-#[tauri::command]
-pub fn remove_external_tool(id: String) -> AppResult<()> {
-    let mut cfg = config_store::load()?;
-    cfg.external_tools.retain(|t| t.id != id);
-    config_store::save(&cfg)?;
-    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

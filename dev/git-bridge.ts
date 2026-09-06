@@ -15,8 +15,7 @@
 //   resolve_conflict, abort_merge, complete_merge, get_ai_config,
 //   set_ai_config, ai_default_prompt, ai_suggest_resolution,
 //   get_ssh_profile, set_ssh_profile,
-//   test_ssh_connection, browse_ssh_dir, list_external_tools, set_external_tool, remove_external_tool,
-//   open_external_tool,
+//   test_ssh_connection, browse_ssh_dir,
 //   account_register, account_list, account_delete, account_login, account_logout,
 //   account_current, push_credentials_list, push_credential_set, push_credential_delete,
 //   project_config_get, project_config_set, project_config_commit.
@@ -158,19 +157,11 @@ function normalizeProjectConfig(cfg: ProjectConfigRecord): ProjectConfigRecord {
   return out;
 }
 
-interface ExternalToolRecord {
-  id: string;
-  label: string;
-  command_template: string;
-  args_template: string;
-  enabled: boolean;
-}
 
 interface AppSettings {
   schema_version: number;
   repositories: RepoRecord[];
   projects?: unknown[];
-  external_tools?: ExternalToolRecord[];
   ssh_profile?: Record<string, unknown>;
   peer?: Record<string, unknown>;
   ai?: AiConfigRecord;
@@ -699,22 +690,6 @@ function checkLocalRepoPath(input: string): { path: string } | { error: string }
   }
   return { path: p };
 }
-
-/** Rust `config_store::AppSettings::default()` 의 external_tools 와 동일. */
-const DEFAULT_EXTERNAL_TOOLS: ExternalToolRecord[] = [
-  { id: "code", label: "VS Code", command_template: "code", args_template: "{path}", enabled: true },
-  { id: "cursor", label: "Cursor", command_template: "cursor", args_template: "{path}", enabled: true },
-  { id: "sublime", label: "Sublime Text", command_template: "subl", args_template: "{path}", enabled: true },
-  {
-    id: "gnome-terminal",
-    label: "GNOME Terminal",
-    command_template: "gnome-terminal",
-    args_template: "--working-directory={path}",
-    enabled: true,
-  },
-  { id: "xterm", label: "XTerm", command_template: "xterm", args_template: '-e "cd {path} && bash"', enabled: true },
-  { id: "tmux", label: "Tmux", command_template: "tmux", args_template: "new-session -c {path}", enabled: true },
-];
 
 // ── 팀 서버(peer) — Rust `peer.rs` / `commands/peer.rs` 와 같은 서버, 같은 파일 ──
 //
@@ -1905,7 +1880,7 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         return { ok: true, message: co.stdout.trim() || "변경 사항 없음" };
       }
 
-      // ── SSH / external tools (minimal mocks) ──────────────────────────
+      // ── SSH (minimal mocks) ─
       case "get_ssh_profile": {
         return loadSettings().ssh_profile ?? {
           default_user: "",
@@ -1921,56 +1896,6 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         saveSettings(s);
         return s.ssh_profile;
       }
-      case "list_external_tools": {
-        const saved = loadSettings().external_tools;
-        // Rust `config_store` 는 설정이 비어 있으면 기본 도구를 심어 준다.
-        // 미리보기에서도 같은 목록이 보여야 저장소 화면의 "열기" 버튼이
-        // 실제 앱과 같게 나타난다.
-        return saved && saved.length > 0 ? saved : DEFAULT_EXTERNAL_TOOLS;
-      }
-      case "set_external_tool": {
-        const tool = args.tool as ExternalToolRecord;
-        if (!tool?.id || !tool.label || !tool.command_template) {
-          return jsonError("bad_request", "id·label·command_template 는 필수입니다.");
-        }
-        const cfg = loadSettings();
-        // 목록이 비어 있으면 기본 도구를 먼저 심는다 — 그러지 않으면 하나를
-        // 편집하는 순간 나머지 기본 도구가 사라진다.
-        const tools = cfg.external_tools?.length ? cfg.external_tools : [...DEFAULT_EXTERNAL_TOOLS];
-        const at = tools.findIndex((t) => t.id === tool.id);
-        if (at >= 0) tools[at] = tool;
-        else tools.push(tool);
-        cfg.external_tools = tools;
-        saveSettings(cfg);
-        return tool;
-      }
-      case "remove_external_tool": {
-        const id = String(args.id ?? "");
-        const cfg = loadSettings();
-        const tools = cfg.external_tools?.length ? cfg.external_tools : [...DEFAULT_EXTERNAL_TOOLS];
-        cfg.external_tools = tools.filter((t) => t.id !== id);
-        saveSettings(cfg);
-        return null;
-      }
-      case "open_external_tool": {
-        // 브라우저 미리보기에서는 도구를 실제로 띄우지 않는다 — 명령이 이
-        // 개발 서버가 도는 머신에서 실행되므로 사용자의 화면에 아무것도
-        // 뜨지 않는다. 그래도 SSH 저장소 거절은 Rust 와 같게 재현해서, 왜
-        // 안 되는지 미리보기에서도 확인할 수 있게 한다.
-        const r = repoById(args.repoId as string);
-        if ("error" in r) return jsonError("repo_not_found", r.error);
-        if (r.ssh_host) {
-          return jsonError(
-            "config",
-            `‘${r.display_name}’은(는) SSH 저장소(${r.ssh_host}:${r.path})입니다. 작업 트리가 원격 서버에 있어 이 컴퓨터의 도구로 열 수 없습니다.`,
-          );
-        }
-        return jsonError(
-          "config",
-          "브라우저 미리보기에서는 외부 도구를 띄울 수 없습니다. 데스크톱 앱(cargo tauri dev)에서 동작합니다.",
-        );
-      }
-
       // Real SSH — the dev server runs on the same machine as the user, so
       // auth (agent / key / known_hosts) works exactly like in the app.
       case "test_ssh_connection": {

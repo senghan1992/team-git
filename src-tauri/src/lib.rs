@@ -13,7 +13,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_shell::init())
         .setup(|_app| {
             let cfg_dir = match config_store::config_dir() {
                 Ok(d) => d,
@@ -132,14 +131,10 @@ pub fn run() {
             commands::git::stash_list,
             commands::git::create_branch,
             commands::git::checkout_branch,
-            // config / SSH / external tools
+            // config / SSH
             commands::config::get_ssh_profile,
             commands::config::set_ssh_profile,
             commands::config::test_ssh_connection,
-            commands::config::list_external_tools,
-            commands::config::set_external_tool,
-            commands::config::remove_external_tool,
-            commands::external::open_external_tool,
             // peer / team commands
             commands::peer::peer_register_device,
             commands::peer::peer_create_project,

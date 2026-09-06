@@ -318,16 +318,6 @@ export interface SshTestReport {
   error: string | null;
 }
 
-// ─── External Tools ──────────────────────────────────────────────────────────
-
-export interface ExternalTool {
-  id: string;
-  label: string;
-  command_template: string;
-  args_template: string;
-  enabled: boolean;
-}
-
 // ─── Register / Patch ────────────────────────────────────────────────────────
 
 /** SSH connection parameters for registration / remote browsing. */
@@ -419,16 +409,6 @@ export const ipc = {
     invoke<void>("stash", { repoId, action }),
   stashList: (repoId: Uuid) =>
     invoke<StashEntry[]>("stash_list", { repoId }),
-
-  // external tools
-  listExternalTools: () =>
-    invoke<ExternalTool[]>("list_external_tools"),
-  setExternalTool: (tool: ExternalTool) =>
-    invoke<void>("set_external_tool", { tool }),
-  removeExternalTool: (id: string) =>
-    invoke<void>("remove_external_tool", { id }),
-  openExternalTool: (repoId: Uuid, toolId: string) =>
-    invoke<void>("open_external_tool", { repoId, toolId }),
 
   // SSH profile
   getSshProfile: () =>

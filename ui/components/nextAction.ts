@@ -126,8 +126,6 @@ export function computeNextAction(input: NextActionInput): NextAction {
 
   return {
     kind: "clean",
-    // "열기" 는 저장소 화면 헤더에서 외부 도구(에디터)를 뜻한다. 같은 단어를
-    // 다른 뜻으로 쓰면 어느 쪽이 무엇인지 매번 확인해야 한다.
     label: "저장소 보기",
     reason: "최신 상태입니다. 할 일이 없습니다.",
     tab: "work",
