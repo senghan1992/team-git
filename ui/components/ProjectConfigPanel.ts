@@ -121,8 +121,8 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   const introSub = document.createElement("div");
   introSub.className = "text-display-sm text-[color:var(--color-ink-muted)] mt-1";
   introSub.textContent = fileExists
-    ? "이 설정은 저장소 루트의 .gpconfig에 기록됩니다. 다른 참여자도 동일한 설정을 팀원들과 공유합니다."
-    : "아직 .gpconfig가 없습니다. 저장하면 이 저장소에 기록되고 커밋되어 팀원들과 공유됩니다.";
+    ? "저장소 루트의 .gpconfig에 기록되어 팀원과 공유됩니다."
+    : "저장하면 .gpconfig로 커밋되어 팀원과 공유됩니다.";
   intro.appendChild(introSub);
   el.appendChild(intro);
 
@@ -370,7 +370,7 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   const tSub = document.createElement("p");
   tSub.className = "text-display-sm text-[color:var(--color-ink-muted)]";
   tSub.textContent =
-    "이 브랜치들로만 병합할 수 있습니다 (main 외에도 release/1.0 같은 브랜치를 지정할 수 있습니다). 각 브랜치의 병합 관리자는 그 브랜치로의 병합·푸시를 담당합니다.";
+    "이 브랜치들로만 병합할 수 있습니다. 병합 관리자는 그 브랜치로의 병합·푸시를 담당합니다.";
   tHead.appendChild(tSub);
   targetCard.appendChild(tHead);
 

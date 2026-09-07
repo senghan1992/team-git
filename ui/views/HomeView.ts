@@ -31,7 +31,7 @@ export function renderHomeView(
     headText.appendChild(title);
     const sub = document.createElement("div");
     sub.className = "gc-page-head__sub";
-    sub.textContent = "각 저장소가 지금 무엇을 기다리는지 아래에서 확인하세요.";
+    sub.textContent = "지금 무엇을 해야 하는지 카드마다 알려 드립니다.";
     headText.appendChild(sub);
     head.appendChild(headText);
     const addBtn = document.createElement("button");
@@ -61,7 +61,7 @@ export function renderHomeView(
     const ctaDesc = document.createElement("p");
     ctaDesc.className = "gc-cta__desc";
     ctaDesc.textContent =
-      "팀이 함께 쓰는 git 저장소의 경로를 넣으면, 내 작업 브랜치 만들기 · 커밋 · 푸시 · 병합 · 동기화를 이 앱에서 처리할 수 있습니다.";
+      "git 저장소 경로를 등록하면 커밋·푸시·병합·동기화를 이 앱에서 끝낼 수 있습니다.";
     ctaCard.appendChild(ctaDesc);
     const ctaBtn = document.createElement("button");
     ctaBtn.id = "btn-add-project";
@@ -208,8 +208,7 @@ function openAddProjectModal(onReposChanged: () => void, onNav: (p: Page) => voi
         <button id="btn-browse" class="gc-button-secondary shrink-0" type="button">SSH로 찾아보기</button>
       </div>
       <span class="text-display-xs text-[color:var(--color-ink-muted)]">
-        이미 <code>git clone</code> 해 둔 폴더를 고르세요. 폴더 안에 <code>.git</code>이 있으면 됩니다.
-        <code>~</code>로 시작하는 경로도 됩니다.
+        git clone 해 둔 폴더를 고르세요. <code>~</code>로 시작하는 경로도 됩니다.
       </span>
     </div>
 
@@ -217,8 +216,7 @@ function openAddProjectModal(onReposChanged: () => void, onNav: (p: Page) => voi
       <summary class="cursor-pointer text-[color:var(--color-ink-muted)]">저장소가 다른 서버에 있나요? (SSH)</summary>
       <div class="flex flex-col gap-3 pt-3">
         <span class="text-display-xs text-[color:var(--color-ink-muted)]">
-          내 컴퓨터의 폴더라면 이 부분은 비워 두세요. 원격 서버에 있는 저장소를
-          쓸 때만 채웁니다.
+          다른 서버에 있는 저장소를 등록할 때만 채웁니다.
         </span>
         <div class="grid grid-cols-2 gap-3">
           <div class="flex flex-col gap-1">

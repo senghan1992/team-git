@@ -16,7 +16,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
   const sub = document.createElement("div");
   sub.className = "gc-page-head__sub";
   sub.textContent =
-    "SSH 연결, AI 자동 병합, 푸시 자격증명을 관리합니다. 팀 규칙(병합 대상 브랜치·병합 관리자·구성원)은 저장소 → 설정 탭에서 정합니다.";
+    "SSH · AI 자동 병합 · 푸시 로그인 정보를 관리합니다. 팀 규칙(병합 대상·관리자·구성원)은 저장소 → 설정 탭에서 정합니다.";
   head.appendChild(sub);
   main.appendChild(head);
 
@@ -32,9 +32,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
       </div>
     </div>
     <div class="text-display-sm text-[color:var(--color-ink-muted)]">
-      저장소가 <strong>다른 서버에 있을 때만</strong> 필요합니다. 저장소를 등록할 때
-      호스트·사용자·키를 매번 입력하지 않도록 기본값을 여기에 둡니다.
-      내 컴퓨터의 폴더만 쓴다면 비워 둬도 됩니다 — 아래 “—”는 오류가 아닙니다.
+      저장소가 <strong>다른 서버</strong>에 있을 때 등록 화면의 기본값으로 씁니다. 내 컴퓨터 폴더만 쓰면 비워 두세요.
     </div>
     <div class="flex flex-col gap-2 text-display-sm" id="ssh-fields">
       <div class="flex gap-2"><span class="text-[color:var(--color-ink-muted)] w-32 shrink-0">사용자:</span><span id="ssh-d-user">—</span></div>
@@ -54,6 +52,21 @@ export async function renderSettingsView(): Promise<HTMLElement> {
     try {
       const profile = await ipc.getSshProfile();
       currentSshProfile = profile;
+      const fieldsEl = sshDisplayCard.querySelector<HTMLElement>("#ssh-fields")!;
+      const hasAny = !!(profile.default_user || profile.default_host || profile.default_key_path || profile.default_password);
+      if (!hasAny) {
+        // 비어 있으면 “—” 여섯 줄 대신 한 줄로 — 필요 없는 사람에겐 빈 칸이 덜 시끄럽다.
+        fieldsEl.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)]">설정된 값이 없습니다 — 서버 저장소를 쓸 때 편집에서 추가하세요.</div>`;
+        return;
+      }
+      fieldsEl.innerHTML = `
+        <div class="flex gap-2"><span class="text-[color:var(--color-ink-muted)] w-32 shrink-0">사용자:</span><span id="ssh-d-user"></span></div>
+        <div class="flex gap-2"><span class="text-[color:var(--color-ink-muted)] w-32 shrink-0">호스트:</span><span id="ssh-d-host"></span></div>
+        <div class="flex gap-2"><span class="text-[color:var(--color-ink-muted)] w-32 shrink-0">키 경로:</span><span id="ssh-d-key"></span></div>
+        <div class="flex gap-2"><span class="text-[color:var(--color-ink-muted)] w-32 shrink-0">비밀번호:</span><span id="ssh-d-pw"></span></div>
+        <div class="flex gap-2"><span class="text-[color:var(--color-ink-muted)] w-32 shrink-0">타임아웃:</span><span id="ssh-d-timeout"></span></div>
+        <div class="flex gap-2"><span class="text-[color:var(--color-ink-muted)] w-32 shrink-0">포트:</span><span id="ssh-d-port"></span></div>
+      `;
       (sshDisplayCard.querySelector("#ssh-d-user")!).textContent = profile.default_user || "—";
       (sshDisplayCard.querySelector("#ssh-d-host")!).textContent = profile.default_host || "—";
       (sshDisplayCard.querySelector("#ssh-d-key")!).textContent = profile.default_key_path || "—";
@@ -175,9 +188,8 @@ export async function renderSettingsView(): Promise<HTMLElement> {
   aiSection.innerHTML = `
     <div class="text-display-lg font-medium inline-flex items-center gap-2"><span id="ai-title-icon"></span><span>AI 자동 병합</span></div>
     <div class="text-display-sm text-[color:var(--color-ink-muted)]">
-      병합하다 충돌이 나면 AI가 양쪽 수정을 모두 살리는 코드를 만들어 병합을 마무리합니다.
-      원본은 항상 백업되고, 충돌 표시가 남은 파일은 절대 커밋되지 않습니다.
-      기본값은 <strong>비활성</strong>입니다.
+      병합 중 충돌이 나면 AI가 양쪽 수정을 모두 살려 병합을 마무리합니다.
+      원본은 항상 백업되며, 기본값은 <strong>꺼짐</strong>입니다.
     </div>
 
     <label class="gc-check">
@@ -204,8 +216,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
         <span class="flex flex-col">
           <span class="text-display-md">충돌이 나면 곧바로 자동 해결</span>
           <span class="text-display-xs text-[color:var(--color-ink-muted)]">
-            병합 중 충돌이 감지되면 버튼을 누르지 않아도 아래 지침대로 바로 고칩니다.
-            끄면 병합 화면에서 “AI 자동 병합” 버튼으로 직접 실행합니다.
+            끄면 병합 화면에서 버튼을 눌러 직접 실행합니다.
           </span>
         </span>
       </label>
@@ -215,9 +226,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
         <span class="flex flex-col">
           <span class="text-display-md">자동 해결 후 곧바로 push</span>
           <span class="text-display-xs text-[color:var(--color-ink-muted)]">
-            AI가 고친 병합도 확인 단계 없이 병합 브랜치에 push하고 팀원에게 동기화 알림을 보냅니다 —
-            커밋 메시지에 무슨 충돌을 어떻게 풀었는지 기록됩니다.
-            끄면 결과를 확인한 뒤 “확인했어요 — push”를 눌러야 팀에 반영됩니다.
+            끄면 AI가 고친 결과를 확인한 뒤 직접 push 해야 팀에 반영됩니다.
           </span>
         </span>
       </label>
@@ -232,21 +241,19 @@ export async function renderSettingsView(): Promise<HTMLElement> {
 
       <label class="flex flex-col gap-1">
         <span class="text-display-sm text-[color:var(--color-ink-muted)] flex items-center justify-between gap-2">
-          <span>해결 지침(프롬프트) — 미리 저장해 두면 충돌마다 이 지침으로 고칩니다</span>
+          <span>해결 지침(프롬프트)</span>
           <button id="ai-prompt-reset" type="button" class="gc-button-secondary text-display-xs">기본값으로</button>
         </span>
         <textarea id="ai-prompt" class="gc-input font-mono text-display-sm" rows="6"
           spellcheck="false"></textarea>
         <span class="text-display-xs text-[color:var(--color-ink-muted)]">
-          비워 두면 기본 지침을 씁니다. 팀 규칙(예: “API 시그니처는 상대 쪽을 따른다”,
-          “마이그레이션 파일은 절대 합치지 말고 양쪽을 모두 남긴다”)을 여기에 적어 두세요.
+          비워 두면 기본 지침을 씁니다. 팀 규칙(예: “마이그레이션 파일은 양쪽 모두 남긴다”)을 적어 두세요.
         </span>
       </label>
     </div>
 
     <div class="text-display-xs text-[color:var(--color-ink-muted)]">
-      키는 <code>~/.config/com.gitcompanion.app/config.json</code>에 평문 저장됩니다.
-      사용 후 비워 두려면 비활성화하세요.
+      키는 <code>config.json</code>에 평문으로 저장됩니다 — 안 쓸 때는 비활성화하세요.
     </div>
     <div class="flex justify-end">
       <button id="ai-save" class="gc-button-primary">저장</button>
@@ -338,9 +345,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
       <button class="gc-button-primary text-display-sm" id="btn-add-cred">+ 추가</button>
     </div>
     <div class="text-display-sm text-[color:var(--color-ink-muted)]">
-      HTTPS 원격 저장소에 푸시할 때 쓰는 Git 호스트 아이디/비밀번호입니다. 저장하면
-      푸시 시 모달 없이 자동 입력되며, <code>~/.config/com.gitcompanion.app/config.json</code>에
-      저장됩니다. SSH(키) 방식 저장소는 이 항목이 필요 없습니다.
+      HTTPS 원격 저장소에 푸시할 때 자동 입력됩니다. SSH 방식 저장소는 필요 없습니다.
     </div>
     <div id="cred-list" class="flex flex-col gap-2"></div>
   `;
@@ -355,7 +360,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
     list.innerHTML = "";
     const entries = Object.entries(saved);
     if (entries.length === 0) {
-      list.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)]">저장된 자격증명이 없습니다.</div>`;
+      list.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)]">+ 추가 버튼으로 푸시용 로그인을 저장하세요.</div>`;
     }
     for (const [repoId, cred] of entries) {
       const repo = allRepos.find((r) => r.id === repoId);
@@ -443,7 +448,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
 
   const footer = document.createElement("div");
   footer.className = "mt-auto pt-4 text-display-xs text-[color:var(--color-ink-muted)]";
-  footer.textContent = "Git Companion v0.1.1";
+  footer.textContent = "Git Companion v0.1.2";
   main.appendChild(footer);
 
   return main;

@@ -155,7 +155,7 @@ export async function renderRepoView(
   newBranchBtn.addEventListener("click", () => {
     const m = openModal({
       title: "새 브랜치",
-      description: "현재 브랜치에서 작업 브랜치를 만들어 전환합니다. 팀원이 push하는 브랜치 이름과 겹치지 않게 정하세요.",
+      description: "현재 브랜치에서 작업 브랜치를 만들어 전환합니다. 팀원 브랜치와 겹치지 않는 이름으로 정하세요.",
       submitLabel: "생성",
       onSubmit: async (close) => {
         const name = (m.body.querySelector<HTMLInputElement>("#nb-name")!).value.trim();
