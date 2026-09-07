@@ -80,9 +80,17 @@ pub fn run() {
                     )
                     .env("GC_PEER_PORT", "0")
                     .env("GC_BACKEND_URL", &backend_url)
+                    // 리스너가 "부모가 죽으면 함께 죽기" 위한 값 — 앱이 크래시로
+                    // 죽거나 설치기(taskkill)에 강제 종료돼도 리스너가 exe 파일을
+                    // 잠근 채 남지 않게 한다.
+                    .env("GC_PARENT_PID", std::process::id().to_string())
                     .stdout(std::process::Stdio::piped())
                     .spawn();
                 if let Ok(mut child) = child {
+                    // Windows: 잡 객체에 넣어 두면 앱 프로세스가 죽는 순간
+                    // 리스너도 즉시 내려간다 (부모 감시 폴링보다 더 확실).
+                    #[cfg(windows)]
+                    crate::win_job::assign_kill_on_close(child.id());
                     if let Some(stdout) = child.stdout.take() {
                         use std::io::{BufRead, BufReader};
                         let mut buf = String::new();
@@ -261,5 +269,76 @@ fn toggle_main_window(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+    }
+}
+
+/// Windows 전용: 자식 프로세스를 "잡 객체"에 넣어 앱 프로세스가 끝나면
+/// (정상 종료든, 크래시든, 설치기가 taskkill 로 강제 종료하든) 자식도 함께
+/// 죽게 만든다. 백그라운드 리스너(gc-peer-listener)가 혼자 남아 exe 파일을
+/// 잠그는 일이 없도록 하는 것이 목적 — 그 잠금 때문에 새 버전 설치가
+/// "Error opening file for writing" 으로 실패했었다.
+#[cfg(windows)]
+mod win_job {
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
+    };
+
+    /// 앱 수명 동안 유지되는 잡 (KILL_ON_JOB_CLOSE). 핸들을 OnceLock 에
+    /// 넣어 두면 프로세스가 끝날 때 OS 가 함께 정리한다.
+    /// HANDLE(=*mut c_void) 은 Send/Sync 가 아니므로 래퍼로 감싼다.
+    #[derive(Clone, Copy)]
+    struct JobHandle(HANDLE);
+    unsafe impl Send for JobHandle {}
+    unsafe impl Sync for JobHandle {}
+
+    static JOB: OnceLock<JobHandle> = OnceLock::new();
+
+    fn job() -> Option<HANDLE> {
+        let handle = JOB
+            .get_or_init(|| unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return JobHandle(std::ptr::null_mut());
+                }
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    job,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 {
+                    CloseHandle(job);
+                    return JobHandle(std::ptr::null_mut());
+                }
+                JobHandle(job)
+            })
+            .0;
+        (!handle.is_null()).then_some(handle)
+    }
+
+    /// `pid` 를 잡에 넣는다. 실패(이미 다른 잡 소속 등)는 조용히 무시한다 —
+    /// 리스너 쪽의 부모 감시(polling)가 대신 막아 준다.
+    pub fn assign_kill_on_close(pid: u32) {
+        let Some(job) = job() else {
+            return;
+        };
+        unsafe {
+            let process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, pid);
+            if process.is_null() {
+                return;
+            }
+            let _ = AssignProcessToJobObject(job, process);
+            CloseHandle(process);
+        }
     }
 }

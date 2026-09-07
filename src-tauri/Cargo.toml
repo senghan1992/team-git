@@ -40,6 +40,19 @@ url = { workspace = true }
 axum = "0.7"
 tower-http = { version = "0.6", features = ["cors"] }
 
+[target.'cfg(windows)'.dependencies]
+# 사이드카(gc-peer-listener)를 "앱이 죽으면 같이 죽는" 잡 객체에 넣고,
+# 리스너 쪽 부모 감시에도 쓴다.
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 wiremock = "0.6"

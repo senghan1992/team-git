@@ -36,6 +36,11 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "Keep your team in sync via webhook notifications.",
-    "longDescription": "Git Companion monitors local git repositories and posts push notifications to Slack, Discord, Teams, or any custom webhook. Visualize commit history and safely sync with your base branch."
+    "longDescription": "Git Companion monitors local git repositories and posts push notifications to Slack, Discord, Teams, or any custom webhook. Visualize commit history and safely sync with your base branch.",
+    "windows": {
+      "nsis": {
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
   }
 }
