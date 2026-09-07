@@ -1786,6 +1786,14 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         const token = requireSessionToken(s);
         return authProxy("GET", `/auth/users?q=${encodeURIComponent(q)}`, undefined, token);
       }
+      case "auth_config": {
+        // 간편(simple) | 구글(google) 로그인 방식 — 실제 서버의 /auth/config.
+        // 서버가 꺼져 있으면 simple 로 흘려보낸다 (버튼 숨김이 안전).
+        return authProxy("GET", "/auth/config").catch(() => ({
+          auth_mode: "simple",
+          google_enabled: false,
+        }));
+      }
 
       // ── 푸시 자격증명 (설정에서 저장 / 자동 입력) ────────────────────
       case "push_credentials_list": {

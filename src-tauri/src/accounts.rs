@@ -331,3 +331,40 @@ pub async fn search(query: &str) -> AppResult<Vec<Account>> {
 fn require_token() -> AppResult<String> {
     config_store::session_token()?.ok_or_else(|| AppError::Config("로그인이 필요합니다.".into()))
 }
+
+// ── auth 방식 (simple | google) ──────────────────────────────────────────────
+
+/// 서버가 정한 로그인 방식. 앱은 이 값으로 "Google로 로그인" 버튼 표시
+/// 여부를 정한다 (`AUTH_MODE` 환경변수 — simple 기본값).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthConfig {
+    pub auth_mode: String,
+    pub google_enabled: bool,
+}
+
+/// `GET /auth/config`. 서버에 닿지 못하면 **simple** 로 간주한다 — 구글
+/// 버튼을 감추는 쪽이 안전하고, 오프라인에서는 어차피 구글 로그인을
+/// 시작할 수 없다. 로그인 모달이 여는 시점에 부르므로 3초로 짧게 건다.
+pub async fn auth_config() -> AuthConfig {
+    let fallback = AuthConfig {
+        auth_mode: "simple".to_string(),
+        google_enabled: false,
+    };
+    let base = match backend_url() {
+        Ok(b) => b,
+        Err(_) => return fallback,
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return fallback,
+    };
+    let resp = match client.get(format!("{base}/auth/config")).send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return fallback,
+    };
+    resp.json::<AuthConfig>().await.unwrap_or(fallback)
+}

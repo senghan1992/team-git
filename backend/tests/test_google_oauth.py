@@ -8,7 +8,8 @@ from app.models import OAuthFlow, User
 
 @pytest.fixture
 def google_env(monkeypatch):
-    """Google 로그인이 설정된 서버 상태."""
+    """Google 로그인이 설정된 서버 상태 (구글 모드 + GOOGLE_* 3종)."""
+    monkeypatch.setenv("AUTH_MODE", "google")
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-client-secret")
     monkeypatch.setenv(
@@ -41,10 +42,72 @@ def _start(client: TestClient) -> dict:
 
 
 def test_url_requires_google_configuration(client: TestClient, monkeypatch):
+    monkeypatch.setenv("AUTH_MODE", "google")
     monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
     r = client.get("/auth/google/url", params={"redirect_uri": "http://127.0.0.1:1/x"})
     assert r.status_code == 400
     assert "설정" in r.json()["detail"]
+
+
+def test_url_requires_explicit_redirect_uri_env(client: TestClient, monkeypatch):
+    """GOOGLE_REDIRECT_URI 는 추정하지 않는다 — 원격 서버일 때 127.0.0.1 로
+    잘못 돌려보내 로그인이 영영 끝나지 않는 사고를 막으려고 꼭 명시하게 한다."""
+    monkeypatch.setenv("AUTH_MODE", "google")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-client-secret")
+    monkeypatch.delenv("GOOGLE_REDIRECT_URI", raising=False)
+    r = client.get("/auth/google/url", params={"redirect_uri": "http://127.0.0.1:1/x"})
+    assert r.status_code == 400
+    assert "GOOGLE_REDIRECT_URI" in r.json()["detail"]
+
+
+def test_url_blocked_in_simple_mode(client: TestClient, google_env, monkeypatch):
+    """AUTH_MODE 가 안 적혀 있으면(기본 simple) 구글 로그인이 닫혀 있다."""
+    monkeypatch.delenv("AUTH_MODE", raising=False)
+    r = client.get("/auth/google/url", params={"redirect_uri": "http://127.0.0.1:1/x"})
+    assert r.status_code == 400
+    assert "AUTH_MODE=google" in r.json()["detail"]
+
+
+def test_callback_blocked_in_simple_mode(client: TestClient, google_env, monkeypatch):
+    monkeypatch.delenv("AUTH_MODE", raising=False)
+    r = client.get("/auth/google/callback?state=whatever", follow_redirects=False)
+    # 브라우저 플로우라 302 로 앱의 루프백 주소로 오류를 돌려보낸다.
+    assert r.status_code == 302
+    assert "error=" in r.headers["location"]
+
+
+# ── /auth/config (로그인 화면 셋업 정보) ───────────────────────────────────────
+
+
+def test_config_defaults_to_simple(client: TestClient, monkeypatch):
+    monkeypatch.delenv("AUTH_MODE", raising=False)
+    r = client.get("/auth/config")
+    assert r.status_code == 200
+    body = r.json()
+    assert body == {"auth_mode": "simple", "google_enabled": False}
+
+
+def test_config_google_mode_requires_google_vars(client: TestClient, monkeypatch):
+    """google 모드여도 GOOGLE_* 설정이 빠지면 enabled=false → 버튼 감춤."""
+    monkeypatch.setenv("AUTH_MODE", "google")
+    r = client.get("/auth/config")
+    body = r.json()
+    assert body["auth_mode"] == "google"
+    assert body["google_enabled"] is False
+
+
+def test_config_google_mode_ready(client: TestClient, google_env):
+    r = client.get("/auth/config")
+    body = r.json()
+    assert body == {"auth_mode": "google", "google_enabled": True}
+
+
+def test_config_accepts_google_auth_spelling(client: TestClient, monkeypatch):
+    """운영자가 'google auth' 라고 써도 google 모드로 본다."""
+    monkeypatch.setenv("AUTH_MODE", "google auth")
+    r = client.get("/auth/config")
+    assert r.json()["auth_mode"] == "google"
 
 
 def test_url_rejects_non_loopback_redirect(client: TestClient, google_env):

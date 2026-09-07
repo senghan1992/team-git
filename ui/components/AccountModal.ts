@@ -13,9 +13,12 @@ import { setBusy } from "./Busy";
 import { refreshSession, setSession } from "../lib/session";
 
 /**
- * Google 로그인 버튼 + "또는" 구분선. 서버가 Google OAuth 를 지원하지 않아도
- * 버튼은 보이고, 누르면 서버가 알려 주는 사유(설정 안 됨 등)를 그대로 보여
- * 준다 — 감춰 버리면 "왜 다른 팀원은 되는데 나는 안 되지?"를 알 수 없다.
+ * Google 로그인 버튼 + "또는" 구분선.
+ *
+ * 서버가 `AUTH_MODE=google` 이고 GOOGLE_* 3종이 갖춰졌을 때만 만들어진다
+ * (호출부가 `auth_config()` 로 확인). 그 외(기본 simple)에는 아예 DOM 에
+ * 들어가지 않는다 — 감춰진 버튼을 누를 방법이 없으니 "왜 안 보이지?"는
+ * 서버 설정 문제이고, 읽는 쪽은 설정 확인 요청 메시지를 보여 준다.
  */
 function googleSignInRow(done: (me: Account) => void, errBox: HTMLElement): HTMLElement {
   const box = document.createElement("div");
@@ -59,6 +62,28 @@ function googleSignInRow(done: (me: Account) => void, errBox: HTMLElement): HTML
   });
   box.appendChild(btn);
   return box;
+}
+
+/**
+ * 서버의 로그인 방식을 물어 Google 버튼을 끼워 넣는다. google 모드에서만
+ * 버튼을 만들고 simple(기본)이거나 서버 답이 없으면 아무것도 넣지 않는다
+ * — `auth_config` 러스트 쪽이 실패를 simple 로 흘려보낸다. GOOGLE_* 설정이
+ * 아직 없어도 버튼은 보여 주고, 누르면 서버가 "무엇을 설정하라"는 사유를
+ * 알려 준다 (감추면 운영자가 원인을 찾을 수 없다).
+ */
+function maybeInsertGoogleRow(form: HTMLFormElement, done: (me: Account) => void, errBox: HTMLElement): void {
+  const insertAt = form.querySelector<HTMLButtonElement>("#acc-submit, #reg-submit");
+  if (!insertAt) return;
+  void ipc.authConfig().then((cfg) => {
+    if (cfg.auth_mode !== "google") return; // simple 모드 — 구글 버튼 없다
+    insertAt.insertAdjacentElement(
+      "beforebegin",
+      googleSignInRow(async (me) => {
+        // 닫고, 세션 저장, 환영 토스트 — 어느 모달이든 같은 마감.
+        done(me);
+      }, errBox),
+    );
+  });
 }
 
 /** 서버 주소를 입력하는 접히는 줄. 로그인·회원가입 모달이 함께 쓴다. */
@@ -175,14 +200,17 @@ export function openAccountModal(): void {
   const submit = form.querySelector<HTMLButtonElement>("#acc-submit")!;
   const errBox = form.querySelector<HTMLDivElement>("#acc-login-error")!;
 
-  // Google 버튼은 구분선 위에 놓기 위해 제출 버튼 바로 위(form 안)에 끼운다.
-  form
-    .querySelector<HTMLButtonElement>("#acc-submit")!
-    .insertAdjacentElement("beforebegin", googleSignInRow(async (me) => {
+  // Google 버튼은 제출 버튼 바로 위(form 안)에 끼운다 — 보이는 건
+  // 서버의 로그인 방식(AUTH_MODE)에 달렸다.
+  maybeInsertGoogleRow(
+    form,
+    async (me) => {
       m.close();
       await setSession(me);
       toast(`${me.name}님, 환영합니다!`, "success");
-    }, errBox));
+    },
+    errBox,
+  );
 
   form.querySelector<HTMLAnchorElement>("#acc-goto-register")!.addEventListener("click", () => {
     m.close();
@@ -266,13 +294,15 @@ export function openRegisterModal(): void {
   const submit = form.querySelector<HTMLButtonElement>("#reg-submit")!;
   const errBox = form.querySelector<HTMLDivElement>("#reg-error")!;
 
-  form
-    .querySelector<HTMLButtonElement>("#reg-submit")!
-    .insertAdjacentElement("beforebegin", googleSignInRow(async (me) => {
+  maybeInsertGoogleRow(
+    form,
+    async (me) => {
       m.close();
       await setSession(me);
       toast(`${me.name}님, 환영합니다!`, "success");
-    }, errBox));
+    },
+    errBox,
+  );
 
   form.querySelector<HTMLAnchorElement>("#reg-goto-login")!.addEventListener("click", () => {
     m.close();

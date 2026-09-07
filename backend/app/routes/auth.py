@@ -24,9 +24,10 @@ from app.auth import (
     GOOGLE_ONLY,
     GOOGLE_SCOPE,
     OAUTH_FLOW_TTL_SECONDS,
+    auth_mode,
     generate_token,
-    google_configured,
     google_client_id,
+    google_enabled,
     google_exchange_code,
     google_redirect_uri,
     google_unique_username,
@@ -37,6 +38,7 @@ from app.auth import (
 from app.deps import bearer_token, get_db, get_user
 from app.models import OAuthFlow, ProjectMemberEmail, User, UserSession
 from app.schemas import (
+    AuthConfigResponse,
     AuthResponse,
     GoogleUrlResponse,
     LoginRequest,
@@ -130,6 +132,19 @@ def me(user: User = Depends(get_user)):
     return _public(user)
 
 
+@router.get("/config")
+def auth_config() -> AuthConfigResponse:
+    """
+    로그인 화면 셋업 정보. 인증 없이 누구나 읽을 수 있다.
+
+    `AUTH_MODE=simple`(기본) 이면 앱이 Google 버튼을 숨기고, `google` 이면
+    준비가 끝났을 때(GOOGLE_* 3종) 버튼을 보여 준다. 앱이 서버 주소를
+    모르거나 서버가 죽어 있으면 simple 로 간주하므로, 오프라인에서도
+    로그인 화면이 깨지지 않는다.
+    """
+    return AuthConfigResponse(auth_mode=auth_mode(), google_enabled=google_enabled())
+
+
 @router.get("/google/url", response_model=GoogleUrlResponse)
 def google_auth_url(
     redirect_uri: str = Query(..., min_length=1, max_length=512),
@@ -143,11 +158,19 @@ def google_auth_url(
     `http://127.0.0.1:54321/auth/google/complete`. It must be loopback-only,
     because the finished token is handed to whatever URL sits there.
     """
-    if not google_configured():
+    if auth_mode() != "google":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "서버가 간편 로그인 모드(simple)입니다. Google 로그인을 쓰려면 "
+            "서버 관리자가 AUTH_MODE=google 로 바꾸고 GOOGLE_CLIENT_ID / "
+            "GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI 를 설정해 주세요.",
+        )
+    if not google_enabled():
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "서버에 Google 로그인이 아직 설정되지 않았습니다. "
-            "서버 관리자에게 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET 설정을 요청하세요.",
+            "서버 관리자에게 GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / "
+            "GOOGLE_REDIRECT_URI 설정을 요청하세요.",
         )
     parsed = urlsplit(redirect_uri)
     loopback = parsed.hostname in ("127.0.0.1", "localhost", "::1", "[::1]") or (
@@ -193,6 +216,11 @@ def google_callback(
     A 302 redirect is what makes the whole handshake browser-friendly: the
     app's login webview just needs to follow it.
     """
+    if auth_mode() != "google":
+        # simple 모드에서는 시작(/auth/google/url)부터 막혀 flow 가 생길 수
+        # 없지만, 예전 로그인 창이 남아 있는 구형 앱이 직접 때릴 수도 있다.
+        return _google_finish(None, "서버가 간편 로그인 모드입니다. Google 로그인을 사용할 수 없습니다.")
+
     flow = None
     if state:
         flow = db.query(OAuthFlow).filter(OAuthFlow.state == state).first()

@@ -213,33 +213,114 @@ py -3 -m venv .venv; .\.venv\Scripts\pip install -e ".[dev]"
 
 ### Google 로그인 (선택)
 
+로그인 방식은 서버 환경변수 `AUTH_MODE` 로 바꿉니다.
+
+- `AUTH_MODE=simple` (**기본**) — 예전 그대로 아이디+비밀번호 로그인/회원가입.
+  Google 버튼은 화면에 나오지 않고, Google 로그인 API 도 닫혀 있습니다.
+- `AUTH_MODE=google` — 로그인 화면에 **Google로 로그인** 버튼이 추가됩니다.
+  (아이디+비밀번호 로그인도 그대로 동작합니다 — 기존 계정이 잠기지 않게.)
+
+```env
+# .env  (루트 폴더)
+AUTH_MODE=google
+```
+
+서버가 `simple` 모드인데 Google 로그인을 시도하면 서버가 "AUTH_MODE=google 로
+바꿔 달라"는 사유를 그대로 보여 주므로, "왜 버튼이 없지?"는 설정 문제임을
+바로 알 수 있습니다.
+
 서버 관리자가 아래 설정을 마치면 로그인 화면에 **Google로 로그인** 버튼이
-생깁니다 (설정이 없으면 버튼을 눌렀을 때 서버가 안내합니다).
+생깁니다 (설정이 없으면 버튼을 눌렀을 때 서버가 "환경변수를 설정하세요"라고
+안내합니다). 처음 하는 사람 기준 10~15분이면 끝납니다.
 
-1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials)에서
-   OAuth 클라이언트 ID(앱 유형: **데스크톱 앱**)를 만들고,**승인된 리디렉션
-   URI**에 이 서버의 콜백 주소를 등록하세요 (콘솔에 등록한 값과 환경변수는
-   반드시 같아야 합니다):
+#### 1단계 — Google Cloud Console 에서 OAuth 클라이언트 만들기
 
-   ```
-   http://127.0.0.1:8000/auth/google/callback   # 서버가 8000 포트일 때
-   ```
+1. <https://console.cloud.google.com/apis/credentials> 에 접속하고, 상단에서
+   팀 서버에 쓸 **프로젝트**를 만들거나 선택하세요.
+2. 처음이면 **OAuth 동의 화면** 구성이 먼저 나옵니다 — 앱 이름(예: "Git
+   Companion"), 지원 이메일(내 구글 계정)을 넣고 저장하세요. (외부 사용자
+   유형, 검증은 필요 없습니다 — 아래 6번 참고)
+3. **사용자 인증 정보 만들기 → OAuth 클라이언트 ID** 를 누르세요.
+   - 애플리케이션 유형: **웹 애플리케이션** ← 반드시 웹 앱이어야 합니다
+     (데스크톱 앱 유형은 이 서버 콜백 주소를 등록할 수 없어 로그인이
+     실패합니다).
+   - 이름은 아무거나 (예: "Git Companion team server").
+   - **승인된 리디렉션 URI** 에 아래 한 줄을 추가하세요 (서버 IP/포트에
+     맞춰 변경):
 
-2. 서버 실행 시 환경변수로 넣습니다:
+     ```
+     http://<서버IP>:8000/auth/google/callback
+     ```
 
-   ```bash
-   export GOOGLE_CLIENT_ID="....apps.googleusercontent.com"
-   export GOOGLE_CLIENT_SECRET="GOCSPX-..."
-   export GOOGLE_REDIRECT_URI="http://127.0.0.1:8000/auth/google/callback"
-   cd backend && uvicorn app.main:app
-   ```
+4. **만들기**를 누르면 **클라이언트 ID**와 **클라이언트 보안 비밀번호**가
+   나옵니다. 둘 다 복사해 두세요 (비밀번호는 이때만 전체가 보입니다).
+   - ID는 `….apps.googleusercontent.com` 모양, 비밀번호는 `GOCSPX-…` 로
+     시작합니다.
+5. OAuth 동의 화면 상태가 **"테스트 중"이면 테스트 사용자로 등록된 구글
+   계정만 로그인할 수 있습니다** — 팀원 전원의 이메일을 테스트 사용자에
+   넣거나, 동의 화면에서 **앱 게시**를 눌러 "검증되지 않은 앱" 상태로
+   쓰세요 (소규모 팀에서는 그대로 진행하면 됩니다).
+6. 리디렉션 URI 를 나중에 바꿨다면 콘솔의 클라이언트 설정에도 같은 값을
+   다시 등록해야 합니다 — 콘솔 값과 환경변수는 **정확히 일치**해야만
+   Google 이 인증을 돌려보냅니다.
 
-   Docker 배포는 `docker-compose.yml` 에 네 변수로 추가하면 됩니다.
+#### 2단계 — 서버에 환경변수 넣기
 
-3. Google 로그인은 **계정을 새로 만들거나, 같은 이메일의 기존 계정으로
-   로그인**합니다. Google 계정에는 비밀번호가 없어서 아이디/비밀번호
-   로그인과 비밀번호 변경은 할 수 없지만, 팀 구성원·병합 관리자 매칭은
-   이메일로 되므로 팀 기능은 동일하게 쓸 수 있습니다.
+서버는 실행할 때 아래 값들을 환경변수로 읽습니다 (한 글자도 다르면 안
+됩니다). `AUTH_MODE=google` 이어야 구글 로그인이 켜집니다:
+
+**Docker 배포 (권장)** — 프로젝트 루트에 `.env` 파일을 만들어 넣으세요.
+`docker compose` 가 이 파일을 자동으로 읽습니다:
+
+```env
+# .env  (루트 폴더)
+AUTH_MODE=google
+GOOGLE_CLIENT_ID=123456….apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-…
+GOOGLE_REDIRECT_URI=http://<서버IP>:8000/auth/google/callback
+```
+
+저장한 뒤 컨테이너를 다시 만듭니다 (환경변수는 컨테이너 생성 시점에
+고정되므로 재시작이 필요합니다):
+
+```bash
+docker compose up -d
+```
+
+**Docker 없이 uvicorn 으로 실행** — 셸에서 실행하기 전에 넣으면 됩니다
+(Windows PowerShell 은 `$env:이름="값"`):
+
+```bash
+export AUTH_MODE="google"
+export GOOGLE_CLIENT_ID="….apps.googleusercontent.com"
+export GOOGLE_CLIENT_SECRET="GOCSPX-…"
+export GOOGLE_REDIRECT_URI="http://<서버IP>:8000/auth/google/callback"
+cd backend && uvicorn app.main:app
+```
+
+#### 3단계 — 잘 설정됐는지 확인
+
+서버가 뜬 뒤 브라우저/터미널에서 (리디렉션 URI 는 아무 루프백 주소나
+됩니다 — 앱이 자기 임의 포트로 돌려받는 값입니다):
+
+```bash
+curl "http://<서버IP>:8000/auth/google/url?redirect_uri=http://127.0.0.1:1/x"
+```
+
+- `accounts.google.com` 이 들어간 주소가 나오면 → 성공. 그 주소를 브라우저에
+  붙여넣으면 구글 동의 화면이 뜹니다.
+- `GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI 설정을
+  요청하세요` 라는 400 응답이면 → 환경변수가 서버에 안 들어갔습니다
+  (`.env` 파일 위치, 컨테이너 재생성 여부 확인).
+- `redirect_uri_mismatch` 오류로 동의 화면이 실패하면 → 콘솔에 등록한
+  리디렉션 URI 와 환경변수가 다른 것입니다.
+
+#### 동작 방식
+
+Google 로그인은 **계정을 새로 만들거나, 같은 이메일의 기존 계정으로
+로그인**합니다. Google 계정에는 비밀번호가 없어서 아이디/비밀번호
+로그인과 비밀번호 변경은 할 수 없지만, 팀 구성원·병합 관리자 매칭은
+이메일로 되므로 팀 기능은 동일하게 쓸 수 있습니다.
 
 ### 트레이 (닫아도 꺼지지 않음)
 

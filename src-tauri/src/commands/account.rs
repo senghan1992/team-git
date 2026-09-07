@@ -67,3 +67,10 @@ pub async fn account_delete_self() -> AppResult<()> {
 pub async fn account_search(query: String) -> AppResult<Vec<Account>> {
     accounts::search(&query).await
 }
+
+/// 서버가 정한 로그인 방식 — simple 이면 앱이 Google 버튼을 숨긴다.
+/// 서버에 닿지 못해도 실패하지 않고 simple 로 답한다 (감추는 쪽이 안전).
+#[tauri::command]
+pub async fn auth_config() -> accounts::AuthConfig {
+    accounts::auth_config().await
+}

@@ -19,6 +19,10 @@ use tauri::Manager;
 static QUITTING: AtomicBool = AtomicBool::new(false);
 /// 창을 숨긴 뒤 "트레이에 있습니다" 안내는 앱 켤 때 한 번만.
 static TRAY_HINT_SENT: AtomicBool = AtomicBool::new(false);
+/// 트레이 아이콘이 실제로 떠 있을 때만 X 를 "숨김"으로 받아들인다. 트레이
+/// 생성이 실패한 환경(리눅스에서 appindicator 없음 등)에서 창을 숨겨 버리면
+/// 되살릴 방법이 없어 "그냥 꺼진 것처럼" 보인다 — 그때는 평범하게 종료한다.
+static TRAY_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 pub fn run() {
     tauri::Builder::default()
@@ -34,7 +38,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let _ = setup_tray(app.handle());
+            match setup_tray(app.handle()) {
+                Ok(()) => TRAY_AVAILABLE.store(true, Ordering::Relaxed),
+                Err(e) => {
+                    // 트레이가 없는 환경 — X 를 누르면 그냥 종료되게 둔다.
+                    tracing::warn!("트레이 아이콘을 만들지 못해 닫기=종료로 동작합니다: {e}");
+                }
+            }
             let cfg_dir = match config_store::config_dir() {
                 Ok(d) => d,
                 Err(_) => return Ok(()),
@@ -109,7 +119,11 @@ pub fn run() {
         // — 정상적으로 닫혀야 한다 (닫힘 = 로그인 취소).
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if !QUITTING.load(Ordering::Relaxed) && window.label() == "main" {
+                // 트레이가 없는데 숨기기만 하면 되살릴 방법이 없다 — 종료한다.
+                if !QUITTING.load(Ordering::Relaxed)
+                    && window.label() == "main"
+                    && TRAY_AVAILABLE.load(Ordering::Relaxed)
+                {
                     api.prevent_close();
                     let _ = window.hide();
                     // 처음 숨길 때만 "숨은 게 아니라 트레이에 남았다"를 알린다.
@@ -157,6 +171,7 @@ pub fn run() {
             commands::account::account_change_password,
             commands::account::account_delete_self,
             commands::account::account_search,
+            commands::account::auth_config,
             commands::project::project_config_get,
             commands::project::project_config_set,
             commands::project::project_config_commit,

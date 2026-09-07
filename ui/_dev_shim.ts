@@ -164,6 +164,14 @@ const mockData: Record<string, any> = {
   // 브라우저 미리보기에는 Tauri 로컬 콜백 서버가 없다 — 유용한 오류를 준다.
   google_login_start: () =>
     Promise.reject(new Error("브라우저 미리보기에서는 Google 로그인을 지원하지 않습니다. pnpm tauri dev 로 실행하세요.")),
+  // 미리보기 기본은 google 모드로 두어 구글 버튼을 볼 수 있게 한다. DOM
+  // 테스트 등에서 simple 모드를 흉내 내려면 window.__GC_AUTH_MODE__='simple'.
+  auth_config: () => {
+    const mode = (globalThis as Record<string, unknown>).__GC_AUTH_MODE__ === "simple"
+      ? "simple"
+      : "google";
+    return { auth_mode: mode, google_enabled: mode === "google" };
+  },
   account_login_by_password: (args: { username: string; password: string }) =>
     ({ id: "u-me", name: "김민지", email: "minji@example.com", username: args.username, password_hash: null, created_at: new Date().toISOString() }) as never,
   project_config_get: {

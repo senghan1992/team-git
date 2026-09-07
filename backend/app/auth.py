@@ -48,15 +48,56 @@ def google_client_id() -> str:
     return os.environ.get("GOOGLE_CLIENT_ID", "").strip()
 
 
+def auth_mode() -> str:
+    """
+    로그인 방식 — `AUTH_MODE` 환경변수로 바꾼다.
+
+    - `simple` (기본): 예전 그대로 아이디+비밀번호 로그인/회원가입. 구글
+      버튼은 UI 에서 감춰지고 Google 엔드포인트도 닫힌다.
+    - `google`: Google 로그인 버튼이 켜진다 (아이디/비밀번호 로그인도 그대로
+      동작 — 이미 만든 계정이 남아 있는 상태에서 잠기지 않게).
+
+    사내 테스트처럼 "당분간은 예전 방식, 나중에 Google" 을 바꿔 가며 쓰기
+    위한 스위치다. 오타 등은 관대히 받아들여 구글 계열 문자열이면 google 로
+    본다 ("google auth" 포함).
+    """
+    mode = os.environ.get("AUTH_MODE", "").strip().lower()
+    return "google" if mode in ("google", "google auth", "google-auth") else "simple"
+
+
+def google_enabled() -> bool:
+    """google 모드 + Google 설정 3종이 모두 준비됐을 때만 켜진다."""
+    return auth_mode() == "google" and google_configured()
+
+
 def google_configured() -> bool:
     """True when the server operator set up all three Google env vars."""
-    return bool(google_client_id()) and bool(os.environ.get("GOOGLE_CLIENT_SECRET", "").strip())
+    return (
+        bool(google_client_id())
+        and bool(os.environ.get("GOOGLE_CLIENT_SECRET", "").strip())
+        and bool(os.environ.get("GOOGLE_REDIRECT_URI", "").strip())
+    )
 
 
 def google_redirect_uri() -> str:
-    """The backend's own `/auth/google/callback` URL Google must redirect to."""
-    return os.environ.get("GOOGLE_REDIRECT_URI", "").strip() or \
-        f"http://127.0.0.1:{os.environ.get('PORT', '8000')}/auth/google/callback"
+    """
+    The backend's own `/auth/google/callback` URL Google must redirect to.
+
+    필수 환경변수다 — Google Cloud Console 에 등록한 것과 **정확히** 같은 값을
+    넣어야 한다. 예전에는 안 넣으면 127.0.0.1 로 임의 추정했는데, 서버가
+    원격(팀 서버 IP)에 있으면 Google 이 사용자 컴퓨터의 127.0.0.1 로 돌려보내
+    로그인이 영영 안 끝나는 원인이 됐다. 추정하지 말고 운영자가 명시하게 한다.
+    """
+    uri = os.environ.get("GOOGLE_REDIRECT_URI", "").strip()
+    if not uri:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "서버에 GOOGLE_REDIRECT_URI 가 설정되지 않았습니다. "
+            "Google Cloud Console 의 OAuth 클라이언트에 등록한 리디렉션 URI "
+            "(예: http://<서버주소>:8000/auth/google/callback) 를 환경변수로 "
+            "넣고 서버를 다시 시작하세요.",
+        )
+    return uri
 
 
 def google_unique_username(email: str, taken: set[str]) -> str:
@@ -84,6 +125,9 @@ def google_exchange_code(code: str) -> tuple[str, str]:
     """
     client_id = google_client_id()
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET", "").strip()
+    # 코드 교환에 쓰는 redirect_uri 는 동의 화면에 썼던 값과 반드시 같아야
+    # 한다. 설정이 빠졌다면 깔끔한 오류를 돌려준다 (try 밖에서 판정).
+    redirect_uri = google_redirect_uri()
     try:
         with httpx.Client(timeout=15) as client:
             resp = client.post(

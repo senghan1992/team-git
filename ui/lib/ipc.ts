@@ -253,6 +253,14 @@ export interface Account {
   created_at: string;
 }
 
+/** 서버가 정한 로그인 방식 — simple 이면 Google 버튼을 숨긴다. */
+export interface AuthConfig {
+  /** "simple" (아이디+비밀번호만) | "google" (구글 버튼 추가) */
+  auth_mode: "simple" | "google";
+  /** google 모드이면서 GOOGLE_* 3종 설정이 끝났을 때만 true — 정보용. */
+  google_enabled: boolean;
+}
+
 export interface PushCredential {
   username: string;
   password: string;
@@ -496,6 +504,8 @@ export const ipc = {
    * 로그인 창이 닫힐 때까지 기다렸다가 로그인한 계정을 돌려준다.
    */
   googleLoginStart: () => invoke<Account>("google_login_start"),
+  /** 서버가 정한 로그인 방식. simple 이면 Google 버튼을 숨긴다. */
+  authConfig: () => invoke<AuthConfig>("auth_config"),
   accountLogout: () => invoke<void>("account_logout"),
   accountCurrent: () => invoke<Account | null>("account_current"),
   /** 서버에서 내 정보를 다시 읽는다. 오프라인이면 캐시를 그대로 돌려준다. */

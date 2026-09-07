@@ -38,6 +38,18 @@ class GoogleUrlResponse(BaseModel):
     url: str
 
 
+class AuthConfigResponse(BaseModel):
+    """로그인 화면이 어떤 방식들을 보여줄지 — 서버가 알려준다.
+
+    `auth_mode` 는 운영자가 정한 값: `simple`(아이디+비밀번호만) 또는
+    `google`(구글 버튼 추가). `google_enabled` 는 google 모드이면서 구글
+    설정 3종(CLIENT_ID / CLIENT_SECRET / REDIRECT_URI)이 다 갖춰졌을 때만
+    true — 앱은 이 값으로 "Google로 로그인" 버튼 표시 여부를 정한다.
+    """
+    auth_mode: str
+    google_enabled: bool
+
+
 class ProfileUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=256)
     email: str | None = Field(default=None, min_length=3, max_length=256)
