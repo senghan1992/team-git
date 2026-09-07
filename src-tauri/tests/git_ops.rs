@@ -704,7 +704,6 @@ fn config_v6_default_ai_disabled() {
         "schema_version": 5,
         "repositories": [],
         "projects": [],
-        "external_tools": [],
         "ssh_profile": {
             "default_user": "",
             "default_key_path": "",

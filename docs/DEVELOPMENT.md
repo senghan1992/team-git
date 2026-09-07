@@ -56,8 +56,8 @@
   `PubkeyAuthentication=no`, `NumberOfPasswordPrompts=1`).
 - **UI (`ui/`)** — Vite + TypeScript + Tailwind v4, no framework. Views: Home
   (repo cards with the suggested next action), Repo (work / merge / project
-  config tabs), Team (inbox), Settings (SSH profile, sub-tool launcher, AI
-  auto-merge, push credentials). The "next action" rule lives in
+  config tabs), Team (inbox), Settings (SSH profile, AI auto-merge, push
+  credentials). The "next action" rule lives in
   `ui/components/nextAction.ts` as a pure function; the merge-time change map
   in `ui/components/ChangeMap.ts`.
 - **pre-push hook** — embedded in the binary via `include_str!`, installed to
