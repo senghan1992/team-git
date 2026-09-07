@@ -482,6 +482,7 @@ setx GIT_COMPANION_BIN "$PWD\target\release\git-companion.exe"
 | --- | --- |
 | `'cargo'(또는 git, node, pnpm)은(는) … 인식되지 않습니다` | PowerShell 창을 닫고 새로 여세요. 그래도 안 되면 해당 도구를 1·2단계대로 다시 설치. |
 | `error: linker 'link.exe' not found` / `failed to find tool "lib.exe"` | C++ 빌드 도구가 없다는 뜻 — 1단계의 마지막 `winget` 명령(Build Tools)을 다시 실행하고 끝까지 기다리세요. |
+| 빌드 중 `failed to remove file ... gc-peer-listener.exe` / `액세스가 거부되었습니다 (os error 5)` | 앱이나 백그라운드 리스너가 켜져 있어 exe 를 덮어쓸 수 없다는 뜻. 최신 버전은 빌드가 자동으로 정리합니다. 그래도 나오면 아래를 실행한 뒤 다시 빌드하세요: `taskkill /F /IM gc-peer-listener.exe; taskkill /F /IM "Git Companion.exe"` |
 | `cargo tauri build`에서 `no such command: tauri` | 2단계의 `cargo install tauri-cli --version "^2.0"`이 안 끝났거나 실패한 것 — 다시 실행. |
 | 빌드가 20분 넘게 걸린다 | 첫 빌드는 원래 깁니다. 멈춘 게 아니라 컴파일 중이면 그대로 두세요. |
 | `pnpm install`에서 `[EISDIR] ... symlink ...` 에러 (Windows) | 이전 설치가 중간에 끊겨 pnpm 스토어에 잔재(실제 폴더)가 남은 것. 스토어 경로는 `pnpm config get store-dir`로 확인하고, 그 스토어 폴더와 프로젝트의 `node_modules`를 지운 뒤(`Remove-Item -Recurse -Force <스토어폴더>`, `Remove-Item -Recurse -Force .\node_modules`) `pnpm install` 재실행. 스토어는 캐시라 지워도 다시 받습니다. 스토어를 프로젝트와 같은 드라이브에 두는 것도 도움이 됩니다. |
