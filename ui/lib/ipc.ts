@@ -236,6 +236,13 @@ export interface AiConfig {
   binary_strategy: string;
 }
 
+/** AI 연결 테스트 결과 (설정 화면의 "연결 테스트" 버튼). */
+export interface AiProbeResult {
+  ok: boolean;
+  latency_ms: number;
+  detail: string;
+}
+
 // ─── 로그인 계정 / 푸시 자격증명 / 프로젝트 설정 ───────────────────────────────
 
 /**
@@ -479,6 +486,8 @@ export const ipc = {
   getAiConfig: () => invoke<AiConfig>("get_ai_config"),
   setAiConfig: (cfg: AiConfig) => invoke<void>("set_ai_config", { cfg }),
   aiDefaultPrompt: () => invoke<string>("ai_default_prompt"),
+  /** 입력 중인 설정으로 즉시 연결을 시험한다 — 저장과 무관. */
+  aiProbe: (cfg: AiConfig) => invoke<AiProbeResult>("ai_probe", { cfg }),
   aiSuggestResolution: (
     filePath: string,
     base: string | null,

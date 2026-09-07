@@ -200,5 +200,29 @@ assert(
   isMergeManagerFor(cfg({ "release/1.0": "lead@x.com" }), "other@x.com", "main"),
   "다른 브랜치에만 관리자가 있으면 main 은 자유롭다",
 );
+assert(
+  isMergeManagerFor(
+    cfg({ main: "lead@x.com,second@x.com" }),
+    "second@x.com",
+    "main",
+  ),
+  "여러 명을 쉼표로 지정한 브랜치의 관리자도 인정된다",
+);
+assert(
+  isMergeManagerFor(
+    cfg({ main: "lead@x.com,second@x.com" }),
+    "lead@x.com",
+    "main",
+  ),
+  "목록의 첫 번째 관리자도 인정된다",
+);
+assert(
+  !isMergeManagerFor(
+    cfg({ main: "lead@x.com,second@x.com" }),
+    "third@x.com",
+    "main",
+  ),
+  "목록에 없는 사람은 관리자가 아니다",
+);
 
 console.log("\n✓ nextAction 전체 통과");

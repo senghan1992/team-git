@@ -199,12 +199,25 @@ export async function renderSettingsView(): Promise<HTMLElement> {
 
     <div id="ai-conn" class="flex flex-col gap-3 pl-1">
       <label class="flex flex-col gap-1">
+        <span class="text-display-sm text-[color:var(--color-ink-muted)]">제공자</span>
+        <select id="ai-provider" class="gc-input">
+          <option value="custom">커스텀 — OpenAI 호환 (회사 LLM, pi, vLLM 등)</option>
+          <option value="openai">OpenAI</option>
+          <option value="ollama">Ollama (내 컴퓨터에서 실행)</option>
+        </select>
+        <span class="text-display-xs text-[color:var(--color-ink-muted)]">
+          이 앱의 AI 해결사는 OpenAI 호환 <code>/chat/completions</code> API를 씁니다 —
+          pi 같은 커스텀 엔드포인트도 Base URL만 바꿔 바로 연결할 수 있습니다.
+        </span>
+      </label>
+
+      <label class="flex flex-col gap-1">
         <span class="text-display-sm text-[color:var(--color-ink-muted)]">Base URL</span>
-        <input id="ai-base-url" class="gc-input" placeholder="https://api.openai.com/v1" />
+        <input id="ai-base-url" class="gc-input font-mono" placeholder="https://api.openai.com/v1" />
       </label>
       <label class="flex flex-col gap-1">
         <span class="text-display-sm text-[color:var(--color-ink-muted)]">모델</span>
-        <input id="ai-model" class="gc-input" placeholder="gpt-4o-mini" />
+        <input id="ai-model" class="gc-input font-mono" placeholder="gpt-4o-mini" />
       </label>
       <label class="flex flex-col gap-1">
         <span class="text-display-sm text-[color:var(--color-ink-muted)]">API 키</span>
@@ -255,7 +268,9 @@ export async function renderSettingsView(): Promise<HTMLElement> {
     <div class="text-display-xs text-[color:var(--color-ink-muted)]">
       키는 <code>config.json</code>에 평문으로 저장됩니다 — 안 쓸 때는 비활성화하세요.
     </div>
-    <div class="flex justify-end">
+    <div class="flex justify-end items-center gap-2">
+      <span id="ai-test-result" class="text-display-xs min-w-0"></span>
+      <button id="ai-test" class="gc-button-secondary">연결 테스트</button>
       <button id="ai-save" class="gc-button-primary">저장</button>
     </div>
   `;
@@ -302,9 +317,30 @@ export async function renderSettingsView(): Promise<HTMLElement> {
   }
   syncAiDisclosure();
 
-  aiSection.querySelector<HTMLButtonElement>("#ai-save")!.addEventListener("click", async () => {
+  // 제공자 선택 — 고르면 Base URL·모델 자리를 알맞은 기본값으로 채워 준다.
+  // 사용자가 이미 값을 적었을 때는 덮어쓰지 않는다 (기본값 문자열과 같을 때만).
+  const providerSel = aiSection.querySelector<HTMLSelectElement>("#ai-provider")!;
+  const aiBaseInput = aiSection.querySelector<HTMLInputElement>("#ai-base-url")!;
+  const aiModelInput = aiSection.querySelector<HTMLInputElement>("#ai-model")!;
+  const providerPresets: Record<string, { base: string; model: string }> = {
+    openai: { base: "https://api.openai.com/v1", model: "gpt-4o-mini" },
+    ollama: { base: "http://localhost:11434/v1", model: "llama3.2" },
+    custom: { base: "", model: "" },
+  };
+  providerSel.addEventListener("change", () => {
+    const p = providerPresets[providerSel.value];
+    if (!p) return;
+    if (!aiBaseInput.value.trim() || Object.values(providerPresets).some((x) => x.base === aiBaseInput.value.trim())) {
+      aiBaseInput.value = p.base;
+    }
+    aiModelInput.placeholder = p.model || "예: gpt-4o-mini, llama3.2";
+    if (!aiModelInput.value.trim()) aiModelInput.value = p.model;
+  });
+
+  // 입력 중인 값들로 AiConfig 를 만든다 — 저장과 연결 테스트가 같은 값을 쓰도록.
+  function readAiCfg() {
     const typedPrompt = aiPrompt.value.trim();
-    const cfg = {
+    return {
       enabled: aiEnabledBox.checked,
       base_url: aiSection.querySelector<HTMLInputElement>("#ai-base-url")!.value.trim(),
       api_key: aiSection.querySelector<HTMLInputElement>("#ai-api-key")!.value,
@@ -317,6 +353,41 @@ export async function renderSettingsView(): Promise<HTMLElement> {
         ? "ours"
         : "theirs",
     };
+  }
+
+  // 연결 테스트 — 저장 전에 이 서버·모델·키가 실제로 응답하는지 확인한다.
+  // 결과는 성공이면 초록(응답 시간), 실패면 빨강(사유)으로 보여 준다.
+  const testResult = aiSection.querySelector<HTMLElement>("#ai-test-result")!;
+  const testBtn = aiSection.querySelector<HTMLButtonElement>("#ai-test")!;
+  testBtn.addEventListener("click", async () => {
+    const cfg = readAiCfg();
+    if (!cfg.base_url || !cfg.model) {
+      testResult.textContent = "Base URL과 모델명을 먼저 입력하세요.";
+      testResult.className = "text-display-xs text-[color:var(--color-danger)]";
+      return;
+    }
+    testBtn.disabled = true;
+    testResult.textContent = "확인 중…";
+    testResult.className = "text-display-xs text-[color:var(--color-ink-muted)]";
+    try {
+      const r = await ipc.aiProbe(cfg);
+      if (r.ok) {
+        testResult.textContent = `연결 성공 — 응답 ${r.latency_ms}ms`;
+        testResult.className = "text-display-xs text-[color:var(--color-success)] font-medium";
+      } else {
+        testResult.textContent = `연결 실패: ${r.detail}`;
+        testResult.className = "text-display-xs text-[color:var(--color-danger)]";
+      }
+    } catch (e) {
+      testResult.textContent = `연결 실패: ${(e as Error).message ?? e}`;
+      testResult.className = "text-display-xs text-[color:var(--color-danger)]";
+    } finally {
+      testBtn.disabled = false;
+    }
+  });
+
+  aiSection.querySelector<HTMLButtonElement>("#ai-save")!.addEventListener("click", async () => {
+    const cfg = readAiCfg();
     if (cfg.enabled && (!cfg.base_url || !cfg.model)) {
       toast("AI를 사용하려면 Base URL과 모델명을 입력하세요.", "error");
       return;
@@ -448,7 +519,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
 
   const footer = document.createElement("div");
   footer.className = "mt-auto pt-4 text-display-xs text-[color:var(--color-ink-muted)]";
-  footer.textContent = "Git Companion v0.1.2";
+  footer.textContent = "Git Companion v0.1.3";
   main.appendChild(footer);
 
   return main;

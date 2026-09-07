@@ -172,6 +172,8 @@ const mockData: Record<string, any> = {
       : "google";
     return { auth_mode: mode, google_enabled: mode === "google" };
   },
+  ai_probe: () =>
+    Promise.resolve({ ok: true, latency_ms: 42, detail: "pong (미리보기 목 데이터)" }),
   account_login_by_password: (args: { username: string; password: string }) =>
     ({ id: "u-me", name: "김민지", email: "minji@example.com", username: args.username, password_hash: null, created_at: new Date().toISOString() }) as never,
   project_config_get: {

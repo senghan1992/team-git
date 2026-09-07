@@ -216,9 +216,16 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
       del.appendChild(delLabel);
       del.addEventListener("click", () => {
         config.members = config.members.filter((x) => x.email !== member.email);
-        config.merge_managers = Object.fromEntries(
-          Object.entries(config.merge_managers).filter(([, e]) => e !== member.email),
-        );
+        // 구성원을 빼면 관리자 목록에서도 그 이메일을 뺀다 (여러 명이 섞여
+        // 있을 수 있으므로 목록 값에서 하나씩 걸러 낸다).
+        for (const branch of Object.keys(config.merge_managers)) {
+          const kept = config.merge_managers[branch]
+            .split(",")
+            .map((s) => s.trim())
+            .filter((e) => e.toLowerCase() !== member.email.toLowerCase());
+          if (kept.length === 0) delete config.merge_managers[branch];
+          else config.merge_managers[branch] = kept.join(",");
+        }
         config.notify_recipients = config.notify_recipients.filter((e) => e !== member.email);
         renderMembers();
         renderTargets();
@@ -401,6 +408,18 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   targetList.className = "flex flex-col gap-2";
   targetCard.appendChild(targetList);
 
+  // 병합 관리자는 한 브랜치에 여러 명을 지정할 수 있다. `.gpconfig`에는
+  // 쉼표로 구분된 이메일 목록으로 저장한다 (이메일에는 쉼표가 없으므로 안전).
+  function managersOf(branch: string): string[] {
+    const v = config.merge_managers[branch];
+    return v ? v.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean) : [];
+  }
+  function setManagers(branch: string, emails: string[]) {
+    if (emails.length === 0) delete config.merge_managers[branch];
+    else config.merge_managers[branch] = emails.join(",");
+    markDirty();
+  }
+
   function renderTargets() {
     targetList.innerHTML = "";
     const countEl = targetCard.querySelector<HTMLElement>("#gpc-target-count");
@@ -418,6 +437,8 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
     config.merge_targets.forEach((branch, i) => {
       const group = document.createElement("div");
       group.className = "gc-rowgroup";
+      const inputRow = document.createElement("div");
+      inputRow.className = "flex items-center gap-2 w-full";
       const input = document.createElement("input");
       input.className = "gc-input--ghost font-mono flex-1";
       input.value = branch;
@@ -435,31 +456,33 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
         renderTargets();
         markDirty();
       });
-      group.appendChild(input);
+      inputRow.appendChild(input);
       const vdiv = document.createElement("div");
       vdiv.className = "gc-vdivider";
-      group.appendChild(vdiv);
-      const sel = document.createElement("select");
-      sel.className = "gc-input--ghost";
-      sel.setAttribute("aria-label", `${branch} 병합 관리자`);
-      // 내가 구성원이 아니라도 나 자신을 병합 관리자로 지정할 수 있어야 한다.
+      inputRow.appendChild(vdiv);
+      const addSel = document.createElement("select");
+      addSel.className = "gc-input--ghost";
+      addSel.setAttribute("aria-label", `${branch} 병합 관리자 추가`);
+      // 이미 관리자인 사람은 목록에서 제외한다. 내가 구성원이 아니라도 나
+      // 자신을 병합 관리자로 지정할 수 있어야 한다.
       const meNotMember = me && !config.members.some((x) => x.email === me.email);
-      sel.innerHTML =
-        `<option value="">관리자 지정 안 함</option>` +
+      addSel.innerHTML =
+        `<option value="">+ 관리자 추가</option>` +
         (meNotMember ? `<option value="${escape(me!.email)}">나 (${escape(me!.email)})</option>` : "") +
         config.members
+          .filter((x) => !managersOf(branch).includes(x.email.toLowerCase()))
           .map((x) => {
             const isMe = me && x.email === me.email;
             return `<option value="${escape(x.email)}">${escape(x.name)}${isMe ? " (나)" : ""} (${escape(x.email)})</option>`;
           })
           .join("");
-      sel.value = config.merge_managers[branch] ?? "";
-      sel.addEventListener("change", () => {
-        if (sel.value) config.merge_managers[branch] = sel.value;
-        else delete config.merge_managers[branch];
-        markDirty();
+      addSel.addEventListener("change", () => {
+        if (!addSel.value) return;
+        const next = [...managersOf(branch), addSel.value.toLowerCase()];
+        setManagers(branch, [...new Set(next)]);
+        renderTargets();
       });
-      group.appendChild(sel);
+      inputRow.appendChild(addSel);
       const del = document.createElement("button");
       del.className = "gc-btn-sm gc-btn-sm--danger";
       del.appendChild(icon("trash", 13));
@@ -472,7 +495,43 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
         renderTargets();
         markDirty();
       });
-      group.appendChild(del);
+      inputRow.appendChild(del);
+      group.appendChild(inputRow);
+
+      // 관리자 칩 — 여러 명을 지정할 수 있고, × 로 뺄 수 있다.
+      const chipRow = document.createElement("div");
+      chipRow.className = "flex flex-wrap items-center gap-1.5 w-full";
+      const managers = managersOf(branch);
+      for (const email of managers) {
+        const member = config.members.find((x) => x.email.toLowerCase() === email);
+        const chip = document.createElement("span");
+        chip.className =
+          "inline-flex items-center gap-1 rounded-full bg-[color:var(--color-primary-soft)] text-[color:var(--color-primary)] pl-2.5 pr-1 py-0.5 text-display-sm";
+        chip.title = `${email} — × 를 누르면 관리자에서 뺍니다`;
+        const name = document.createElement("span");
+        name.textContent = `${member?.name ?? email}${me && email === me.email.toLowerCase() ? " (나)" : ""}`;
+        chip.appendChild(name);
+        const rm = document.createElement("button");
+        rm.type = "button";
+        rm.className =
+          "inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-[color:var(--color-clay-strong)] text-[color:var(--color-ink-muted)]";
+        rm.setAttribute("aria-label", `${email} 관리자에서 제외`);
+        rm.appendChild(icon("x", 11));
+        rm.addEventListener("click", () => {
+          setManagers(branch, managers.filter((e) => e !== email));
+          renderTargets();
+        });
+        chip.appendChild(rm);
+        chipRow.appendChild(chip);
+      }
+      if (managers.length === 0) {
+        const none = document.createElement("span");
+        none.className = "text-display-xs text-[color:var(--color-ink-muted)]";
+        none.textContent =
+          "병합 관리자 미지정 — 이 브랜치로의 병합·푸시는 구성원 누구나 할 수 있습니다.";
+        chipRow.appendChild(none);
+      }
+      group.appendChild(chipRow);
       targetList.appendChild(group);
     });
   }

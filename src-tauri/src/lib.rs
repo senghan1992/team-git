@@ -224,6 +224,7 @@ pub fn run() {
             commands::peer::peer_mark_all_team_read,
             commands::peer::peer_unread_count,
             commands::ai::ai_suggest_resolution,
+            commands::ai::ai_probe,
             commands::peer::peer_invite_by_email,
             commands::peer::peer_list_members,
             commands::peer::peer_remove_email_invite,

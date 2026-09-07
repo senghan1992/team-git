@@ -30,6 +30,8 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "git 병합에 실패한 상태입니다
 struct ChatRequest<'a> {
     model: &'a str,
     messages: Vec<ChatMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -94,6 +96,7 @@ pub async fn suggest_with(
                 content: user_prompt,
             },
         ],
+        max_tokens: None,
     };
 
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
@@ -135,6 +138,91 @@ pub fn effective_system_prompt(cfg: &AiConfig) -> String {
         DEFAULT_SYSTEM_PROMPT.to_string()
     } else {
         custom.to_string()
+    }
+}
+
+/// 연결 테스트 결과 — 설정 화면의 "연결 테스트" 버튼이 보여 준다.
+#[derive(Debug, Serialize)]
+pub struct AiProbeResult {
+    pub ok: bool,
+    /// 왕복 시간(ms). 실패하면 0.
+    pub latency_ms: u64,
+    /// 성공이면 응답 전문(짧게), 실패면 사유.
+    pub detail: String,
+}
+
+/// 저장하지 않은 설정으로 즉시 연결을 시험한다. 병합 해결과 같은
+/// `/chat/completions` 경로를 그대로 쓰므로, 성공하면 실제 해결도 같은
+/// 서버·모델로 동작한다는 보장이 된다 (pi 같은 커스텀 엔드포인트 포함).
+pub async fn probe_with(
+    client: &reqwest::Client,
+    cfg: &AiConfig,
+) -> AiProbeResult {
+    if cfg.base_url.trim().is_empty() || cfg.model.trim().is_empty() {
+        return AiProbeResult {
+            ok: false,
+            latency_ms: 0,
+            detail: "Base URL과 모델명을 입력하세요.".into(),
+        };
+    }
+    let body = ChatRequest {
+        model: cfg.model.trim(),
+        messages: vec![ChatMessage {
+            role: "user",
+            content: "ping".into(),
+        }],
+        max_tokens: Some(1),
+    };
+    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+    let start = std::time::Instant::now();
+    let resp = match client
+        .post(&url)
+        .bearer_auth(cfg.api_key.trim())
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return AiProbeResult {
+                ok: false,
+                latency_ms: 0,
+                detail: format!("연결 실패: {e}"),
+            }
+        }
+    };
+    let latency_ms = start.elapsed().as_millis() as u64;
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().await.unwrap_or_default();
+        return AiProbeResult {
+            ok: false,
+            latency_ms,
+            detail: format!(
+                "HTTP {status}: {}",
+                body.chars().take(300).collect::<String>()
+            ),
+        };
+    }
+    let parsed: Result<ChatResponse, _> = resp.json().await;
+    match parsed {
+        Ok(p) => match p.choices.into_iter().next() {
+            Some(c) => AiProbeResult {
+                ok: true,
+                latency_ms,
+                detail: c.message.content.chars().take(120).collect::<String>(),
+            },
+            None => AiProbeResult {
+                ok: false,
+                latency_ms,
+                detail: "응답에 선택지가 없습니다. 모델명을 확인하세요.".into(),
+            },
+        },
+        Err(_) => AiProbeResult {
+            ok: false,
+            latency_ms,
+            detail: "응답 형식이 OpenAI 호환이 아닙니다. /chat/completions 를 지원하는 엔드포인트인지 확인하세요.".into(),
+        },
     }
 }
 

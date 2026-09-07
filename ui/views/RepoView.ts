@@ -8,6 +8,7 @@ import { openPushCredentialFlow } from "../components/PushButton";
 import { getSession } from "../lib/session";
 import { icon } from "../components/Icon";
 import { setBusy } from "../components/Busy";
+import { mergeManagerEmails } from "../components/nextAction";
 import type { RepoTab } from "../components/Sidebar";
 export async function renderRepoView(
   repoId: string,
@@ -85,11 +86,28 @@ export async function renderRepoView(
   meta.className = "flex items-center gap-4";
   main.appendChild(meta);
 
+  // 브랜치 선택은 이 화면의 첫 행동이다 — 평범한 선택 상자가 아니라 눈에 띄는
+  // 컨트롤로 만든다: 브랜치 아이콘 + 라벨 + 모노 고정폭의 선택 상자.
+  const branchWrap = document.createElement("label");
+  branchWrap.className =
+    "inline-flex items-center gap-2 h-10 pl-3 pr-2 rounded-[8px] bg-[color:var(--color-plaque)] border border-[color:var(--color-border-strong)] shadow-[0_1px_2px_rgba(37,39,44,.04)]";
+  const branchIcon = document.createElement("span");
+  branchIcon.className = "text-[color:var(--color-primary)] inline-flex";
+  branchIcon.appendChild(icon("branch", 15));
+  branchWrap.appendChild(branchIcon);
+  const branchLabel = document.createElement("span");
+  branchLabel.className =
+    "text-[11px] font-semibold text-[color:var(--color-ink-muted)] tracking-[-0.01em] shrink-0";
+  branchLabel.textContent = "작업 브랜치";
+  branchWrap.appendChild(branchLabel);
+
   const branchSel = document.createElement("select");
-  branchSel.className = "gc-input w-auto";
+  branchSel.className =
+    "bg-transparent outline-none font-mono text-display-sm font-medium text-[color:var(--color-ink)] cursor-pointer max-w-[280px]";
   // 아이콘도 라벨도 없는 선택 상자였다 — 스크린리더에도, 처음 보는 사람에게도
   // 이게 브랜치라는 정보가 없었다.
   branchSel.setAttribute("aria-label", "현재 작업 브랜치");
+  branchWrap.appendChild(branchSel);
 
   const statusPill = document.createElement("span");
   statusPill.className = "gc-status-chip";
@@ -99,9 +117,35 @@ export async function renderRepoView(
   managerBadge.className = "gc-badge gc-badge--neutral";
   managerBadge.style.display = "none";
 
-  meta.appendChild(branchSel);
+  meta.appendChild(branchWrap);
   meta.appendChild(statusPill);
   meta.appendChild(managerBadge);
+
+  // 브랜치 선택 바로 아래의 안내 한 줄 — 원격(origin/) 브랜치가 왜 보이는지,
+  // 무엇을 골라야 하는지를 미리 말해 준다.
+  const branchHint = document.createElement("div");
+  branchHint.className =
+    "text-display-xs text-[color:var(--color-ink-muted)] -mt-2";
+  main.appendChild(branchHint);
+
+  function paintBranchHint(selectedRemote: boolean) {
+    const hasRemote = branchSel.querySelector<HTMLOptGroupElement>("optgroup[data-remote]");
+    if (selectedRemote) {
+      branchHint.textContent =
+        "서버 브랜치를 골랐습니다 — 같은 이름의 내 브랜치로 전환됩니다.";
+      branchHint.className =
+        "text-display-xs text-[color:var(--color-primary)] font-medium -mt-2";
+      return;
+    }
+    if (!hasRemote) {
+      branchHint.textContent = "내 컴퓨터의 브랜치만 있습니다 — 위에서 골라 전환할 수 있습니다.";
+      branchHint.className = "text-display-xs text-[color:var(--color-ink-muted)] -mt-2";
+      return;
+    }
+    branchHint.textContent =
+      "origin/…은 서버에 있는 브랜치입니다(팀원 브랜치가 섞여 보일 수 있습니다). 내 작업 브랜치는 위에서 골라 전환하세요.";
+    branchHint.className = "text-display-xs text-[color:var(--color-ink-muted)] -mt-2";
+  }
 
   // ── Sync — pull latest base into the current branch (step 3 of the flow) ─
   const syncBtn = document.createElement("button");
@@ -390,17 +434,51 @@ export async function renderRepoView(
     } else {
       branchSel.disabled = false;
       branchSel.title = "";
+      // 내 브랜치와 원격(origin/) 브랜치를 구분해서 보여 준다 — 원격 것은
+      // 서버에 있는 브랜치라 팀원 것이 섞여 있어도 헷갈리지 않게 그룹으로 나눈다.
+      const localGroup = document.createElement("optgroup");
+      localGroup.label = "내 브랜치";
+      const remoteGroup = document.createElement("optgroup");
+      remoteGroup.label = "원격 브랜치 (origin · 서버)";
+      remoteGroup.dataset.remote = "1";
       for (const b of branches) {
         const opt = document.createElement("option");
         opt.value = b.name;
-        opt.textContent = b.name + (b.is_remote ? " (remote)" : "");
-        if (repo && b.name === repo.working_branch) opt.selected = true;
-        branchSel.appendChild(opt);
+        if (b.is_remote) {
+          opt.textContent = b.name.replace(/^origin\//, "") + " (서버)";
+          opt.title =
+            "서버에 있는 브랜치입니다. 고르면 같은 이름의 내 브랜치로 전환됩니다.";
+          remoteGroup.appendChild(opt);
+        } else {
+          const isCurrent = b.name === currentStatus?.branch;
+          opt.textContent = b.name + (isCurrent ? " (현재)" : "");
+          localGroup.appendChild(opt);
+        }
       }
-      // working_branch 가 비어 있으면(등록 직후) 지금 체크아웃된 브랜치를 고른다.
-      if (!repo?.working_branch && currentStatus?.branch) {
-        branchSel.value = currentStatus.branch;
+      branchSel.appendChild(localGroup);
+      branchSel.appendChild(remoteGroup);
+      // 실제로 체크아웃된 브랜치를 항상 고르게 한다 — 등록 직후나 전환 직후에도
+      // 선택 상자가 현재 브랜치를 말하도록. 로컬에 없으면 origin/ 항목을 고른다.
+      const prefer = currentStatus?.branch || repo?.working_branch;
+      if (prefer) {
+        let picked = false;
+        for (const opt of Array.from(branchSel.options)) {
+          if (opt.value === prefer) {
+            opt.selected = true;
+            picked = true;
+            break;
+          }
+        }
+        if (!picked) {
+          for (const opt of Array.from(branchSel.options)) {
+            if (opt.value === `origin/${prefer}`) {
+              opt.selected = true;
+              break;
+            }
+          }
+        }
       }
+      paintBranchHint(false);
     }
     renderFirstStepBanner();
   }
@@ -569,8 +647,8 @@ export async function renderRepoView(
 
   function refreshManagerBadge() {
     const branch = branchSel.value.replace(/^origin\//, "");
-    const managerEmail = projectCfg?.config?.merge_managers?.[branch];
-    if (!managerEmail) {
+    const managers = mergeManagerEmails(projectCfg, branch);
+    if (managers.length === 0) {
       managerBadge.style.display = "none";
       // 관리자 잠금이 없다고 해서 푸시를 무조건 열면 안 된다 — 원격이 없는
       // 저장소에서 브랜치를 전환하거나 로그인/로그아웃할 때마다 여기가
@@ -579,19 +657,20 @@ export async function renderRepoView(
       pushBtnRef().title = noRemote ? noRemoteWhy : "";
       return;
     }
-    const member = projectCfg?.config?.members.find((x) => x.email.toLowerCase() === managerEmail.toLowerCase());
-    const name = member?.name ?? managerEmail;
+    const names = managers.map((email) => {
+      const member = projectCfg?.config?.members.find((x) => x.email.toLowerCase() === email);
+      return member?.name ?? email;
+    });
     const me = getSession();
+    const meEmail = me?.email.toLowerCase() ?? "";
     const isAdmin = me
       ? (projectCfg?.config?.members ?? []).some(
-          (x) =>
-            x.email.toLowerCase() === me.email.toLowerCase() &&
-            x.role === "admin",
+          (x) => x.email.toLowerCase() === meEmail && x.role === "admin",
         )
       : false;
-    const isManager = me && me.email.toLowerCase() === managerEmail.toLowerCase();
+    const isManager = !!me && managers.includes(meEmail);
     managerBadge.style.display = "";
-    managerBadge.textContent = `병합 관리자: ${name}${isManager ? " (나)" : ""}`;
+    managerBadge.textContent = `병합 관리자: ${names.join(", ")}${isManager ? " (나)" : ""}`;
     // 명시된 관리자가 있으면 관리자(또는 admin)만 푸시할 수 있다. 로그아웃
     // 상태도 잠근다 — 익명이 로그인한 팀원보다 많은 권한을 가지면 안 된다.
     const blocked = !isManager && !isAdmin;
@@ -599,8 +678,8 @@ export async function renderRepoView(
     btn.disabled = blocked || noRemote;
     btn.title = blocked
       ? me
-        ? `이 브랜치의 병합 관리자는 ${name}님입니다. 푸시는 관리자만 할 수 있습니다.`
-        : `이 브랜치에는 병합 관리자(${name})가 지정되어 있습니다. 로그인하면 내가 관리자인지 확인해 푸시를 엽니다.`
+        ? `${names.join(", ")}님이 이 브랜치의 병합 관리자입니다. 푸시는 관리자만 할 수 있습니다.`
+        : `이 브랜치에는 병합 관리자(${names.join(", ")})가 지정되어 있습니다. 로그인하면 내가 관리자인지 확인해 푸시를 엽니다.`
       : noRemote
         ? noRemoteWhy
         : "";
@@ -644,6 +723,10 @@ export async function renderRepoView(
       applyStatus(await ipc.status(repoId).catch(() => null));
       projectCfg = await ipc.projectConfigGet(repoId).catch(() => null);
       refreshManagerBadge();
+      // 전환 후에는 선택 상자도 로컬 브랜치 이름을 보여야 한다 (origin/ 항목을
+      // 골랐어도 실제로는 같은 이름의 내 브랜치가 생겨 있다).
+      const fresh = await ipc.listBranches(repoId).catch(() => null);
+      if (fresh && fresh.length > 0) await loadBranches();
     } catch (e) {
       toast(`브랜치 전환 실패: ${(e as Error).message ?? e}`, "error");
       // 전환에 실패했는데 선택 상자가 새 브랜치를 가리키고 있으면, 다음

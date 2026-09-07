@@ -163,9 +163,27 @@ export function isMergeManagerFor(
   const assigned = managers[baseBranch];
   if (!assigned) return true;
   if (!myEmail) return false;
-  if (assigned.toLowerCase() === myEmail.toLowerCase()) return true;
+  if (mergeManagerEmails(cfg, baseBranch).includes(myEmail.toLowerCase())) return true;
   // admin 은 모든 브랜치를 병합할 수 있다 — 병합 센터와 같은 규칙.
   return (cfg?.config?.members ?? []).some(
     (m) => m.email.toLowerCase() === myEmail.toLowerCase() && m.role === "admin",
   );
+}
+
+/**
+ * 한 브랜치에 지정된 병합 관리자 이메일 목록.
+ *
+ * `.gpconfig`의 `merge_managers[branch]`는 한 명일 수도, 여러 명일 수도 있다 —
+ * 여러 명은 쉼표로 구분해 저장한다 (이메일에는 쉼표가 들어갈 수 없으므로 안전하다).
+ */
+export function mergeManagerEmails(
+  cfg: ProjectConfigResult | null,
+  baseBranch: string,
+): string[] {
+  const raw = (cfg?.config?.merge_managers ?? {})[baseBranch];
+  if (!raw) return [];
+  return raw
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
 }

@@ -24,6 +24,7 @@ import { renderCommitList } from "./CommitList";
 import { renderChangeMap } from "./ChangeMap";
 import { renderMergeTimeline } from "./MergeTimeline";
 import { openPushCredentialFlow } from "./PushButton";
+import { mergeManagerEmails } from "./nextAction";
 
 interface BlockEdit {
   /** Replacement body for the entire conflict block. */
@@ -274,11 +275,11 @@ export async function renderMergeCenter(
 
   /** 이 사람이 base로 병합할 수 있는가 — 병합 버튼·브랜치 정리에 같은 규칙. */
   function viewerCanMerge(): boolean {
-    const managerEmail = projectCfg?.config?.merge_managers?.[base];
-    if (!managerEmail) return true;
+    const managers = mergeManagerEmails(projectCfg, base);
+    if (managers.length === 0) return true;
     const me = getSession();
     if (!me) return false;
-    if (me.email.toLowerCase() === managerEmail.toLowerCase()) return true;
+    if (managers.includes(me.email.toLowerCase())) return true;
     return (projectCfg?.config?.members ?? []).some(
       (x) => x.email.toLowerCase() === me.email.toLowerCase() && x.role === "admin",
     );
@@ -327,32 +328,35 @@ export async function renderMergeCenter(
     banner.appendChild(abortBtn);
   }
   function renderRoleBadge() {
-    const managerEmail = projectCfg?.config?.merge_managers?.[base];
-    if (!managerEmail) {
+    const managers = mergeManagerEmails(projectCfg, base);
+    if (managers.length === 0) {
       // 관리자 미지정 — 누구나 병합할 수 있다는 사실을 알려 준다.
       roleBadge.style.display = "";
       roleBadge.className = "gc-badge gc-badge--muted";
       roleBadge.textContent = `${base} 병합 관리자 미지정 — 설정 탭에서 지정할 수 있습니다`;
       return;
     }
-    const member = projectCfg?.config?.members.find(
-      (x) => x.email.toLowerCase() === managerEmail.toLowerCase(),
-    );
-    const name = member?.name || managerEmail;
+    const names = managers.map((email) => {
+      const member = projectCfg?.config?.members.find(
+        (x) => x.email.toLowerCase() === email,
+      );
+      return member?.name || email;
+    });
     const me = getSession();
-    const isManager = !!me && me.email.toLowerCase() === managerEmail.toLowerCase();
+    const meEmail = me?.email.toLowerCase() ?? "";
+    const isManager = !!me && managers.includes(meEmail);
     const isAdmin = !!me && (projectCfg?.config?.members ?? []).some(
-      (x) => x.email.toLowerCase() === me.email.toLowerCase() && x.role === "admin",
+      (x) => x.email.toLowerCase() === meEmail && x.role === "admin",
     );
     roleBadge.style.display = "";
     if (isManager || isAdmin) {
       roleBadge.className = "gc-badge gc-badge--success";
       roleBadge.textContent = isManager
         ? `내가 ${base}의 병합 관리자입니다`
-        : `관리자 권한으로 ${base}에 병합할 수 있습니다 (담당: ${name})`;
+        : `관리자 권한으로 ${base}에 병합할 수 있습니다 (담당: ${names.join(", ")})`;
     } else {
       roleBadge.className = "gc-badge gc-badge--muted";
-      roleBadge.textContent = `${base} 병합 관리자: ${name} — 병합은 관리자만 할 수 있습니다`;
+      roleBadge.textContent = `${base} 병합 관리자: ${names.join(", ")} — 병합은 관리자만 할 수 있습니다`;
     }
   }
 
@@ -560,25 +564,28 @@ export async function renderMergeCenter(
       let blocked = false;
       let blockHint = "";
       {
-        const managerEmail = projectCfg?.config?.merge_managers?.[base];
-        if (managerEmail) {
-          const member = projectCfg?.config?.members.find(
-            (x) => x.email.toLowerCase() === managerEmail.toLowerCase(),
-          );
-          const name = member?.name || managerEmail;
+        const managers = mergeManagerEmails(projectCfg, base);
+        if (managers.length > 0) {
+          const names = managers.map((email) => {
+            const member = projectCfg?.config?.members.find(
+              (x) => x.email.toLowerCase() === email,
+            );
+            return member?.name || email;
+          });
           const me = getSession();
+          const meEmail = me?.email.toLowerCase() ?? "";
           const isAdmin = !!me && (projectCfg?.config?.members ?? []).some(
-            (x) => x.email.toLowerCase() === me.email.toLowerCase() && x.role === "admin",
+            (x) => x.email.toLowerCase() === meEmail && x.role === "admin",
           );
-          const isManager = !!me && me.email.toLowerCase() === managerEmail.toLowerCase();
+          const isManager = !!me && managers.includes(meEmail);
           // 로그아웃 상태를 열어 두면 로그인한 팀원보다 익명이 더 많은 권한을
           // 갖게 된다 — 관리자가 지정된 브랜치는 로그인해서 본인 확인을 해야
           // 병합 버튼이 열린다.
           blocked = !isManager && !isAdmin;
           if (blocked) {
             blockHint = me
-              ? `${name}님이 ${base}의 병합 관리자입니다. 병합은 관리자만 할 수 있습니다.`
-              : `이 브랜치에는 병합 관리자(${name})가 지정되어 있습니다. 로그인하면 내가 관리자인지 확인해 병합 버튼을 엽니다.`;
+              ? `${names.join(", ")}님이 ${base}의 병합 관리자입니다. 병합은 관리자만 할 수 있습니다.`
+              : `이 브랜치에는 병합 관리자(${names.join(", ")})가 지정되어 있습니다. 로그인하면 내가 관리자인지 확인해 병합 버튼을 엽니다.`;
           }
         }
       }

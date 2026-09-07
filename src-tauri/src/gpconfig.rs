@@ -196,6 +196,10 @@ pub struct CommitOutcome {
 /// - members deduped by email (first wins)
 /// - non-member emails dropped from `merge_managers` and `notify_recipients`
 /// - version pinned to the current schema
+///
+/// `merge_managers[branch]`는 한 명일 수도, 여러 명일 수도 있다 — 여러 명은
+/// 쉼표로 구분한다 (이메일에는 쉼표가 들어갈 수 없다). 구성원이 아닌 이메일만
+/// 골라내야 하므로 값 전체가 아니라 한 명씩 판정한다.
 fn normalize(mut cfg: ProjectConfig) -> ProjectConfig {
     cfg.gpconfig_version = GPCONFIG_VERSION;
     let mut seen: Vec<String> = Vec::new();
@@ -208,7 +212,20 @@ fn normalize(mut cfg: ProjectConfig) -> ProjectConfig {
             true
         }
     });
-    cfg.merge_managers.retain(|_, email| seen.contains(&email));
+    cfg.merge_managers.retain(|_, emails| {
+        emails
+            .split(',')
+            .any(|e| seen.contains(&e.trim().to_lowercase()))
+    });
+    for emails in cfg.merge_managers.values_mut() {
+        let kept: Vec<String> = emails
+            .split(',')
+            .map(str::trim)
+            .filter(|e| seen.contains(&e.to_lowercase()))
+            .map(str::to_string)
+            .collect();
+        *emails = kept.join(",");
+    }
     cfg.notify_recipients
         .retain(|email| seen.contains(&email.trim().to_lowercase()));
     cfg.notify_recipients.dedup();
@@ -365,6 +382,45 @@ mod tests {
         assert_eq!(
             merge_targets_of(&with_targets, "develop"),
             vec!["main", "release/2.0"]
+        );
+    }
+
+    #[test]
+    fn normalize_keeps_only_known_emails_inside_multi_manager_list() {
+        let cfg = ProjectConfig {
+            gpconfig_version: 1,
+            default_base_branch: "main".into(),
+            members: vec![
+                GpMember {
+                    id: "a".into(),
+                    name: "Alice".into(),
+                    email: "a@x".into(),
+                    role: "member".into(),
+                },
+                GpMember {
+                    id: "b".into(),
+                    name: "Bob".into(),
+                    email: "b@x".into(),
+                    role: "member".into(),
+                },
+            ],
+            merge_managers: HashMap::from([
+                // 여러 명을 쉼표 목록으로 지정한 경우 — 구성원인 사람만 남긴다.
+                ("main".into(), "a@x,b@x,ghost@x".into()),
+                ("release/1".into(), "ghost@x".into()),
+            ]),
+            notify_recipients: vec![],
+            notify: GpNotifySettings::default(),
+            merge_targets: vec!["main".into()],
+        };
+        let n = normalize(cfg);
+        assert_eq!(
+            n.merge_managers.get("main").map(String::as_str),
+            Some("a@x,b@x")
+        );
+        assert!(
+            !n.merge_managers.contains_key("release/1"),
+            "구성원이 하나도 없는 목록은 통째로 사라진다"
         );
     }
 
