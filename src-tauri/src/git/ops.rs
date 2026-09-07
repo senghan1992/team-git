@@ -1,14 +1,12 @@
 //! Git subcommand wrappers for in-app commit/push/pull workflow.
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::config_store::PushCredential;
 use crate::error::{AppError, AppResult};
 use crate::git::status::{FileChange, FileChangeKind};
 use crate::git::{
-    log, run_at_target, run_ssh_command, shell_quote, status, write_file_at_target, Target,
-    WorkingTreeStatus,
+    log, run_at_target, run_ssh_command, shell_quote, status, Target, WorkingTreeStatus,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,7 +197,7 @@ pub fn push(
         .unwrap_or(false);
 
     let out = match credentials {
-        Some(cred) if https => push_with_askpass(target, &branch_ref, cred)?,
+        Some(cred) if https => push_with_credentials(target, &branch_ref, cred)?,
         Some(_) | None if https => {
             // HTTPS + no credentials: don't even try — git would block on a
             // terminal prompt we can't answer.
@@ -236,8 +234,9 @@ pub fn push(
         let mut message = friendly_git_error(&out.stderr);
         if https && is_auth_failure(&out.stderr) {
             auth_required = true;
-            message = "Git 호스트 로그인이 실패했거나 저장되지 않았습니다. 아이디/비밀번호를 다시 입력하세요."
-                .to_string();
+            // 실제 stderr 를 함께 보여 준다 — 막연한 "다시 입력하세요" 대신
+            // "could not read Username …" 같은 원인이 그대로 보여야 고칠 수 있다.
+            message = format!("Git 호스트 로그인 실패: {}", friendly_git_error(&out.stderr));
         }
         Ok(PushOutcome {
             ok: false,
@@ -270,90 +269,76 @@ pub fn is_auth_failure(stderr: &str) -> bool {
     .any(|m| e.contains(m))
 }
 
-/// Build the GIT_ASKPASS script body. `$1` is the git prompt; the username
-/// prompt always contains "Username", everything else is the password.
-pub fn askpass_script(user: &str, pass: &str) -> String {
-    let esc = |s: &str| s.replace('\'', "'\\''");
-    format!(
-        "#!/bin/sh\ncase \"$1\" in\n  *Username*|*username*) echo '{}' ;;\n  *) echo '{}' ;;\nesac\n",
-        esc(user),
-        esc(pass)
-    )
+/// RFC 4648 base64 — 자격증명을 HTTP 헤더 값으로 안전하게 넣기 위한 최소 구현.
+/// (의존성을 늘리지 않으려고 직접 둔다; 아이디/비밀번호의 모든 문자에 안전하다.)
+pub fn base64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32);
+        out.push(T[((n >> 18) & 63) as usize] as char);
+        out.push(T[((n >> 12) & 63) as usize] as char);
+        out.push(
+            if chunk.len() > 1 {
+                T[((n >> 6) & 63) as usize] as char
+            } else {
+                '='
+            },
+        );
+        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    out
 }
 
-/// Push over HTTPS with credentials injected via GIT_ASKPASS. The password
-/// lives only inside a temporary 0700 script file — never in argv or env.
-fn push_with_askpass(
+/// HTTPS 푸시에 자격증명을 주입한다.
+///
+/// **GIT_ASKPASS 스크립트를 쓰지 않는다** — 그 방식은 Windows Git 에서
+/// 임시 `.sh` 스크립트 실행이 실패해("could not read Username … terminal
+/// prompts disabled") 올바른 아이디/비밀번호도 계속 거부됐다. 대신
+/// `http.extraheader` 로 Basic 헤더를 미리 실어 보내면 셸·임시 파일·프롬프트
+/// 없이 모든 플랫폼에서 동일하게 동작한다. 비밀번호는 argv 에 노출되지만
+/// base64 로만 보이며, 팀 서버 테스트 단계에서는 askpass 파일 권한 이슈보다
+/// 확실히 동작하는 쪽이 우선이다.
+pub fn push_with_credentials(
     target: &Target,
     branch: &str,
     cred: &PushCredential,
 ) -> AppResult<crate::git::GitOutput> {
-    let script = askpass_script(&cred.username, &cred.password);
+    let basic = base64_encode(format!("{}:{}", cred.username, cred.password).as_bytes());
+    let extra = format!("AUTHORIZATION: Basic {basic}");
+    let header_cfg = format!("http.extraheader={extra}");
+    let refspec = format!("HEAD:{branch}");
     match target {
-        Target::Local(_) => {
-            let path = std::env::temp_dir().join(format!("gc-askpass-{}.sh", Uuid::new_v4()));
-            write_askpass_local(&path, &script)?;
-            let result = crate::git::run_with_env(
-                Some(target.path()),
-                ["push", "-u", "origin", &format!("HEAD:{branch}")],
-                &[
-                    ("GIT_ASKPASS", path.to_string_lossy().as_ref()),
-                    ("GIT_TERMINAL_PROMPT", "0"),
-                ],
-            );
-            let _ = std::fs::remove_file(&path);
-            result
-        }
-        Target::Ssh { .. } => {
-            let rel = format!("../.gc-askpass-{}.sh", Uuid::new_v4());
-            write_file_at_target(target, &rel, script.as_bytes())?;
+        Target::Local(_) => crate::git::run_with_env(
+            Some(target.path()),
+            ["-c", header_cfg.as_str(), "push", "-u", "origin", refspec.as_str()],
+            &[("GIT_TERMINAL_PROMPT", "0")],
+        ),
+        Target::Ssh {
+            user,
+            host,
+            key,
+            password,
+            port,
+            ..
+        } => {
+            // base64 는 [A-Za-z0-9+/=] 뿐이라 셸 특수문자가 없지만, 값 전체를
+            // 작은따옴표로 감싸 안전하게 만든다.
             let remote = format!(
-                "GIT_ASKPASS='{}' GIT_TERMINAL_PROMPT='0' git -C {} push -u origin 'HEAD:{}'",
-                rel.replace('\'', "'\\''"),
+                "git -C {} -c {} push -u origin HEAD:{}",
                 shell_quote(&target.path().to_string_lossy()),
-                branch.replace('\'', "'\\''")
+                shell_quote(&header_cfg),
+                shell_quote(&refspec)
             );
-            let result = match target {
-                Target::Ssh {
-                    user,
-                    host,
-                    key,
-                    password,
-                    port,
-                    ..
-                } => run_ssh_command(user, host, key, password, *port, &remote),
-                Target::Local(_) => unreachable!(),
-            };
-            let cmd = format!("rm -f '{}'", rel.replace('\'', "'\\''"));
-            if let Target::Ssh {
-                user,
-                host,
-                key,
-                password,
-                port,
-                ..
-            } = target
-            {
-                let _ = run_ssh_command(user, host, key, password, *port, &cmd);
-            }
-            result
+            run_ssh_command(user, host, key, password, *port, &remote)
         }
     }
-}
-
-fn write_askpass_local(path: &std::path::Path, script: &str) -> AppResult<()> {
-    std::fs::write(path, script)?;
-    // 0700: 비밀번호가 담긴 파일을 다른 사용자가 읽지 못하게. Windows에는
-    // 모드 비트가 없고(사용자별 %TEMP%가 이미 격리) Git for Windows가 셔뱅으로
-    // 실행하므로 실행 비트도 필요 없다.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)?.permissions();
-        perms.set_mode(0o700);
-        std::fs::set_permissions(path, perms)?;
-    }
-    Ok(())
 }
 
 // ── pull ───────────────────────────────────────────────────────────────────────

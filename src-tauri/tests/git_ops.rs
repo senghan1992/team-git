@@ -1061,81 +1061,184 @@ fn push_https_without_credentials_reports_auth_required() {
     );
 }
 
-// GIT_ASKPASS 스크립트가 git credential fill에 올바른 아이디/비밀번호를 준다 (오프라인).
+// HTTPS 자격증명 푸시 — Basic 인증을 실제로 요구하는 로컬 git http 서버에서
+// **엔드투엔드로 성공**하는지 검증한다 (옛 askpass 방식은 Windows Git 에서
+// 실패했으므로, 이 테스트가 대체 경로를 끝까지 확인한다).
 #[test]
-fn askpass_script_answers_git_credential_prompt() {
-    use std::process::Command;
-    let script = git_companion::git::ops::askpass_script("devuser", "s3cret!pw");
-    let dir = TempDir::new().unwrap();
-    let script_path = dir.path().join("ask.sh");
-    std::fs::write(&script_path, &script).unwrap();
-    // GIT_ASKPASS는 스크립트를 직접 실행하므로 실행 권한이 필요하다.
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let input = "protocol=https\nhost=example.com\n\n";
-    let out = Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "printf '%b' \"$1\" | GIT_ASKPASS={} GIT_TERMINAL_PROMPT=0 git credential fill",
-            script_path.display()
-        ))
-        .arg("sh")
-        .arg(input)
-        .env("LC_ALL", "C.UTF-8")
+#[cfg(unix)]
+fn push_https_with_credentials_succeeds_end_to_end() {
+    // python3 없으면 (개발 머신 제약) 조용히 스킵한다.
+    if !std::process::Command::new("python3")
+        .arg("--version")
         .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        return;
+    }
+
+    // 1) bare 원격 저장소 + 작업 저장소 준비
+    let td = TempDir::new().unwrap();
+    let origin = td.path().join("origin.git");
+    git_run(td.path(), &["init", "--bare", "-q", origin.to_str().unwrap()]);
+    // git http-backend 는 receive-pack 이 기본 비활성 — 켠다.
+    git_run(&origin, &["config", "http.receivepack", "true"]);
+    git_run(&origin, &["config", "http.uploadpack", "true"]);
+
+    let work = td.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    init_repo(&work);
+    touch(&format!("{}/a.txt", work.display()));
+    git_run(&work, &["add", "-A"]);
+    git_run(&work, &["commit", "-q", "-m", "init commit"]);
+
+    // 2) Basic 인증 git http 서버 (python http.server + git http-backend)
+    let username = "alice";
+    let password = "p@ss 'word/!:&%"; // 특수문자 투성이 — CLI 인증과 같은 환경
+    let port = free_port();
+    let script = td.path().join("githttp.py");
+    std::fs::write(&script, http_basic_git_server_py()).unwrap();
+    let mut server = std::process::Command::new("python3")
+        .arg(&script)
+        .arg(origin.parent().unwrap().to_str().unwrap())
+        .arg(port.to_string())
+        .arg(username)
+        .arg(password)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("http server spawn");
+    // 서버 기동 대기 — 인증 없이 401 이라도 응답만 오면 살아 있는 것이다.
+    let url = format!("http://127.0.0.1:{port}/origin.git");
+    let mut ready = false;
+    for _ in 0..40 {
+        if let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+            use std::io::Write;
+            let _ = s.write_all(b"GET / HTTP/1.0\r\n\r\n");
+            let mut buf = [0u8; 64];
+            use std::io::Read;
+            if let Ok(n) = s.read(&mut buf) {
+                if n > 0 {
+                    ready = true;
+                    break;
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    assert!(ready, "http server did not start");
+
+    git_run(&work, &["remote", "add", "origin", &url]);
+    let target = Target::Local(work.clone());
+
+    // 3) 특수문자 자격증명으로 푸시 → 성공해야 한다
+    let cred = git_companion::config_store::PushCredential {
+        username: username.into(),
+        password: password.into(),
+    };
+    let outcome = git_companion::git::push(&target, Some("main"), Some(&cred)).unwrap();
+    assert!(outcome.ok, "push failed: {}", outcome.message);
+    // 원격에 실제로 반영되었는지 bare 저장소에서 확인 (bare 의 HEAD 는 빈
+    // master 를 가리키므로 가지 이름을 명시한다).
+    let log = git_run(&origin, &["log", "main", "-1", "--format=%s"]);
     assert_eq!(
-        out.status.code(),
-        Some(0),
-        "credential fill failed: {stdout}"
+        String::from_utf8_lossy(&log.stdout).trim(),
+        "init commit"
     );
+
+    // 4) 틀린 비밀번호 → auth_required=true + 사유가 메시지에 남는다
+    let bad = git_companion::config_store::PushCredential {
+        username: "alice".into(),
+        password: "wrong-pw".into(),
+    };
+    let outcome2 = git_companion::git::push(&target, Some("main"), Some(&bad)).unwrap();
+    assert!(!outcome2.ok);
+    assert!(outcome2.auth_required, "텍 틀린 자격증명은 auth_required");
     assert!(
-        stdout.contains("username=devuser"),
-        "missing username in: {stdout}"
+        outcome2.message.contains("로그인 실패"),
+        "사유가 보여야 한다: {}",
+        outcome2.message
     );
-    assert!(
-        stdout.contains("password=s3cret!pw"),
-        "missing password in: {stdout}"
-    );
+
+    let _ = server.kill();
 }
 
-// HTTPS 자격증명을 넣으면 푸시가 askpass 경로로 진행된다 (연결 거부까지 도달 — 인증 전 단계).
 #[test]
-fn push_https_with_credentials_runs_askpass_path() {
-    let td = TempDir::new().unwrap();
-    init_repo(td.path());
-    touch(&format!("{}/a.txt", td.path().display()));
-    git_run(td.path(), &["add", "-A"]);
-    git_run(td.path(), &["commit", "-q", "-m", "init"]);
-    git_run(
-        td.path(),
-        &[
-            "remote",
-            "add",
-            "origin",
-            "https://127.0.0.1:9/team/repo.git",
-        ],
-    );
+fn base64_encode_roundtrips() {
+    use git_companion::git::ops::base64_encode;
+    assert_eq!(base64_encode(b"user:pass"), "dXNlcjpwYXNz");
+    // 잘 알려진 벡터
+    assert_eq!(base64_encode(b""), "");
+    assert_eq!(base64_encode(b"f"), "Zg==");
+    assert_eq!(base64_encode(b"fo"), "Zm8=");
+    assert_eq!(base64_encode(b"foo"), "Zm9v");
+    // 특수문자도 무손실 — python base64 로 미리 계산한 값과 같아야 한다.
+    let s = "p@ss 'word/!:&%";
+    assert_eq!(base64_encode(s.as_bytes()), "cEBzcyAnd29yZC8hOiYl");
+}
 
-    let target = Target::Local(td.path().into());
-    let cred = git_companion::config_store::PushCredential {
-        username: "devuser".into(),
-        password: "pw".into(),
-    };
-    let outcome = git_companion::git::push(&target, None, Some(&cred)).unwrap();
-    // 연결 거부까지 갔으므로 auth_required가 아니어야 하고, askpass 스크립트는 정리되어야 한다.
-    assert!(!outcome.ok);
-    assert!(!outcome.auth_required);
-    assert!(
-        std::fs::read_dir(std::env::temp_dir()).unwrap().all(|e| {
-            !e.unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("gc-askpass-")
-        }),
-        "askpass script should be cleaned up"
-    );
+/// 포트 0 바인딩으로 빈 포트를 고른다 (서버가 즉시 다시 바인딩).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// Basic 인증을 거는 git http-backend 서버 스크립트 (테스트 전용).
+fn http_basic_git_server_py() -> &'static str {
+    r#"import base64, os, subprocess, sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+ROOT = sys.argv[1]
+PORT = int(sys.argv[2])
+USER = sys.argv[3]
+PASS = sys.argv[4]
+EXPECT = "Basic " + base64.b64encode((USER + ":" + PASS).encode()).decode()
+
+class H(BaseHTTPRequestHandler):
+    def _handle(self):
+        if self.headers.get("Authorization", "") != EXPECT:
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Basic realm="git"')
+            self.end_headers()
+            return
+        path = self.path.split("?")[0]
+        env = dict(os.environ)
+        env.update({
+            "GIT_PROJECT_ROOT": ROOT,
+            "GIT_HTTP_EXPORT_ALL": "1",
+            "PATH_INFO": path,
+            "REQUEST_METHOD": self.command,
+            "QUERY_STRING": self.path.split("?", 1)[1] if "?" in self.path else "",
+            "CONTENT_TYPE": self.headers.get("Content-Type", ""),
+        })
+        body = b""
+        if self.command == "POST":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+        p = subprocess.run(["git", "http-backend"], input=body, env=env, capture_output=True)
+        head, _, payload = p.stdout.partition(b"\r\n\r\n")
+        status = 200
+        ctype = "application/octet-stream"
+        for line in head.split(b"\r\n"):
+            low = line.lower()
+            if low.startswith(b"status:"):
+                status = int(line.split()[1])
+            elif low.startswith(b"content-type:"):
+                ctype = line.split(b":", 1)[1].strip().decode()
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_GET(self): self._handle()
+    def do_POST(self): self._handle()
+    def log_message(self, *a): pass
+
+HTTPServer(("127.0.0.1", PORT), H).serve_forever()
+"#
 }
 
 // ── .gpconfig ──────────────────────────────────────────────────────────────────
