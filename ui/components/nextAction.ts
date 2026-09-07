@@ -31,8 +31,12 @@ export interface NextAction {
 
 export interface NextActionInput {
   status: WorkingTreeStatus | null;
-  /** 병합 대기 브랜치 수 (모르면 null — 그 규칙은 건너뛴다). */
+  /** 병합이 실제로 필요한 브랜치 수 (푸시 대기 제외 — 모르면 null). */
   pendingCount: number | null;
+  /** 로컬 base에 이미 병합됐지만 push가 안 된 브랜치 수 (모르면 null).
+   *  이 브랜치들에 필요한 건 병합이 아니라 base push 다 — 홈 카드가
+   *  병합 센터의 "푸시 대기" 배지와 다른 말을 하지 않게 한다. */
+  mergedLocallyCount?: number | null;
   /** 로그인한 사람이 이 저장소 병합 대상 브랜치의 관리자인가. */
   isMergeManager: boolean;
   /** 병합 대상(기본) 브랜치 이름 — 문구에 쓴다. */
@@ -40,7 +44,7 @@ export interface NextActionInput {
 }
 
 export function computeNextAction(input: NextActionInput): NextAction {
-  const { status, pendingCount, isMergeManager, baseBranch } = input;
+  const { status, pendingCount, mergedLocallyCount, isMergeManager, baseBranch } = input;
 
   const conflicted = status?.files.filter((f) => f.kind === "conflicted").length ?? 0;
   if (conflicted > 0) {
@@ -59,6 +63,18 @@ export function computeNextAction(input: NextActionInput): NextAction {
       kind: "merge",
       label: `${pendingCount}건 병합하기`,
       reason: `팀원이 푸시한 브랜치 ${pendingCount}개가 ${baseBranch} 병합을 기다리고 있습니다.`,
+      tab: "merge",
+      urgent: true,
+    };
+  }
+
+  // 병합은 끝났는데 결과 push 가 남은 상태 — "병합하기"를 또 권하면 거짓말이
+  // 된다. 다음 걸음은 병합 결과를 원격에 올리는 것 하나뿐이다.
+  if (isMergeManager && (mergedLocallyCount ?? 0) > 0) {
+    return {
+      kind: "push",
+      label: "병합 결과 push",
+      reason: `병합이 완료된 결과가 아직 원격 ${baseBranch}에 push되지 않았습니다. push하면 팀원에게 동기화 알림이 갑니다.`,
       tab: "merge",
       urgent: true,
     };

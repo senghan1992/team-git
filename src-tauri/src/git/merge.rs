@@ -88,6 +88,23 @@ pub fn list_pending_branches(
     remote: &str,
     base: &str,
 ) -> AppResult<Vec<PendingBranch>> {
+    match target {
+        // 로컬은 프로세스 spawn 이 싸니까 기존 경로 그대로.
+        Target::Local(_) => list_pending_local(target, remote, base),
+        // SSH 는 git 명령 한 번이 곧 SSH 연결 한 번이다. 브랜치마다 5~6개씩
+        // 연결을 맺으면(merge-base ×2, rev-parse, rev-list, diff) 브랜치
+        // 몇 개만 돼도 수십 초가 걸린다 — 스크립트 하나로 전부 계산해서
+        // 연결은 **한 번**만 맺는다.
+        Target::Ssh { .. } => list_pending_ssh(target, remote, base),
+    }
+}
+
+/// 로컬 대상용 기존 구현 — 명령 하나당 프로세스 하나, 비용이 거의 없다.
+fn list_pending_local(
+    target: &Target,
+    remote: &str,
+    base: &str,
+) -> AppResult<Vec<PendingBranch>> {
     // %(symref): refs/remotes/origin/HEAD 같은 심볼릭 ref에서만 비어 있지
     // 않다. %(refname:short)는 origin/HEAD를 "origin"으로 줄여 버려서
     // 이름 비교("origin/HEAD")로는 절대 거를 수 없다 — 원격 HEAD가 base가
@@ -275,6 +292,238 @@ fn build_pending(
         local,
         merged_locally,
     }))
+}
+
+/// SSH 대상 병합 대기 계산 — 스크립트 한 장을 원격 `sh -s` 로 보내 한 번의
+/// 연결로 모든 브랜치를 계산한다. 기존엔 브랜치마다 SSH 연결 5~6개
+/// (merge-base ×2, rev-parse, rev-list, diff)를 새로 맺어 브랜치 몇 개만
+/// 돼도 수십 초가 걸렸다. 출력 규약:
+///   `==\t<R|L>\t<refname>\t<sha>\t<author>\t<unix>\t<symref>\t<subject>`
+///     — 후보 브랜치 하나의 시작 (R=원격 추적, L=로컬 브랜치)
+///   `A\t<0|1>` — 원격 base(origin/<base>)에 이미 병합됐는가
+///   `M\t<로컬 base 존재|1|0>\t<로컬 base에 병합됨|1|0>`
+///   `C\t<ahead>\t<behind>` — rev-list --left-right --count 결과
+///   `D\t<git diff --name-status 한 줄>` — 이 브랜치의 변경 파일
+pub(crate) fn list_pending_ssh(target: &Target, remote: &str, base: &str) -> AppResult<Vec<PendingBranch>> {
+    let Target::Ssh { user, host, key, password, port, path } = target else {
+        return Err(AppError::Internal(
+            "list_pending_ssh: SSH 대상이 아닙니다".into(),
+        ));
+    };
+    let script = pending_probe_script(&path.to_string_lossy(), remote, base);
+    let out = crate::git::run_ssh_script(user, host, key, password, *port, &script)?;
+    if out.status != 0 {
+        let detail = if out.stderr.trim().is_empty() {
+            "원격에서 스크립트가 실패했습니다".to_string()
+        } else {
+            out.stderr.trim().to_string()
+        };
+        return Err(AppError::Git(format!("병합 대기 조회 실패: {detail}")));
+    }
+    parse_pending_output(&out.stdout, remote, base)
+}
+
+/// [`list_pending_ssh`] 가 원격에서 돌릴 스크립트. POSIX sh — Ubuntu/Debian
+/// (dash)·NAS 의 busybox 까지 겨냥했다. `\t` 는 printf 가 해석한다.
+pub fn pending_probe_script(path: &str, remote: &str, base: &str) -> String {
+    let q_path = crate::git::shell_quote(path);
+    let q_remote = crate::git::shell_quote(remote);
+    let q_base = crate::git::shell_quote(base);
+    format!(
+        r#"cd {q_path} || {{ printf 'FATAL\tcd\n' >&2; exit 3; }}
+R={q_remote}; B={q_base}; RB="$R/$B"
+FMT='%(refname:short)%09%(objectname)%09%(authorname)%09%(committerdate:unix)%09%(symref)%09%(subject)'
+probe() {{
+  if git merge-base --is-ancestor "$1" "$RB" >/dev/null 2>&1; then
+    printf 'A\t1\n'
+  else
+    printf 'A\t0\n'
+  fi
+  if git rev-parse -q --verify "refs/heads/$B" >/dev/null 2>&1; then
+    if git merge-base --is-ancestor "$1" "refs/heads/$B" >/dev/null 2>&1; then
+      printf 'M\t1\t1\n'
+    else
+      printf 'M\t1\t0\n'
+    fi
+  else
+    printf 'M\t0\t0\n'
+  fi
+  counts=$(git rev-list --left-right --count "$RB...$1" 2>/dev/null)
+  if [ -n "$counts" ]; then
+    behind=$(printf '%s\n' "$counts" | cut -f1)
+    ahead=$(printf '%s\n' "$counts" | cut -f2)
+    printf 'C\t%s\t%s\n' "$ahead" "$behind"
+  else
+    # 공통 조상이 없는 새 브랜치 — ahead 만 센다 (로컬 경로와 같은 규칙).
+    ahead=$(git rev-list --count "$1" 2>/dev/null)
+    printf 'C\t%s\t0\n' "$ahead"
+  fi
+  git -c core.quotepath=off diff --name-status "$RB...$1" 2>/dev/null | while IFS= read -r dl; do
+    printf 'D\t%s\n' "$dl"
+  done
+}}
+git for-each-ref "refs/remotes/$R" --format="$FMT" | while IFS= read -r line; do
+  printf '==\tR\t%s\n' "$line"
+  probe "$(printf '%s' "$line" | cut -f1)"
+done
+git for-each-ref refs/heads --format="$FMT" | while IFS= read -r line; do
+  printf '==\tL\t%s\n' "$line"
+  probe "$(printf '%s' "$line" | cut -f1)"
+done
+"#
+    )
+}
+
+/// [`pending_probe_script`] 출력을 파싱해 [`PendingBranch`] 목록으로 바꾼다.
+/// 순수 함수 — 로컬 경로(list_pending_local)와 같은 필터를 거친다: 심볼릭
+/// HEAD·base 자신·base에 이미 병합된 브랜치 제외, 원격/로컬 중복 제거.
+pub fn parse_pending_output(stdout: &str, remote: &str, base: &str) -> AppResult<Vec<PendingBranch>> {
+    let base_ref = format!("{remote}/{base}");
+    struct Cand {
+        kind: String,
+        name: String,
+        sha: String,
+        author: String,
+        unix_str: String,
+        sym: String,
+        subject: String,
+        ancestor: bool,
+        local_base_exists: bool,
+        local_base_ancestor: bool,
+        ahead: Option<u32>,
+        behind: u32,
+        files: Vec<ChangedPath>,
+    }
+    impl Default for Cand {
+        fn default() -> Self {
+            Self {
+                kind: String::new(),
+                name: String::new(),
+                sha: String::new(),
+                author: String::new(),
+                unix_str: "0".into(),
+                sym: String::new(),
+                subject: String::new(),
+                ancestor: false,
+                local_base_exists: false,
+                local_base_ancestor: false,
+                ahead: None,
+                behind: 0,
+                files: Vec::new(),
+            }
+        }
+    }
+
+    let mut out: Vec<PendingBranch> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cur: Option<Cand> = None;
+
+    // 후보 하나를 확정한다 — 필터를 통과하면 목록에 넣고 seen 에 심는다.
+    fn flush(
+        cand: Option<Cand>,
+        out: &mut Vec<PendingBranch>,
+        seen: &mut std::collections::HashSet<String>,
+        remote: &str,
+        base: &str,
+        base_ref: &str,
+    ) {
+        let Some(c) = cand else { return };
+        if !c.sym.is_empty() || c.name.is_empty() || c.sha.is_empty() {
+            return; // origin/HEAD 같은 심볼릭 포인터·불완전한 줄
+        }
+        if c.name == format!("{remote}/HEAD") || c.name.rsplit('/').next() == Some("HEAD") {
+            return;
+        }
+        if c.kind == "R" {
+            if c.name == base_ref {
+                return; // origin/<base> 자신
+            }
+        } else if c.name == base || c.name == "HEAD" {
+            return; // 로컬 base·HEAD
+        }
+        if c.ancestor {
+            return; // base에 이미 병합됨
+        }
+        if seen.contains(&c.sha) {
+            return; // 같은 팁을 가리키는 로컬/원격 중복
+        }
+        let Some(ahead) = c.ahead else { return }; // 사라진 ref 등 — 건너뀀다
+        let short_name = if c.kind == "L" {
+            c.name.clone()
+        } else {
+            c.name
+                .strip_prefix(&format!("{remote}/"))
+                .unwrap_or(&c.name)
+                .to_string()
+        };
+        seen.insert(c.sha.clone());
+        out.push(PendingBranch {
+            name: c.name,
+            short_name,
+            sha: c.sha,
+            author: c.author,
+            unix_time: c.unix_str.parse().unwrap_or(0),
+            subject: c.subject,
+            ahead,
+            behind: c.behind,
+            changed_files: c.files,
+            local: c.kind == "L",
+            merged_locally: c.local_base_exists && c.local_base_ancestor,
+        });
+    }
+
+    for line in stdout.lines() {
+        if let Some(rest) = line.strip_prefix("==\t") {
+            flush(cur.take(), &mut out, &mut seen, remote, base, &base_ref);
+            let (kind, fields) = match rest.split_once('\t') {
+                Some(kv) => kv,
+                None => continue,
+            };
+            let mut parts = fields.splitn(6, '\t');
+            cur = Some(Cand {
+                kind: kind.to_string(),
+                name: parts.next().unwrap_or("").to_string(),
+                sha: parts.next().unwrap_or("").to_string(),
+                author: parts.next().unwrap_or("").to_string(),
+                unix_str: parts.next().unwrap_or("0").to_string(),
+                sym: parts.next().unwrap_or("").to_string(),
+                subject: parts.next().unwrap_or("").to_string(),
+                ..Default::default()
+            });
+            continue;
+        }
+        let Some(c) = cur.as_mut() else { continue };
+        if let Some(f) = line.strip_prefix("A\t") {
+            c.ancestor = f.trim() == "1";
+        } else if let Some(f) = line.strip_prefix("M\t") {
+            let mut it = f.split('\t');
+            c.local_base_exists = it.next().unwrap_or("0").trim() == "1";
+            c.local_base_ancestor = it.next().unwrap_or("0").trim() == "1";
+        } else if let Some(f) = line.strip_prefix("C\t") {
+            let mut it = f.split('\t');
+            c.ahead = it.next().and_then(|v| v.trim().parse().ok());
+            c.behind = it.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        } else if let Some(f) = line.strip_prefix("D\t") {
+            // "<status>\t<path>" (rename 은 "R100\told\tnew") — 로컬 경로와
+            // 동일하게 두 번째 필드를 경로로 쓴다.
+            let mut fields = f.split('\t');
+            let kind = fields.next().unwrap_or("").to_string();
+            let path = fields.next().unwrap_or("").to_string();
+            if (kind.starts_with('R') || kind.starts_with('C')) && fields.next().is_some() {
+                // 새 경로는 버린다 — 기존 동작 유지.
+            }
+            if !path.is_empty() {
+                c.files.push(ChangedPath {
+                    path: crate::git::unquote_git_path(&path),
+                    kind,
+                });
+            }
+        }
+        // 그 외(빈 줄 등)는 무시한다.
+    }
+    flush(cur, &mut out, &mut seen, remote, base, &base_ref);
+    out.sort_by(|a, b| b.unix_time.cmp(&a.unix_time));
+    Ok(out)
 }
 
 /// 병합이 끝나 base에 완전히 포함된 원격 브랜치 — origin에 쌓인 죽은

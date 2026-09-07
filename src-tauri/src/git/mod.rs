@@ -369,6 +369,9 @@ pub fn build_ssh_cmd_timeout(
     };
     cmd.arg("-o")
         .arg(format!("ConnectTimeout={connect_timeout_secs}"));
+    // 서버가 GSSAPI(Kerberos)를 켜 둔 경우 인증 협상에 수 초가 붙는다 —
+    // 이 앱은 키/비밀번호만 쓰므로 아예 꺼서 첫 연결을 가볍게 만든다.
+    cmd.arg("-o").arg("GSSAPIAuthentication=no");
     // 연결 후 네트워크가 끊기면 TCP만으로는 몇 분씩 매달린다 — keepalive 로
     // 죽은 세션을 ~15초(5s×3회) 안에 끊는다. 데이터가 오가는 동안에는
     // 발동하지 않으므로 오래 걸리는 정상 push/fetch 는 죽이지 않는다.
@@ -524,6 +527,64 @@ pub fn run_ssh_command(
     run_once(pw)
 }
 
+/// Execute a multi-line POSIX shell script on the remote host via `sh -s`.
+/// The script travels on stdin, so nothing needs argv quoting — 여러 git
+/// 명령을 묶어 낼 때 SSH 연결 비용(핸드셰이크+인증)을 **한 번만** 내려고
+/// 존재하는 함수다. 브랜치마다 연결을 새로 맺으면 브랜치 수 × 수 초가 된다.
+/// Same password-first/key-fallback policy as [`run_ssh_command`].
+pub fn run_ssh_script(
+    user: &str,
+    host: &str,
+    key: &str,
+    password: &str,
+    port: u16,
+    script: &str,
+) -> AppResult<GitOutput> {
+    let pw = !password.is_empty();
+    let run_once = |use_password: bool| -> AppResult<GitOutput> {
+        let mut cmd = build_ssh_cmd(
+            user,
+            host,
+            key,
+            port,
+            if use_password { password } else { "" },
+        );
+        cmd.arg("--").arg("sh -s");
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().map_err(|e| map_ssh_spawn_err(e, use_password))?;
+        {
+            use std::io::Write;
+            let mut stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| AppError::Git("ssh stdin unavailable".into()))?;
+            stdin
+                .write_all(script.as_bytes())
+                .map_err(|e| AppError::Git(format!("ssh stdin write failed: {e}")))?;
+            // 닫아야 원격 sh 가 스크립트 끝을 안다.
+        }
+        let output = wait_with_timeout(child, EXEC_TIMEOUT)
+            .map_err(|e| AppError::Git(format!("ssh wait failed: {e}")));
+        let output = output?;
+        Ok(GitOutput {
+            status: output.status.code().unwrap_or(-1),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    };
+    if pw && !key.is_empty() {
+        // 비밀번호를 먼저 시도하고, 서버가 거부하면 키로 재시도한다.
+        let first = run_once(true)?;
+        if first.status == 0 || !first.stderr.contains("Permission denied") {
+            return Ok(first);
+        }
+        return run_once(false);
+    }
+    run_once(pw)
+}
+
 /// 프로세스 실행 하드 캡. keepalive/ConnectTimeout 이 잡지 못하는 나머지
 /// (스크립트가 멈춘 훅, 응답 없는 자격증명 헬퍼 등)를 위한 최후의 보루다.
 /// 큰 저장소의 정상 push/fetch 를 죽이지 않도록 넉넉하게 잡는다.
@@ -536,11 +597,21 @@ fn output_with_timeout(
     cmd: &mut Command,
     timeout: std::time::Duration,
 ) -> std::io::Result<std::process::Output> {
+    cmd.stdin(Stdio::null());
+    let child = cmd.spawn()?;
+    wait_with_timeout(child, timeout)
+}
+
+/// 이미 spawn 된 자식 프로세스의 stdout/stderr 를 끝까지 읽으면서 시한을
+/// 넘기면 죽인다. stdin 을 파이프로 쓰는 호출자(run_ssh_script)는 spawn 과
+/// stdin 주입을 스스로 해야 하므로 자식을 넘겨받는 이 형태가 필요하다.
+fn wait_with_timeout(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> std::io::Result<std::process::Output> {
     use std::io::Read;
     use std::time::Instant;
 
-    cmd.stdin(Stdio::null());
-    let mut child = cmd.spawn()?;
     let mut out_pipe = child.stdout.take();
     let mut err_pipe = child.stderr.take();
     let out_t = std::thread::spawn(move || {

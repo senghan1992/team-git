@@ -83,6 +83,7 @@ use git_companion::git::merge::{
     abort_merge, complete_merge, conflict_detail, list_pending_branches, merge_in_progress,
     remaining_conflicts, resolve_conflict, start_merge, Resolution,
 };
+use git_companion::git::merge::{parse_pending_output, pending_probe_script};
 use git_companion::git::push;
 use git_companion::git::Target;
 
@@ -1227,4 +1228,104 @@ fn config_store_session_and_push_credentials_roundtrip() {
         back.push_credentials.get("repo-1").unwrap().username,
         "devuser"
     );
+}
+
+/// SSH 병합 대기 조회의 배치 스크립트가 로컬 구현과 **정확히 같은 결과**를
+/// 내는지 — 같은 저장소에서 (1) 스크립트를 로컬 `sh` 로 돌려 파싱한 것과
+/// (2) 로컬 경로 구현의 출력을 비교한다. 스크립트는 원격에서 `sh -s` 로
+/// 실행되므로, 로컬 sh 로도 같은 방식으로 검증할 수 있다.
+#[test]
+#[cfg(unix)]
+fn pending_probe_script_matches_local_implementation() {
+    use git_companion::git::merge::{
+        list_pending_branches, parse_pending_output, pending_probe_script,
+    };
+
+    let td = TempDir::new().unwrap();
+    let root = td.path();
+    init_repo(root);
+    // 이 환경의 git 기본 브랜치는 master 일 수 있다 — base 를 main 으로 고정.
+    git_run(root, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    // base(main) + 팀원 브랜치 하나 + 이미 병합된 브랜치 하나.
+    touch(&format!("{}/a.txt", root.display()));
+    git_run(root, &["add", "."]);
+    git_run(root, &["commit", "-q", "-m", "base commit"]);
+    git_run(root, &["branch", "feature/one"]);
+    git_run(root, &["branch", "merged-branch"]);
+
+    // feature/one 에 커밋 (main 에는 없는).
+    let wt = TempDir::new().unwrap(); // 별도 worktree 대신 checkout 으로 흉내
+    drop(wt);
+    git_run(root, &["checkout", "-q", "feature/one"]);
+    touch(&format!("{}/one.txt", root.display()));
+    git_run(root, &["add", "."]);
+    git_run(root, &["commit", "-q", "-m", "feature work"]);
+    // 브랜치 간 diff 가 name-status 에 두 줄이 나오도록 수정도 하나.
+    fs::write(root.join("a.txt"), "changed").unwrap();
+    git_run(root, &["add", "."]);
+    git_run(root, &["commit", "-q", "-m", "edit base file"]);
+    git_run(root, &["checkout", "-q", "main"]);
+
+    // 원격 추적 브랜치 흉내: 로컬 브랜치를 refs/remotes/origin 아래에 복사.
+    git_run(root, &["update-ref", "refs/remotes/origin/main", "main"]);
+    git_run(root, &["update-ref", "refs/remotes/origin/feature/one", "feature/one"]);
+    git_run(root, &["update-ref", "refs/remotes/origin/merged-branch", "merged-branch"]);
+    git_run(root, &["update-ref", "refs/remotes/origin/HEAD", "main"]);
+
+    let target = Target::Local(root.into());
+
+    // (1) 로컬 구현.
+    let local = list_pending_branches(&target, "origin", "main").unwrap();
+
+    // (2) 스크립트 → sh → 파서.
+    let script = pending_probe_script(&root.display().to_string(), "origin", "main");
+    let out = std::process::Command::new("sh")
+        .arg("-s")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut c| {
+            use std::io::Write;
+            c.stdin.as_mut().unwrap().write_all(script.as_bytes())?;
+            c.wait_with_output()
+        })
+        .expect("sh 실행");
+    assert!(out.status.success(), "script failed: {}", String::from_utf8_lossy(&out.stderr));
+    let parsed = parse_pending_output(&String::from_utf8_lossy(&out.stdout), "origin", "main")
+        .expect("parse failed");
+
+    let names = |v: &[git_companion::git::merge::PendingBranch]| {
+        let mut v: Vec<String> = v.iter().map(|b| b.name.clone()).collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        names(&local),
+        names(&parsed),
+        "스크립트 경로와 로컬 경로의 브랜치 목록이 다릅니다\nscript stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    for b in &parsed {
+        let same = local
+            .iter()
+            .find(|l| l.name == b.name)
+            .expect("parsed branch missing from local list");
+        assert_eq!(same.sha, b.sha, "{}: sha 불일치", b.name);
+        assert_eq!(same.ahead, b.ahead, "{}: ahead 불일치", b.name);
+        assert_eq!(same.behind, b.behind, "{}: behind 불일치", b.name);
+        assert_eq!(same.local, b.local, "{}: local 불일치", b.name);
+        assert_eq!(
+            same.merged_locally, b.merged_locally,
+            "{}: merged_locally 불일치",
+            b.name
+        );
+        let lf: Vec<_> = same.changed_files.iter().map(|f| (&f.kind, &f.path)).collect();
+        let pf: Vec<_> = b.changed_files.iter().map(|f| (&f.kind, &f.path)).collect();
+        assert_eq!(lf, pf, "{}: changed_files 불일치", b.name);
+    }
+    // 시나리오 검증: merged-branch 는 base에 포함되어 목록에 없어야 하고,
+    // feature/one 은 대기로 잡혀야 한다.
+    assert!(parsed.iter().any(|b| b.short_name == "feature/one"));
+    assert!(!parsed.iter().any(|b| b.short_name == "merged-branch"));
 }

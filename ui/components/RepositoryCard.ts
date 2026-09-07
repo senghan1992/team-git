@@ -94,7 +94,7 @@ export function renderRepoCard(
   todo.className = "gc-todo";
   card.appendChild(todo);
 
-  function paintPills(status: WorkingTreeStatus | null, pending: number | null) {
+  function paintPills(status: WorkingTreeStatus | null, pending: number | null, mergedLocally: number | null) {
     pills.innerHTML = "";
     const add = (text: string, cls: string) => {
       const b = document.createElement("span");
@@ -113,6 +113,7 @@ export function renderRepoCard(
     if (status.ahead > 0) add(`↑${status.ahead} 미푸시`, "gc-badge--warning");
     if (status.behind > 0) add(`↓${status.behind} 뒤처짐`, "gc-badge--info");
     if (pending !== null && pending > 0) add(`병합 대기 ${pending}`, "gc-badge--warning");
+    if (mergedLocally !== null && mergedLocally > 0) add(`푸시 대기 ${mergedLocally}`, "gc-badge--warning");
     if (pills.children.length === 0) add("깨끗함", "gc-badge--neutral");
   }
 
@@ -190,7 +191,7 @@ export function renderRepoCard(
     const isManager = isMergeManagerFor(cfg, me?.email ?? null, baseBranch);
     const wantPending = isManager && !!status;
 
-    paintPills(status, null);
+    paintPills(status, null, null);
     if (wantPending) {
       const checking = document.createElement("span");
       checking.className = "gc-badge gc-badge--muted inline-flex items-center gap-1";
@@ -205,15 +206,26 @@ export function renderRepoCard(
     if (!wantPending) return;
 
     let pending: number | null = null;
+    let mergedLocally: number | null = null;
     try {
-      pending = (await ipc.listPendingBranches(repo.id, baseBranch)).length;
+      const list = await ipc.listPendingBranches(repo.id, baseBranch);
+      // 병합 센터와 같은 말을 하도록 — 이미 로컬 base에 병합된("푸시 대기")
+      // 브랜치는 병합 대기 수에서 뺀다.
+      pending = list.filter((b) => !b.merged_locally).length;
+      mergedLocally = list.length - pending;
     } catch {
       pending = null;
     }
     if (!card.isConnected) return;
-    paintPills(status, pending);
+    paintPills(status, pending, mergedLocally);
     paintTodo(
-      computeNextAction({ status, pendingCount: pending, isMergeManager: isManager, baseBranch }),
+      computeNextAction({
+        status,
+        pendingCount: pending,
+        mergedLocallyCount: mergedLocally,
+        isMergeManager: isManager,
+        baseBranch,
+      }),
       status,
     );
   }

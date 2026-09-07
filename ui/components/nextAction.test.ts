@@ -81,6 +81,27 @@ function input(over: Partial<NextActionInput> = {}): NextActionInput {
 }
 
 {
+  // 병합이 끝났지만 결과 push 가 남은 상태 — "병합하기"가 아니라 push 를 권한다.
+  // 홈 카드가 병합 센터의 "푸시 대기" 배지와 다른 말을 하던 버그.
+  const a = computeNextAction(
+    input({ status: status(), isMergeManager: true, pendingCount: 0, mergedLocallyCount: 3 }),
+  );
+  assert(a.kind === "push", `푸시 대기만 남으면 push 다 (got ${a.kind})`);
+  assert(a.label.includes("push"), `문구에 push 가 들어간다 (got ${a.label})`);
+  assert(a.tab === "merge", "병합 탭으로 안내한다");
+  assert(a.urgent, "팀원이 기다리므로 긴급");
+}
+
+{
+  // 병합 대기와 푸시 대기가 섞여 있으면 병합이 먼저다 — push 해도 남는다.
+  const a = computeNextAction(
+    input({ status: status(), isMergeManager: true, pendingCount: 2, mergedLocallyCount: 3 }),
+  );
+  assert(a.kind === "merge", `병합이 밀려 있으면 병합이 우선 (got ${a.kind})`);
+  assert(a.label.includes("2건"), "병합 대기 수만 센다 (푸시 대기 제외)");
+}
+
+{
   const a = computeNextAction(input({ status: status({ behind: 4 }) }));
   assert(a.kind === "sync", `뒤처지면 동기화 (got ${a.kind})`);
   assert(!a.urgent, "동기화는 급하지 않다");
