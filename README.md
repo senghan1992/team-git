@@ -39,7 +39,8 @@ git clone https://github.com/senghan1992/team-git.git
 때문입니다. 한 번 로그인하면 재시작·오프라인에도 유지되고 다시 묻지 않습니다.
 
 아래 **0-1. 팀 서버 띄우기**를 한 사람이 끝낸 뒤, 각자 로그인 창의 **서버
-주소**에 그 컴퓨터 주소(`http://서버IP:8000`)를 넣고(**연결 확인**이 바로 됩니다)
+주소**에 그 컴퓨터 주소(`http://서버IP:48111` — Docker 배포, uvicorn 은 8000)를
+넣고(**연결 확인**이 바로 됩니다)
 **계정 만들기**로 가입하세요. **이메일이 곧 팀 안의 신분**입니다 — 병합 관리자
 지정이 이메일로 매칭되므로 팀에서 쓰는 이메일로 가입하세요.
 
@@ -49,19 +50,30 @@ git clone https://github.com/senghan1992/team-git.git
 작은 팀 서버(FastAPI)가 중계합니다. **팀원 모두가 접속할 수 있는 컴퓨터** 한
 대(사무실 서버, 늘 켜 두는 PC, 작은 VM)에서 띄웁니다. 두 방법 중 하나만 고르세요.
 
-**방법 A — Docker (권장, 세 줄)**. [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-이나 docker 엔진만 있으면 됩니다.
+**방법 A — Docker (권장)**. [Docker Desktop](https://www.docker.com/products/docker-desktop/)
+이나 docker 엔진만 있으면 됩니다. 컨테이너는 이 폴더의 `docker-compose.yml`
+(포트 48111, 데이터는 `/data` 볼륨)을 그대로 씁니다.
 
 ```bash
 git clone https://github.com/senghan1992/team-git.git
 cd team-git
+docker build -t git-companion-team-server:latest backend   # 이미지 만들기 (1~2분)
 docker compose up -d
 ```
 
 처음 한 번은 이미지를 빌드하느라 1~2분 걸립니다. 계정·팀·알림은
-`team-git/data/gc_peer.db` 파일 하나에 남고, 컴퓨터를 재시작해도 서버가 자동으로
-다시 뜹니다. 로그는 `docker compose logs -f`, 내리기는 `docker compose down`(데이터는
-남음), 다른 포트는 `GC_PORT=9000 docker compose up -d`.
+컴퓨터의 `data/git-companion/gc_peer.db` 파일 하나에 남고, 컴퓨터를
+재시작해도 서버가 자동으로 다시 뜹니다. 로그는 `docker compose logs -f`,
+내리기는 `docker compose down`(데이터는 남음).
+
+> **Portainer 로 배포한다면**: `docker-compose.yml` 을 통째로 복사해
+> Stacks → Add stack → Web editor 에 붙여 넣고 Deploy 하세요. `.env` 를
+> 읽지 않으므로 환경변수는 파일 안에 실제 값으로 적혀 있습니다 — 포트만
+> 배포 환경에 맞게 고치면 됩니다. (이미지는 미리 빌드해 두세요: 위의
+> `docker build` 명령)
+> 
+> **서버 주소**: 팀원은 앱 로그인 화면의 "서버 주소"에
+> `http://<서버IP>:48111` 을 넣습니다.
 
 **방법 B — Docker 없이 (Python 3.11 이상)**. Rust나 Node는 필요 없습니다.
 
@@ -246,10 +258,10 @@ AUTH_MODE=google
      실패합니다).
    - 이름은 아무거나 (예: "Git Companion team server").
    - **승인된 리디렉션 URI** 에 아래 한 줄을 추가하세요 (서버 IP/포트에
-     맞춰 변경):
+     맞춰 변경 — Docker 배포 기본은 48111):
 
      ```
-     http://<서버IP>:8000/auth/google/callback
+     http://<서버IP>:48111/auth/google/callback
      ```
 
 4. **만들기**를 누르면 **클라이언트 ID**와 **클라이언트 보안 비밀번호**가
@@ -269,22 +281,28 @@ AUTH_MODE=google
 서버는 실행할 때 아래 값들을 환경변수로 읽습니다 (한 글자도 다르면 안
 됩니다). `AUTH_MODE=google` 이어야 구글 로그인이 켜집니다:
 
-**Docker 배포 (권장)** — 프로젝트 루트에 `.env` 파일을 만들어 넣으세요.
-`docker compose` 가 이 파일을 자동으로 읽습니다:
+**Docker 배포 (권장)** — `docker-compose.yml` 의 `environment:` 항목에 실제
+값을 적어 넣으세요 (Portainer 에 붙여 넣는 그 파일 그대로입니다). `.env`
+파일은 읽지 않으므로 compose 에 `${…}` 가 없이 바로 값이 보여야 합니다:
 
-```env
-# .env  (루트 폴더)
-AUTH_MODE=google
-GOOGLE_CLIENT_ID=123456….apps.googleusercontent.com
-GOOGLE_CLIENT_SECRET=GOCSPX-…
-GOOGLE_REDIRECT_URI=http://<서버IP>:8000/auth/google/callback
+```yaml
+    environment:
+      - AUTH_MODE=google
+      - GOOGLE_CLIENT_ID=123456….apps.googleusercontent.com
+      - GOOGLE_CLIENT_SECRET=GOCSPX-…
+      - GOOGLE_REDIRECT_URI=http://<서버IP>:48111/auth/google/callback
 ```
+
+> 외부 포트가 48111 이라면 리디렉션 URI 도 `:48111` 주소로 콘솔에 등록하고
+> 같은 값으로 적습니다. 가끔 NAS 같은 곳은 외부 포트가 48111 이어도
+> 컨테이너끼리는 8000 이니, 등록 주소는 **팀원이 브라우저에서 실제로
+> 도달하는 주소**를 기준으로 하세요.
 
 저장한 뒤 컨테이너를 다시 만듭니다 (환경변수는 컨테이너 생성 시점에
 고정되므로 재시작이 필요합니다):
 
 ```bash
-docker compose up -d
+docker compose up -d --force-recreate
 ```
 
 **Docker 없이 uvicorn 으로 실행** — 셸에서 실행하기 전에 넣으면 됩니다

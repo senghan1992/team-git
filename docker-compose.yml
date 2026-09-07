@@ -1,38 +1,53 @@
-# Git Companion 팀 서버 — 팀에서 한 사람이, 모두가 접속할 수 있는 컴퓨터에서 한 번만.
+# Git Companion 팀 서버 — Portainer(또는 docker compose)에 그대로 붙여 넣는 스택.
 #
-#   docker compose up -d                 # 띄우기 (처음엔 이미지 빌드 1~2분)
-#   docker compose logs -f team-server   # 로그
-#   docker compose down                  # 내리기 — ./data 의 계정·팀·알림은 그대로 남는다
-#   GC_PORT=9000 docker compose up -d    # 다른 포트로
+# 준비 (한 번만 — 서버를 띄울 컴퓨터에서 이미지를 만든다):
+#   docker build -t git-companion-team-server:latest backend
 #
-# 확인: 브라우저로 http://<서버IP>:8000/healthz → {"status":"ok"}
-# 팀원은 앱 로그인 화면의 "서버 주소"에 http://<서버IP>:8000 을 넣는다.
+# Portainer 에서는: Stacks → Add stack → Web editor 에 이 파일 전체를 붙여 넣고
+# 맨 아래의 "Deploy the stack" 을 누르면 된다. (.env 는 읽지 않으므로 환경변수는
+# 전부 아래 environment 에 실제 값으로 적어 둔다.)
 #
-# 백업: ./data/gc_peer.db 파일 하나를 복사하면 끝이다.
+# docker compose 로 띄울 때도 똑같이:
+#   docker compose up -d            # 띄우기
+#   docker compose logs -f          # 로그
+#   docker compose down             # 내리기 — /data 의 계정·팀·알림은 그대로 남는다
+#
+# 확인: 브라우저로 http://<서버IP>:48111/healthz → {"status":"ok"}
+# 팀원은 앱 로그인 화면의 "서버 주소"에 http://<서버IP>:48111 을 넣는다.
+#
+# 백업: 호스트의 /opt/workspace/local/bsh/data/git-companion/gc_peer.db 파일
+# 하나를 복사하면 끝이다 (컨테이너를 지우거나 이미지를 다시 빌드해도 남는다).
 services:
   team-server:
-    build: ./backend
+    # 로컬에서 그냥 쓸 때는 이 주석을 풀고 `docker compose up -d` 로 빌드·
+    # 기동까지 한 번에 할 수 있다. 단 Portainer 웹 에디터에는 빌드 경로가
+    # 없으므로, Portainer 는 아래 주석 상태(이미지 미리 빌드)로 쓴다.
+    # build: ./backend
     image: git-companion-team-server:latest
     container_name: git-companion-team-server
     ports:
-      - "${GC_PORT:-8000}:8000"
+      - "48111:8000"
     volumes:
-      # 계정·팀·알림이 든 SQLite 파일. 컨테이너를 지우거나 새로 빌드해도 남는다.
-      - ./data:/data
+      # 작업 공간(네트워크 스토리지) — 필요할 때 컨테이너 안에서도 보이게.
+      - /srv/dev-disk-by-uuid-d006b427-55bc-4013-a9fb-19d5736de4e1/storage/workspace/local:/opt/workspace/local
+      # 계정·팀·알림이 든 SQLite 파일. 컨테이너를 지워도 이 폴더는 남는다.
+      - /opt/workspace/local/bsh/data/git-companion:/data
     environment:
       - GC_PEER_DB_URL=sqlite+pysqlite:////data/gc_peer.db
       # 로그인 방식: simple(기본 — 아이디+비밀번호만, 구글 버튼 숨김) |
-      # google(구글 버튼 추가). `.env` 에 AUTH_MODE=google 처럼 넣는다.
-      - AUTH_MODE=${AUTH_MODE:-simple}
-      # Google 로그인을 켜려면: 프로젝트 루트의 `.env` 파일에 세 값을 넣는다
-      # (docker compose 가 자동으로 읽어 이 줄들이 통과시킨다. README 의
+      # google(구글 버튼 추가). 사내 테스트는 simple 그대로 두면 된다.
+      - AUTH_MODE=simple
+      # Google 로그인을 켤 때만 아래 세 값을 실제 값으로 바꾼다 (README 의
       # 'Google 로그인 (선택)' 참고):
       #   GOOGLE_CLIENT_ID=….apps.googleusercontent.com
       #   GOOGLE_CLIENT_SECRET=GOCSPX-…
-      #   GOOGLE_REDIRECT_URI=http://<서버IP>:8000/auth/google/callback
+      #   GOOGLE_REDIRECT_URI=http://<서버IP>:48111/auth/google/callback
       # (REDIRECT_URI 는 Google Cloud Console 의 OAuth 클라이언트에 등록한
-      # 값과 정확히 같아야 한다 — 아래 기본값 127.0.0.1 은 로컬 개발 전용.)
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
-      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
-      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://127.0.0.1:8000/auth/google/callback}
+      # 값과 정확히 같아야 한다 — 외부 포트 48111 주소로 등록할 것.)
+      #
+      # 아래는 비어 있는 상태 = 구글 로그인 꺼짐. AUTH_MODE 도 강제로
+      # simple 로 두지 말고 google 로 바꿔서 함께 저장한다.
+      - GOOGLE_CLIENT_ID=
+      - GOOGLE_CLIENT_SECRET=
+      - GOOGLE_REDIRECT_URI=
     restart: unless-stopped
