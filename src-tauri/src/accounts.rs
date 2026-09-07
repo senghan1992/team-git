@@ -30,7 +30,7 @@ fn client() -> AppResult<reqwest::Client> {
 }
 
 /// The configured server base URL, or a message telling the user what to do.
-fn backend_url() -> AppResult<String> {
+pub(crate) fn backend_url() -> AppResult<String> {
     let url = config_store::load()?.peer.backend_url.trim().to_string();
     if url.is_empty() {
         return Err(AppError::Config(
@@ -73,7 +73,7 @@ impl UserPublic {
 /// FastAPI puts the human-readable reason in `{"detail": "..."}`; surfacing the
 /// bare status code instead ("register failed: 409") tells the user nothing
 /// about *which* field collided.
-async fn read_error(resp: reqwest::Response, fallback: &str) -> AppError {
+pub(crate) async fn read_error(resp: reqwest::Response, fallback: &str) -> AppError {
     let status = resp.status();
     let body = resp.text().await.unwrap_or_default();
     #[derive(Deserialize)]

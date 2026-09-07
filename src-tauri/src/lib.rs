@@ -4,16 +4,37 @@ pub mod commands;
 pub mod config_store;
 pub mod error;
 pub mod git;
+pub mod google_login;
 pub mod gpconfig;
 pub mod notify;
 pub mod peer;
 pub mod pre_push_hook;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tauri::Manager;
+
+/// X(닫기) 버튼은 창을 숨길 뿐 종료하지 않는다 — 트레이에서 복귀할 수 있게.
+/// '종료' 메뉴로 나갈 때만 true 로 바꾸고 정말 끈다.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+/// 창을 숨긴 뒤 "트레이에 있습니다" 안내는 앱 켤 때 한 번만.
+static TRAY_HINT_SENT: AtomicBool = AtomicBool::new(false);
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // 창이 트레이에 숨어 있을 때 앱을 다시 실행하면 새 프로세스 대신
+            // 기존 창을 다시 꺼내 준다.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        .setup(|_app| {
+        .setup(|app| {
+            let _ = setup_tray(app.handle());
             let cfg_dir = match config_store::config_dir() {
                 Ok(d) => d,
                 Err(_) => return Ok(()),
@@ -75,6 +96,31 @@ pub fn run() {
             });
             Ok(())
         })
+        // X(닫기)를 누르면 종료하지 않고 트레이로 숨긴다. '종료' 메뉴로 나갈
+        // 때(QUITTING)만 진짜로 내려간다. google-login 처럼 보조 창은 예외
+        // — 정상적으로 닫혀야 한다 (닫힘 = 로그인 취소).
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if !QUITTING.load(Ordering::Relaxed) && window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    // 처음 숨길 때만 "숨은 게 아니라 트레이에 남았다"를 알린다.
+                    if !TRAY_HINT_SENT.swap(true, Ordering::Relaxed) {
+                        use tauri_plugin_notification::NotificationExt;
+                        let _ = window
+                            .app_handle()
+                            .notification()
+                            .builder()
+                            .title("Git Companion")
+                            .body(
+                                "앱이 꺼지지 않고 트레이 아이콘에 남아 있습니다. \
+                                 트레이 아이콘을 클릭하면 언제든 다시 열 수 있습니다.",
+                            )
+                            .show();
+                    }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             // repo commands
             commands::repo::list_repositories,
@@ -95,6 +141,7 @@ pub fn run() {
             commands::project::push_credential_delete,
             commands::account::account_register,
             commands::account::account_login_by_password,
+            google_login::google_login_start,
             commands::account::account_logout,
             commands::account::account_current,
             commands::account::account_refresh,
@@ -160,4 +207,59 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch tauri application");
+}
+
+/// 시스템 트레이(우측 하단) 아이콘. 왼쪽 클릭으로 창을 열고/숨기고,
+/// 메뉴로 창 토글과 종료를 고른다.
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let toggle = MenuItem::with_id(app, "toggle", "창 열기 / 숨기기", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Git Companion 종료", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&toggle, &quit])?;
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .tooltip("Git Companion")
+        .menu(&menu)
+        // 왼쪽 클릭은 창 토글, 메뉴는 오른쪽 클릭으로.
+        .show_menu_on_left_click(false);
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+    builder = builder.on_menu_event(|app, event| match event.id().as_ref() {
+        "toggle" => toggle_main_window(app),
+        "quit" => {
+            QUITTING.store(true, Ordering::Relaxed);
+            app.exit(0);
+        }
+        _ => {}
+    });
+    // 아이콘 자체를 클릭해도 창이 열고 닫힌다 (메뉴는 오른쪽 클릭).
+    builder = builder.on_tray_icon_event(|tray, event| {
+        if let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            ..
+        } = event
+        {
+            toggle_main_window(tray.app_handle());
+        }
+    });
+    builder.build(app)?;
+    Ok(())
+}
+
+fn toggle_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(false) {
+        let _ = window.hide();
+    } else {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
 }

@@ -161,6 +161,11 @@ const mockData: Record<string, any> = {
   },
   account_login: (args: { id: string }) =>
     ({ id: args.id, name: "김민지", email: "minji@example.com", username: null, password_hash: null, created_at: new Date().toISOString() }) as never,
+  // 브라우저 미리보기에는 Tauri 로컬 콜백 서버가 없다 — 유용한 오류를 준다.
+  google_login_start: () =>
+    Promise.reject(new Error("브라우저 미리보기에서는 Google 로그인을 지원하지 않습니다. pnpm tauri dev 로 실행하세요.")),
+  account_login_by_password: (args: { username: string; password: string }) =>
+    ({ id: "u-me", name: "김민지", email: "minji@example.com", username: args.username, password_hash: null, created_at: new Date().toISOString() }) as never,
   project_config_get: {
     exists: true,
     config: {

@@ -31,9 +31,27 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(256), nullable=False, unique=True, index=True)
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     # "pbkdf2_sha256$<iterations>$<salt hex>$<hash hex>" — see app.auth.
+    # Google 로그인으로 생긴 계정은 비밀번호가 없어 sentinel 값
+    # (app.auth.GOOGLE_ONLY) 이 들어간다 — 아이디/비밀번호 로그인은 거부한다.
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+
+
+class OAuthFlow(Base):
+    """
+    One in-flight Google OAuth handshake.
+
+    The desktop app cannot hold a server-side session for the consent flow, so
+    the backend mints a random `state`, hands it to the browser (the app's
+    login webview), and later matches the callback to the loopback URL the app
+    asked to be redirected to. Rows are single-use and expire after 10 minutes.
+    """
+    __tablename__ = "oauth_flows"
+
+    state: Mapped[str] = mapped_column(String(48), primary_key=True)
+    app_redirect_uri: Mapped[str] = mapped_column(String(512), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
 
 
 class UserSession(Base):

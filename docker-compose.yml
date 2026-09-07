@@ -21,4 +21,11 @@ services:
       - ./data:/data
     environment:
       - GC_PEER_DB_URL=sqlite+pysqlite:////data/gc_peer.db
+      # Google 로그인을 켜려면 (README 의 'Google 로그인 (선택)' 참고):
+      # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET 을 .env 파일에 넣으면 이 줄이
+      # 값을 자동으로 통과시킨다. GOOGLE_REDIRECT_URI 는 콘솔에 등록한
+      # http://<서버IP>:8000/auth/google/callback 으로 바꾼다.
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI:-http://127.0.0.1:8000/auth/google/callback}
     restart: unless-stopped

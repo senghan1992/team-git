@@ -491,6 +491,11 @@ export const ipc = {
     invoke<Account>("account_register", { name, email, username, password }),
   accountLoginByPassword: (username: string, password: string) =>
     invoke<Account>("account_login_by_password", { username, password }),
+  /**
+   * Google 로그인 — 서버가 Google OAuth 를 지원할 때만 쓸 수 있다.
+   * 로그인 창이 닫힐 때까지 기다렸다가 로그인한 계정을 돌려준다.
+   */
+  googleLoginStart: () => invoke<Account>("google_login_start"),
   accountLogout: () => invoke<void>("account_logout"),
   accountCurrent: () => invoke<Account | null>("account_current"),
   /** 서버에서 내 정보를 다시 읽는다. 오프라인이면 캐시를 그대로 돌려준다. */

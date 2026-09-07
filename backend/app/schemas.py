@@ -33,6 +33,11 @@ class AuthResponse(BaseModel):
     token: str
 
 
+class GoogleUrlResponse(BaseModel):
+    """The Google consent URL for one OAuth handshake."""
+    url: str
+
+
 class ProfileUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=256)
     email: str | None = Field(default=None, min_length=3, max_length=256)
