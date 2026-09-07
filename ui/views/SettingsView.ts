@@ -16,7 +16,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
   const sub = document.createElement("div");
   sub.className = "gc-page-head__sub";
   sub.textContent =
-    "AI 자동 병합, SSH 연결, 푸시 자격증명, 외부 도구를 관리합니다. 팀 규칙(병합 대상 브랜치·병합 관리자·구성원)은 저장소 → 설정 탭에서 정합니다.";
+    "SSH 연결, AI 자동 병합, 푸시 자격증명을 관리합니다. 팀 규칙(병합 대상 브랜치·병합 관리자·구성원)은 저장소 → 설정 탭에서 정합니다.";
   head.appendChild(sub);
   main.appendChild(head);
 
