@@ -118,6 +118,40 @@ export interface MergedRemoteBranch {
   unix_time: number;
 }
 
+// ─── 병합 요청 (푸시와 승인을 분리하는 대기열) ───────────────────
+
+/** refs/gc-mr/<base>/<branch> 에 저장된 병합 요청 하나. */
+export interface MergeRequest {
+  /** 병합 대상 브랜치 (main 등). */
+  base: string;
+  /** 요청한 브랜치 짧은 이름 (feature/login). */
+  branch: string;
+  /** 전체 ref 경로. */
+  ref_path: string;
+  /** 요청 시점의 브랜치 tip — 이 커밋이 곧 병합될 것. */
+  sha: string;
+  /** 요청 제목 (기본 = 마지막 커밋 제목). */
+  title: string;
+  /** 요청한 사람. */
+  author: string;
+  email: string;
+  /** 요청 시각 (unix seconds). */
+  created_at: number;
+  open: boolean;
+  /** 원격 공유 실패로 이 컴퓨터에만 저장된 요청. */
+  local_only?: boolean;
+}
+
+/** 병합 탭 대기열 카드 — 요청 + 요청 tip 기준 브랜치 스냅샷. */
+export interface RequestedMerge {
+  request: MergeRequest;
+  ahead: number;
+  behind: number;
+  changed_files: ChangedPath[];
+  /** origin/<branch>가 아직 있는가 — 지워져도 요청 tip으로는 병합할 수 있다. */
+  branch_exists: boolean;
+}
+
 /** 타임라인에 실리는 커밋 한 줄 — `date` 는 RFC3339 작성일. */
 export interface TimelineCommit {
   sha: string;
@@ -438,6 +472,24 @@ export const ipc = {
     invoke<string>("fetch_repo", { repoId }),
   listPendingBranches: (repoId: Uuid, base: string) =>
     invoke<PendingBranch[]>("list_pending_branches", { repoId, base }),
+  // 병합 요청 — 푸시(작업 공유)와 승인(병합) 사이의 명시적 단계.
+  requestMerge: (repoId: Uuid, base: string, branch: string, title?: string | null) =>
+    invoke<MergeRequest>("request_merge", {
+      repoId,
+      base,
+      branch,
+      title: title ?? null,
+    }),
+  listRequestedMerges: (repoId: Uuid, base: string) =>
+    invoke<RequestedMerge[]>("list_requested_merges", { repoId, base }),
+  /** 승인(병합 완료) 또는 거절로 요청을 닫는다 — 대기열과 원격에서 사라진다. */
+  closeMergeRequest: (repoId: Uuid, base: string, branch: string, reason?: string | null) =>
+    invoke<void>("close_merge_request", {
+      repoId,
+      base,
+      branch,
+      reason: reason ?? null,
+    }),
   startMerge: (repoId: Uuid, branchRef: string, base: string, expectedSha?: string | null) =>
     invoke<MergeOutcome>("start_merge", {
       repoId,

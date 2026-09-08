@@ -752,8 +752,13 @@ pub fn start_merge(
     let _ = run_at_target(target, ["fetch", "--prune", remote]);
 
     // fetch --prune 이후의 실제 tip 확인 — 관리자가 화면에서 검토한 것과
-    // 지금 병합될 것이 같은지 검증한다.
-    let tip = run_at_target(target, ["rev-parse", "-q", "--verify", branch_ref])?;
+    // 지금 병합될 것이 같은지 검증한다. 병합 요청 ref(refs/gc-mr/*)는 태그
+    // 객체를 가리키므로 ^{commit} 으로 커밋으로 벗겨 비교한다 — 어느 ref를
+    // 넘겨도 (브랜치든 요청이든) 실제 병합될 커밋 기준으로 판정한다.
+    let tip = run_at_target(
+        target,
+        ["rev-parse", "-q", "--verify", &format!("{branch_ref}^{{commit}}")],
+    )?;
     if !tip.ok() {
         return Err(AppError::Git(format!(
             "{branch_ref} 브랜치를 찾을 수 없습니다 — 방금 원격에서 삭제되었을 수 있습니다. 목록을 새로고침하세요."
@@ -778,10 +783,18 @@ pub fn start_merge(
         )));
     }
 
-    let short = branch_ref
-        .strip_prefix(&format!("{remote}/"))
-        .unwrap_or(branch_ref)
-        .to_string();
+    // 병합 커밋 문구는 사람이 읽는다 — ref 경로(refs/gc-mr/…)가 아니라
+    // 브랜치 이름이 남게 한다. 요청 ref는 refs/gc-mr/<base>/<branch> 꼴이다.
+    let short = if let Some(rest) = branch_ref.strip_prefix("refs/gc-mr/") {
+        rest.split_once('/')
+            .map(|(_, branch)| branch.to_string())
+            .unwrap_or_else(|| rest.to_string())
+    } else {
+        branch_ref
+            .strip_prefix(&format!("{remote}/"))
+            .unwrap_or(branch_ref)
+            .to_string()
+    };
     let commit_msg = format!("{short} 브렌치 병합");
     let merge = run_at_target(target, ["merge", "--no-ff", "-m", &commit_msg, branch_ref])?;
     if merge.ok() {

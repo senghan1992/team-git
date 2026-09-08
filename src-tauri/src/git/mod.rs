@@ -40,6 +40,7 @@ pub mod branches;
 pub mod fetch;
 pub mod log;
 pub mod merge;
+pub mod mr;
 pub mod ops;
 pub mod push;
 pub mod status;
@@ -72,6 +73,9 @@ pub use merge::{
     remaining_conflicts, resolve_conflict, start_merge, ChangedPath, ConflictDetail, MergeOutcome,
     PendingBranch, Resolution,
 };
+
+/// Re-export merge-request types for use by commands.
+pub use mr::{list_requested_merges, request_merge as mr_request, MergeRequest, RequestedMerge};
 
 /// Target for git operations — local path or remote SSH host.
 #[derive(Debug, Clone)]

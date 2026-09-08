@@ -1,4 +1,4 @@
-import type { ProjectConfigResult, Repo, WorkingTreeStatus } from "../lib/ipc";
+import type { ProjectConfigResult, Repo, RequestedMerge, WorkingTreeStatus } from "../lib/ipc";
 import { ipc } from "../lib/ipc";
 import { toast } from "./Toast";
 import { icon, spinner } from "./Icon";
@@ -112,7 +112,7 @@ export function renderRepoCard(
     if (dirty > 0) add(`변경 ${dirty}`, "gc-badge--muted");
     if (status.ahead > 0) add(`↑${status.ahead} 미푸시`, "gc-badge--warning");
     if (status.behind > 0) add(`↓${status.behind} 뒤처짐`, "gc-badge--info");
-    if (pending !== null && pending > 0) add(`병합 대기 ${pending}`, "gc-badge--warning");
+    if (pending !== null && pending > 0) add(`병합 요청 ${pending}`, "gc-badge--warning");
     if (mergedLocally !== null && mergedLocally > 0) add(`푸시 대기 ${mergedLocally}`, "gc-badge--warning");
     if (pills.children.length === 0) add("깨끗함", "gc-badge--neutral");
   }
@@ -196,7 +196,7 @@ export function renderRepoCard(
       const checking = document.createElement("span");
       checking.className = "gc-badge gc-badge--muted inline-flex items-center gap-1";
       checking.appendChild(spinner(12));
-      checking.appendChild(document.createTextNode("병합 대기 확인 중…"));
+      checking.appendChild(document.createTextNode("병합 요청 확인 중…"));
       pills.appendChild(checking);
     }
     paintTodo(
@@ -208,11 +208,17 @@ export function renderRepoCard(
     let pending: number | null = null;
     let mergedLocally: number | null = null;
     try {
-      const list = await ipc.listPendingBranches(repo.id, baseBranch);
-      // 병합 센터와 같은 말을 하도록 — 이미 로컬 base에 병합된("푸시 대기")
-      // 브랜치는 병합 대기 수에서 뺀다.
-      pending = list.filter((b) => !b.merged_locally).length;
-      mergedLocally = list.length - pending;
+      // 병합 요청 흐름 — "병합 대기"는 이제 푸시된 브랜치가 아니라 **병합 요청**을
+      // 말한다. 관리자에게만 의미 있는 수치라 관리자일 때만 센다. 요청으로 만들어진
+      // 병합이 push 전에 끊긴("푸시 대기") 수는 기존대로 로컬 base 기준으로 센다.
+      if (isManager) {
+        const [reqs, list] = await Promise.all([
+          ipc.listRequestedMerges(repo.id, baseBranch).catch((): RequestedMerge[] | null => null),
+          ipc.listPendingBranches(repo.id, baseBranch),
+        ]);
+        pending = reqs ? reqs.length : null;
+        mergedLocally = list.filter((b) => b.merged_locally).length;
+      }
     } catch {
       pending = null;
     }

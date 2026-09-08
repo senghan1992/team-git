@@ -1,5 +1,9 @@
-// Merge Center — UI for listing pending remote branches, starting merges,
-// and resolving conflicts one block at a time.
+// Merge Center — 병합 요청 대기열(승인·거절)과 충돌 해결 UI.
+//
+// 팀원은 자기 브랜치에 자유롭게 push하고, **병합 요청 보내기**를 눌렀을 때만
+// 여기 대기열에 오른다. 관리자는 요청마다 변경 파일·커밋을 검토하고
+// 병합하기(승인) 또는 요청 거절로 답한다. 요청은 refs/gc-mr/* ref 로
+// 원격에 공유되므로 모든 팀원이 같은 대기열을 본다.
 import {
   ipc,
   ipc_peer,
@@ -13,6 +17,7 @@ import {
   type ProjectConfigResult,
   type PushOutcome,
   type Repo,
+  type RequestedMerge,
   type Resolution,
 } from "../lib/ipc";
 import { confirmDialog, openModal } from "./Modal";
@@ -92,7 +97,9 @@ export async function renderMergeCenter(
   root.className = "flex flex-col gap-4";
 
   let base: string = repo.default_branch || "main";
-  let branches: PendingBranch[] = [];
+  // 승인 대기열 — 팀원이 보낸 병합 요청만. 푸시된 브랜치 전부가 아니다:
+  // 푸시는 작업 공유, 요청은 병합 승인 요청이다.
+  let requests: RequestedMerge[] = [];
   let mergeState: MergeState | null = null;
   // Set of every conflict path observed since the merge started; survives
   // resolution so the file list can mark resolved items with a ✓.
@@ -368,15 +375,28 @@ export async function renderMergeCenter(
 
   function renderChangeMapSection() {
     changeMapHost.innerHTML = "";
-    const card = renderChangeMap(branches);
+    // 변경 지도는 대기열의 요청들만 본다 — 승인 대상이 무엇을 고치는지가
+    // 관리자에게 필요한 정보다. 요청 없는 push는 여기에 섞이지 않는다.
+    const queue: PendingBranch[] = requests.map((rm) => ({
+      name: rm.request.ref_path,
+      short_name: rm.request.branch,
+      sha: rm.request.sha,
+      author: rm.request.author,
+      unix_time: rm.request.created_at,
+      subject: rm.request.title,
+      ahead: rm.ahead,
+      behind: rm.behind,
+      changed_files: rm.changed_files,
+    }));
+    const card = renderChangeMap(queue);
     if (card) changeMapHost.appendChild(card);
   }
 
-  /** 병합 전 리뷰 — 대기 브랜치의 한 파일이 base와 어떻게 다른지 보여 준다. */
-  function openBranchFileDiff(b: PendingBranch, path: string) {
+  /** 병합 전 리뷰 — 대기 중인 요청의 한 파일이 base와 어떻게 다른지 보여 준다. */
+  function openBranchFileDiff(refName: string, shortName: string, path: string) {
     const m = openModal({
       title: path,
-      description: `origin/${base} ↔ ${b.short_name} 변경 내용`,
+      description: `origin/${base} ↔ ${shortName} 변경 내용`,
       cancelLabel: "닫기",
     });
     const host = document.createElement("div");
@@ -385,7 +405,7 @@ export async function renderMergeCenter(
     host.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)] px-3 py-2">불러오는 중…</div>`;
     m.body.appendChild(host);
     ipc
-      .branchFileDiff(repo.id, base, b.name, path)
+      .branchFileDiff(repo.id, base, refName, path)
       .then((text) => {
         host.innerHTML = "";
         if (!text || !text.trim()) {
@@ -434,7 +454,7 @@ export async function renderMergeCenter(
   }
   async function renderBranchList() {
     list.innerHTML = "";
-    if (branches.length === 0) {
+    if (requests.length === 0) {
       const empty = document.createElement("div");
       empty.className = "gc-empty gc-card";
       const iw = document.createElement("span");
@@ -443,16 +463,42 @@ export async function renderMergeCenter(
       empty.appendChild(iw);
       const t = document.createElement("div");
       t.className = "gc-empty__title";
-      t.textContent = "대기 중인 병합이 없습니다";
+      t.textContent = "승인 대기 중인 병합 요청이 없습니다";
       empty.appendChild(t);
       const d = document.createElement("div");
       d.className = "gc-empty__desc";
-      d.textContent = "팀원이 push하면 이 화면에 나타납니다.";
+      d.textContent =
+        "팀원이 작업 탭에서 push 후 '병합 요청 보내기'를 누르면 여기 대기열에 나타납니다. push만으로는 오르지 않습니다.";
       empty.appendChild(d);
       list.appendChild(empty);
       return;
     }
-    for (const b of branches) {
+    // 대기열 머리말 — 무엇이 몇 건 기다리고 있는지, 승인하면 무엇이 되는지.
+    const head = document.createElement("div");
+    head.className = "flex items-baseline justify-between gap-2";
+    const headTitle = document.createElement("div");
+    headTitle.className = "font-medium";
+    headTitle.textContent = `승인 대기열 · 병합 요청 ${requests.length}건`;
+    head.appendChild(headTitle);
+    const headHint = document.createElement("div");
+    headHint.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+    headHint.textContent = `승인하면 ${base}에 병합되고, 푸시와 함께 팀원에게 동기화 알림이 갑니다.`;
+    head.appendChild(headHint);
+    list.appendChild(head);
+    for (const rm of requests) {
+      // 카드 렌더링은 기존 브랜치 카드와 같은 모양을 재사용한다 — 리뷰에
+      // 필요한 정보(파일·커밋·카운터)는 동일하고, 요청 메타데이터가 추가된다.
+      const b: PendingBranch = {
+        name: rm.request.ref_path,
+        short_name: rm.request.branch,
+        sha: rm.request.sha,
+        author: rm.request.author,
+        unix_time: rm.request.created_at,
+        subject: rm.request.title,
+        ahead: rm.ahead,
+        behind: rm.behind,
+        changed_files: rm.changed_files,
+      };
       const card = document.createElement("div");
       card.className = "gc-card flex flex-col gap-2";
       const header = document.createElement("div");
@@ -480,9 +526,30 @@ export async function renderMergeCenter(
       titleWrap.appendChild(title);
       const meta = document.createElement("div");
       meta.className = "text-display-sm text-[color:var(--color-ink-muted)] truncate";
-      meta.textContent = `${b.author} · ${await relativeTime(b.unix_time)} · ${b.subject}`;
+      meta.textContent = `${b.author} · 요청 ${await relativeTime(b.unix_time)} · ${b.subject}`;
       titleWrap.appendChild(meta);
       header.appendChild(titleWrap);
+      // 병합 요청 상태 배지 — 대기열 카드가 무엇인지 한눈에 알게 한다.
+      const requestTag = document.createElement("span");
+      requestTag.className = "gc-badge gc-badge--info shrink-0";
+      requestTag.textContent = "병합 요청";
+      header.appendChild(requestTag);
+      if (rm.request.local_only) {
+        const warn = document.createElement("span");
+        warn.className = "gc-badge gc-badge--warning shrink-0";
+        warn.textContent = "이 컴퓨터에만 저장됨";
+        warn.title =
+          "요청을 원격에 공유하지 못했습니다 (네트워크·권한). 다른 팀원의 대기열에는 보이지 않을 수 있습니다.";
+        header.appendChild(warn);
+      }
+      if (!rm.branch_exists) {
+        const gone = document.createElement("span");
+        gone.className = "gc-badge gc-badge--muted shrink-0";
+        gone.textContent = "브랜치 삭제됨";
+        gone.title =
+          `원격에서 ${b.short_name} 브랜치가 지워졌지만, 요청 시점의 커밋이 요청 ref에 남아 있어 그대로 병합할 수 있습니다.`;
+        header.appendChild(gone);
+      }
       const counters = document.createElement("span");
       counters.className = "inline-flex items-center gap-1 shrink-0";
       if (b.ahead > 0) {
@@ -510,7 +577,7 @@ export async function renderMergeCenter(
         chip.style.color = fileKindColor(cf.kind);
         chip.textContent = `${cf.kind} ${cf.path}`;
         chip.title = `클릭하면 ${base}와의 변경 내용을 봅니다`;
-        chip.addEventListener("click", () => openBranchFileDiff(b, cf.path));
+        chip.addEventListener("click", () => openBranchFileDiff(b.name, b.short_name, cf.path));
         files.appendChild(chip);
       }
       card.appendChild(files);
@@ -550,22 +617,9 @@ export async function renderMergeCenter(
       const action = document.createElement("div");
       action.className = "flex flex-col gap-2 items-end";
 
-      // 병합은 됐는데 push가 실패/취소된 브랜치 — 같은 병합을 또 권하지 않는다.
-      // 필요한 다음 걸음은 아래 push 배너 하나뿐이다.
-      if (b.merged_locally) {
-        const doneTag = document.createElement("span");
-        doneTag.className = "gc-badge gc-badge--warning";
-        doneTag.textContent = `로컬 ${base}에 병합됨 — 푸시 대기`;
-        doneTag.title = `이 브랜치는 이미 이 컴퓨터의 ${base}에 병합되었습니다. origin/${base}에 push하면 목록에서 사라집니다.`;
-        action.appendChild(doneTag);
-        card.appendChild(action);
-        list.appendChild(card);
-        continue;
-      }
-
       const btn = document.createElement("button");
       btn.className = "gc-button-primary";
-      btn.textContent = `${base}(으)로 병합`;
+      btn.textContent = "병합하기 (승인)";
       // 병합 대상 브랜치에 관리자가 지정되어 있으면 관리자/어드민만 병합할 수 있다.
       let blocked = false;
       let blockHint = "";
@@ -608,33 +662,31 @@ export async function renderMergeCenter(
       }
       btn.addEventListener("click", async () => {
         const ok = await confirmDialog({
-          title: `${base}로 병합`,
-          message: `${b.short_name} 브랜치를 ${base}에 병합합니다.\n앞으로 ${b.ahead}개 커밋, 변경 파일 ${b.changed_files.length}개.`,
+          title: `병합 요청 승인`,
+          message: `${b.short_name} 브랜치의 병합 요청을 ${base}에 병합합니다.\n요청 시점의 커밋 ${b.ahead}개, 변경 파일 ${b.changed_files.length}개.`,
         });
         if (!ok) return;
         setBusy(btn, true, "병합 중…");
         try {
-          // 이 병합이 끝나면 그 브랜치의 남은 "병합 요청" 알림을 정리한다.
+          // 이 병합이 끝나면 그 브랜치의 남은 "병합 요청" 알림과 대기열 항목을 정리한다.
           mergeSourceBranch = b.short_name;
-          // 검토한 tip(sha)을 함께 보낸다 — 목록을 본 뒤 팀원이 push(또는
-          // force-push)했다면 백엔드가 병합을 멈추고 새로고침을 요구한다.
+          // 검토한 것은 요청 시점의 tip(sha)이다 — 목록을 본 뒤 브랜치가 바뀌었어도
+          // 요청 ref가 고정한 커밋을 병합하므로 검토한 것이 곧 병합되는 것이다.
           const out: MergeOutcome = await ipc.startMerge(repo.id, b.name, base, b.sha);
           if (out.ok) {
-            toast(`${b.short_name} 병합 완료`, "success");
+            toast(`${b.short_name} 병합 완료 — 요청을 닫습니다.`, "success");
             const merged = mergeSourceBranch;
             mergeSourceBranch = null;
             await pushMergedBranch();
             await refresh();
-            // 병합이 끝났으니 이 브랜치의 "병합 요청" 알림은 더 이상 할 일이
-            // 아니다 — 수신함·배지에서 치우고, 홈 카드도 즉시 새 상태를 말하게
-            // 한다 (30초 주기 재조회를 기다리면 "병합하기"가 남아 보인다).
-            if (merged) await markMergedRead(merged);
+            // 요청 닫기(원각에서도 사라짐) + 알림 정리 + 홈 카드 갱신.
+            if (merged) await finalizeMergedBranch(merged);
             notifyRepoChanged();
           } else if (out.conflicted) {
             mergeState = { in_progress: true, conflicted_files: out.conflicted_files };
             knownConflicts = new Set(out.conflicted_files);
             // 대기 목록은 지금 상태를 더 이상 설명하지 않는다 (refresh() 와 같은 규칙).
-            branches = [];
+            requests = [];
             list.innerHTML = "";
             renderChangeMapSection();
             if (aiAutoResolve) {
@@ -656,8 +708,7 @@ export async function renderMergeCenter(
         } catch (e) {
           const msg = (e as Error).message ?? String(e);
           if (msg.includes("새 push가 있었습니다") || msg.includes("찾을 수 없습니다")) {
-            // 검토 후 브랜치가 바뀌었거나(새 push/force-push) 방금 삭제됨 —
-            // 목록을 새로 그려 최신 상태를 보여 준다.
+            // 요청이 가리키는 커밋을 못 찾음 — 새로고침해 최신 요청을 본다.
             toast(msg, "error");
             await refresh();
           } else if (msg.includes("진행 중인 병합")) {
@@ -676,6 +727,36 @@ export async function renderMergeCenter(
         }
       });
       action.appendChild(btn);
+
+      // 거절 — 대기열에서 내린다. 브랜치·커밋은 그대로고 요청자는 다시 요청할 수 있다.
+      const rejectBtn = document.createElement("button");
+      rejectBtn.className = "gc-button-secondary";
+      rejectBtn.textContent = "요청 거절";
+      if (blocked) {
+        rejectBtn.disabled = true;
+        rejectBtn.title = blockHint;
+      }
+      rejectBtn.addEventListener("click", async () => {
+        const ok = await confirmDialog({
+          title: "병합 요청 거절",
+          message: `${b.short_name} 브랜치의 병합 요청을 대기열에서 내립니다.\n브랜치와 커밋은 그대로 남고, ${b.author}님은 작업을 마친 뒤 다시 요청할 수 있습니다.`,
+          confirmLabel: "거절",
+          destructive: true,
+        });
+        if (!ok) return;
+        setBusy(rejectBtn, true, "정리 중…");
+        try {
+          await ipc.closeMergeRequest(repo.id, base, b.short_name, "rejected");
+          toast(`${b.short_name} 병합 요청을 거절했습니다.`, "success");
+          await refresh();
+          notifyRepoChanged();
+        } catch (e) {
+          toast(`거절 실패: ${(e as Error).message ?? e}`, "error");
+        } finally {
+          setBusy(rejectBtn, false);
+        }
+      });
+      action.appendChild(rejectBtn);
       card.appendChild(action);
       list.appendChild(card);
     }
@@ -722,6 +803,19 @@ export async function renderMergeCenter(
   /** 병합·push 결과가 홈 카드의 "다음 할 일"에 즉시 반영되게 알린다. */
   function notifyRepoChanged() {
     window.dispatchEvent(new CustomEvent("gc-repo-changed", { detail: repo.id }));
+  }
+
+  /** 병합이 끝난 브랜치의 뒤정리 — 대기열에서 요청을 닫고(원각에서도 사라지게)
+   *  남은 "병합 요청" 알림을 읽음 처리한다. 실패해도 병합 흐름은 막지 않는다:
+   *  요청 ref는 base에 push된 뒤 다른 기기의 대기열 조회에서 자동으로 닫힌다
+   *  (요청 tip이 base의 조상이 되면 목록에서 치운다). */
+  async function finalizeMergedBranch(branch: string) {
+    try {
+      await ipc.closeMergeRequest(repo.id, base, branch, "merged");
+    } catch {
+      // 대기열 정리는 부가 기능 — 병합 자체는 이미 끝났다.
+    }
+    await markMergedRead(branch);
   }
 
   /** 병합이 끝난 브랜치의 남은 "병합 요청" 알림을 읽음 처리한다 — 탭에서
@@ -870,7 +964,7 @@ export async function renderMergeCenter(
       commitBtn.addEventListener("click", async () => {
         setBusy(commitBtn, true, "커밋 중…");
         try {
-          const out = await ipc.completeMerge(repo.id);
+          const out = await ipc.completeMerge(repo.id, mergeSourceBranch ? `${mergeSourceBranch} 브렌치 병합` : undefined);
           if (out.ok) {
             toast("병합이 완료되었습니다.", "success");
             conflictCache.clear();
@@ -880,7 +974,7 @@ export async function renderMergeCenter(
             mergeSourceBranch = null;
             await pushMergedBranch();
             await refresh();
-            if (merged) await markMergedRead(merged);
+            if (merged) await finalizeMergedBranch(merged);
             notifyRepoChanged();
           }
         } catch (e) {
@@ -1233,14 +1327,14 @@ export async function renderMergeCenter(
       knownConflicts = new Set();
       selectedPath = null;
       mergeState = null;
-      if (!aiTouched || aiAutoPush) {
-        await pushMergedBranch();
-      }
-      // 병합이 끝났으니 이 브랜치의 "병합 요청" 알림을 정리하고 홈 카드를
+      // 병합이 끝났으니 이 브랜치의 "병합 요청"을 정리하고 홈 카드를
       // 깨운다.
       const merged = mergeSourceBranch;
       mergeSourceBranch = null;
-      if (merged) await markMergedRead(merged);
+      if (!aiTouched || aiAutoPush) {
+        await pushMergedBranch();
+      }
+      if (merged) await finalizeMergedBranch(merged);
       notifyRepoChanged();
     } else if (report.remaining.length > 0) {
       // Partial success — the leftover files are still waiting.
@@ -1598,11 +1692,11 @@ export async function renderMergeCenter(
       }
       mergeState = await ipc.mergeState(repo.id);
       if (mergeState.in_progress) {
-        // 병합이 진행 중이면 대기 브랜치 목록은 더 이상 사실이 아니다. 예전에는
+        // 병합이 진행 중이면 대기열은 더 이상 사실이 아니다. 예전에는
         // 병합을 시작한 화면이 그대로 남아 "main(으)로 병합" 버튼이 여전히
         // 눌렸고, 누르면 git 이 거절해 낯선 오류만 떴다. 지금 할 일은 하나뿐
         // (이 병합을 끝내거나 중단하기)이므로 목록을 비운다.
-        branches = [];
+        requests = [];
         // Seed knownConflicts from the live set the first time we observe a
         // merge; later resolutions only shrink it, never grow it.
         for (const p of mergeState.conflicted_files) knownConflicts.add(p);
@@ -1633,7 +1727,9 @@ export async function renderMergeCenter(
         // 진행 중 병합이 끝나면(완료·중단·자동 해결) 소스 브랜치 기억을
         // 비운다 — 다음 병합부터 새로 기록한다.
         mergeSourceBranch = null;
-        branches = await ipc.listPendingBranches(repo.id, base);
+        // 승인 대기열 — 푸시된 브랜치가 아니라 **병합 요청**만 온다.
+        // (요청이 이미 base에 들어갔다면 백엔드의 목록 조회가 자동으로 닫는다.)
+        requests = await ipc.listRequestedMerges(repo.id, base);
         // 병합 커밋은 만들어졌는데 push가 안 된 상태는 화면(그리고 앱)을
         // 다시 열어도 살아 있어야 한다 — 로컬 base와 origin/base를 비교해
         // 배너를 매번 다시 세운다.
@@ -1647,7 +1743,7 @@ export async function renderMergeCenter(
       }
     } catch (e) {
       toast(`불러오기 실패: ${(e as Error).message ?? e}`, "error");
-      branches = [];
+      requests = [];
       mergeState = null;
     }
     renderBanner();

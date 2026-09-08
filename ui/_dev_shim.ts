@@ -303,6 +303,61 @@ const mockData: Record<string, any> = {
   base_unpushed_count: 0,
   list_merged_remote_branches: [],
   delete_remote_branch: undefined,
+  // ── 병합 요청 — 푸시(작업 공유)와 승인(병합)을 분리하는 대기열 ──
+  list_requested_merges: [
+    {
+      request: {
+        base: "main",
+        branch: "feature/login",
+        ref_path: "refs/gc-mr/main/feature/login",
+        sha: "3f9a1c2",
+        title: "로그인 토큰 갱신 로직 추가",
+        author: "김민지",
+        email: "minji@team.kr",
+        created_at: Math.floor(Date.now() / 1000) - 1200,
+        open: true,
+      },
+      ahead: 4,
+      behind: 1,
+      changed_files: [
+        { path: "src/api/user.ts", kind: "M" },
+        { path: "src/auth/token.ts", kind: "A" },
+      ],
+      branch_exists: true,
+    },
+    {
+      request: {
+        base: "main",
+        branch: "fix/nav",
+        ref_path: "refs/gc-mr/main/fix/nav",
+        sha: "c0d4488",
+        title: "사이드바 활성 상태 수정",
+        author: "이도윤",
+        email: "doyun@team.kr",
+        created_at: Math.floor(Date.now() / 1000) - 200,
+        open: true,
+      },
+      ahead: 1,
+      behind: 0,
+      changed_files: [
+        { path: "ui/views/LoginView.ts", kind: "M" },
+        { path: "ui/components/Sidebar.ts", kind: "M" },
+      ],
+      branch_exists: true,
+    },
+  ],
+  request_merge: {
+    base: "main",
+    branch: "feature/login",
+    ref_path: "refs/gc-mr/main/feature/login",
+    sha: "3f9a1c2",
+    title: "로그인 토큰 갱신 로직 추가",
+    author: "김민지",
+    email: "minji@team.kr",
+    created_at: Math.floor(Date.now() / 1000),
+    open: true,
+  },
+  close_merge_request: undefined,
   branch_file_diff:
     "@@ -1,4 +1,6 @@\n import { api } from \"./client\";\n+import { refreshToken } from \"../auth/token\";\n \n export async function getUser(id: string) {\n+  await refreshToken();\n   return api.get(`/users/${id}`);\n }",
 };

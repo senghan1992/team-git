@@ -159,7 +159,7 @@ class EventDetail(BaseModel):
 class EventCreateRequest(BaseModel):
     """A push event from the desktop app's pre-push hook (device-authenticated)."""
     project_id: str
-    event_kind: str = Field(..., pattern="^(main_push|branch_push|release)$")
+    event_kind: str = Field(..., pattern="^(main_push|branch_push|merge_request|release)$")
     repo_name: str
     payload: str  # JSON string
 
@@ -177,7 +177,7 @@ class ServerHookRequest(BaseModel):
     JSON 이스케이프를 직접 하지 않아도 되게 하기 위함이다.
     """
     project_id: str
-    event_kind: str = Field(..., pattern="^(branch_push|main_push|release)$")
+    event_kind: str = Field(..., pattern="^(branch_push|main_push|merge_request|release)$")
     repo_name: str
     payload: str = Field(default="")
     author: str | None = Field(default=None, max_length=256)

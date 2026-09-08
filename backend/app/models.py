@@ -141,7 +141,7 @@ class PushEvent(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     sender_device_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    event_kind: Mapped[str] = mapped_column(String(32), nullable=False)  # main_push | branch_push | release
+    event_kind: Mapped[str] = mapped_column(String(32), nullable=False)  # main_push | branch_push | merge_request | release
     repo_name: Mapped[str] = mapped_column(String(256), nullable=False)
     payload: Mapped[str] = mapped_column(String(8192), nullable=False)  # JSON-serialized
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)

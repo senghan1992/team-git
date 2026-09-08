@@ -17,8 +17,15 @@ pub fn fetch_origin(repo_path: &std::path::Path) -> AppResult<String> {
 
 /// `git fetch --prune <remote>` — used by the merge-center when the user hits
 /// "가져오기". Returns the stderr stream for the UI to surface on failure.
+/// 병합 요청 ref(refs/gc-mr/*)도 함께 받아온다 — 일반 fetch는 refs/heads만
+/// 가져오므로 요청 대기열이 갱신되려면 별도 refspec이 필요하다. 요청 fetch는
+/// best-effort: 오래된 git이나 refspec을 거부하는 호스트에서도 본 fetch는 살린다.
 pub fn fetch_target(target: &crate::git::Target, remote: &str) -> AppResult<String> {
     let out = crate::git::run_at_target(target, ["fetch", "--prune", remote])?;
+    let _ = crate::git::run_at_target(
+        target,
+        ["fetch", "--prune", remote, "+refs/gc-mr/*:refs/gc-mr/*"],
+    );
     if !out.ok() {
         return Err(crate::error::AppError::Git(
             crate::git::ops::friendly_git_error(&out.stderr),

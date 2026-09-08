@@ -1134,12 +1134,47 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
       case "fetch_repo": {
         const r = repoById(args.repoId as string);
         if ("error" in r) return jsonError("repo_not_found", r.error);
-        return tgGit(targetOf(r), ["fetch", "--prune", "origin"]).stderr;
+        const t0 = targetOf(r);
+        const out0 = tgGit(t0, ["fetch", "--prune", "origin"]);
+        // 병합 요청 ref(refs/gc-mr/*)는 일반 fetch가 안 가져온다 — best-effort.
+        tgGit(t0, ["fetch", "--prune", "origin", "+refs/gc-mr/*:refs/gc-mr/*"]);
+        return out0.stderr;
+      }
+      case "request_merge": {
+        const r = repoById(args.repoId as string);
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        const t = targetOf(r);
+        const sess = loadSettings().session?.user;
+        const author = sess?.name ?? tgGit(t, ["config", "user.name"]).stdout.trim();
+        const email = sess?.email ?? tgGit(t, ["config", "user.email"]).stdout.trim();
+        const res = requestMergeMr(
+          t,
+          "origin",
+          args.base as string,
+          args.branch as string,
+          (args.title as string | null | undefined) ?? null,
+          author,
+          email,
+        );
+        if ("error" in res) return jsonError("git", res.error);
+        return res;
+      }
+      case "list_requested_merges": {
+        const r = repoById(args.repoId as string);
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        return listRequestedMerges(targetOf(r), "origin", args.base as string);
       }
       case "list_pending_branches": {
         const r = repoById(args.repoId as string);
         if ("error" in r) return jsonError("repo_not_found", r.error);
         return pendingBranches(targetOf(r), "origin", args.base as string);
+      }
+      case "close_merge_request": {
+        const r = repoById(args.repoId as string);
+        if ("error" in r) return jsonError("repo_not_found", r.error);
+        const res = closeMrRequest(targetOf(r), "origin", args.base as string, args.branch as string);
+        if (!res.ok) return jsonError("git", res.message ?? "요청 정리 실패");
+        return null;
       }
       case "start_merge": {
         const r = repoById(args.repoId as string);
@@ -2211,7 +2246,11 @@ function startMerge(
     tgGit(t, ["fetch", "origin", `${base}:${base}`]);
   }
   tgGit(t, ["fetch", "--prune", "origin"]);
-  const tip = tgGit(t, ["rev-parse", "-q", "--verify", branchRef]);
+  // 병합 요청 ref는 일반 fetch가 안 가져온다 — 승인 시 최신 요청을 보장하려면
+  // 별도 refspec이 필요하다 (Rust start_merge는 fetch_repo 경로에서 받아오지만
+  // 여기서는 검토 직전 한 번 더 맞춘다). 실패해도 진행한다.
+  tgGit(t, ["fetch", "--prune", "origin", "+refs/gc-mr/*:refs/gc-mr/*"]);
+  const tip = tgGit(t, ["rev-parse", "-q", "--verify", `${branchRef}^{commit}`]);
   if (!tip.ok) {
     return {
       ok: false,
@@ -2249,6 +2288,183 @@ function startMerge(
   }
   tgGit(t, ["merge", "--abort"]);
   return { ok: false, conflicted: false, conflicted_files: [], message: m.stderr.trim() };
+}
+
+// ── merge requests (refs/gc-mr/*) — 푸시와 승인을 분리하는 대기열 ──────────
+//
+// Rust `git::mr` 와 같은 규칙의 미리보기 구현: 푸시된 커밋만 요청, 요청 tip
+// 고정(태그 객체의 message에 메타데이터), 승인/거절로 ref 삭제.
+
+const MR_PREFIX = "refs/gc-mr";
+
+interface MergeRequestRecord {
+  base: string;
+  branch: string;
+  ref_path: string;
+  sha: string;
+  title: string;
+  author: string;
+  email: string;
+  created_at: number;
+  open: boolean;
+  local_only?: boolean;
+}
+
+interface RequestedMergeRecord {
+  request: MergeRequestRecord;
+  ahead: number;
+  behind: number;
+  changed_files: ChangedPath[];
+  branch_exists: boolean;
+}
+
+function mrRefPath(base: string, branch: string): string {
+  return `${MR_PREFIX}/${base}/${branch}`;
+}
+
+function requestMergeMr(
+  t: GitTarget,
+  remote: string,
+  base: string,
+  branch: string,
+  title: string | null,
+  author: string,
+  email: string,
+): MergeRequestRecord | { error: string } {
+  const baseRef = `${remote}/${base}`;
+  const branchRef = `${remote}/${branch}`;
+  const local = tgGit(t, ["rev-parse", "-q", "--verify", `refs/heads/${branch}`]);
+  if (!local.ok) return { error: `브랜치 ${branch}가 이 컴퓨터에 없습니다. 작업 탭에서 브랜치를 확인하세요.` };
+  const remoteTip = tgGit(t, ["rev-parse", "-q", "--verify", branchRef]);
+  if (!remoteTip.ok) {
+    return { error: `origin/${branch}가 없습니다. 병합 요청은 push된 커밋에만 할 수 있습니다 — 먼저 푸시하세요.` };
+  }
+  if (local.stdout.trim() !== remoteTip.stdout.trim()) {
+    return { error: "푸시하지 않은 커밋이 있습니다. 먼저 푸시한 뒤 병합 요청하세요." };
+  }
+  if (!tgGit(t, ["rev-parse", "-q", "--verify", baseRef]).ok) {
+    return { error: `병합 대상 브랜치 ${base}가 원격에 없습니다. 설정 탭에서 병합 대상을 확인하세요.` };
+  }
+  if (tgGit(t, ["merge-base", "--is-ancestor", branchRef, baseRef]).ok) {
+    return { error: `${branch}는 이미 ${base}에 병합되어 있습니다. 요청할 필요가 없습니다.` };
+  }
+  const ahead = Number(tgGit(t, ["rev-list", "--count", `${baseRef}..${branchRef}`]).stdout.trim() || "0");
+  if (!ahead) {
+    return { error: "병합 대상과 다른 커밋이 없습니다. 요청할 변경이 없습니다." };
+  }
+  let finalTitle = (title ?? "").trim();
+  if (!finalTitle) {
+    finalTitle = tgGit(t, ["log", "-1", "--format=%s", branchRef]).stdout.trim() || `${branch} 병합 요청`;
+  }
+  const req: MergeRequestRecord = {
+    base,
+    branch,
+    ref_path: mrRefPath(base, branch),
+    sha: remoteTip.stdout.trim(),
+    title: finalTitle,
+    author: author.trim() || "?",
+    email: (email ?? "").trim(),
+    created_at: Math.floor(Date.now() / 1000),
+    open: true,
+    local_only: false,
+  };
+  // 메타데이터는 태그 객체의 message에 넣는다 (Rust write_request_ref와 같다).
+  const payload = JSON.stringify({ ...req, open: true });
+  const tmp = `gc-mr-tmp-${randomUUID()}`;
+  const tag = tgGit(t, [
+    "-c", `user.name=${req.author}`,
+    "-c", `user.email=${req.email || "merge-request@gitcompanion.local"}`,
+    "tag", "-a", "-f", "-m", payload, tmp, req.sha,
+  ]);
+  if (!tag.ok) return { error: `병합 요청을 기록하지 못했습니다: ${tag.stderr.trim()}` };
+  const tagSha = tgGit(t, ["rev-parse", `refs/tags/${tmp}`]).stdout.trim();
+  tgGit(t, ["tag", "-d", tmp]);
+  if (!tgGit(t, ["update-ref", req.ref_path, tagSha]).ok) {
+    return { error: "병합 요청 ref를 쓰지 못했습니다." };
+  }
+  const pushOut = tgGit(t, ["push", remote, `+${req.ref_path}:${req.ref_path}`]);
+  req.local_only = !pushOut.ok;
+  return req;
+}
+
+function readMrRequest(t: GitTarget, refname: string, object: string): MergeRequestRecord | null {
+  const out = tgGit(t, ["cat-file", "tag", object]);
+  if (!out.ok) return null;
+  const body = out.stdout.split("\n\n")[1];
+  if (!body) return null;
+  try {
+    const req = JSON.parse(body.trim()) as MergeRequestRecord;
+    req.open = true;
+    req.local_only = false;
+    return req;
+  } catch {
+    return null;
+  }
+}
+
+function closeMrRequest(
+  t: GitTarget,
+  remote: string,
+  base: string,
+  branch: string,
+): { ok: boolean; message?: string } {
+  const refPath = mrRefPath(base, branch);
+  tgGit(t, ["update-ref", "-d", refPath]);
+  const out = tgGit(t, ["push", remote, `:${refPath}`]);
+  if (out.ok || out.stderr.toLowerCase().includes("does not exist")) return { ok: true };
+  return { ok: false, message: out.stderr.trim() };
+}
+
+function listMrRequests(t: GitTarget, remote: string, base: string): MergeRequestRecord[] {
+  const prefix = `${MR_PREFIX}/${base}/`;
+  const list = tgGit(t, ["for-each-ref", prefix, "--format=%(objectname)%09%(refname)"]);
+  if (!list.ok) return [];
+  const baseRef = `${remote}/${base}`;
+  const out: MergeRequestRecord[] = [];
+  for (const line of list.stdout.split("\n")) {
+    if (!line) continue;
+    const [object, refname] = line.split("\t").map((s) => s.trim());
+    if (!object || !refname || !refname.startsWith(prefix)) continue;
+    const req = readMrRequest(t, refname, object);
+    if (!req) continue;
+    req.ref_path = refname;
+    req.base = base;
+    // 이미 병합된 요청은 닫는다 (앱 밖 병합 포함 — 자동 정리).
+    const merged =
+      tgGit(t, ["merge-base", "--is-ancestor", req.sha, baseRef]).ok ||
+      (tgGit(t, ["rev-parse", "-q", "--verify", `${remote}/${req.branch}`]).ok &&
+        tgGit(t, ["merge-base", "--is-ancestor", `${remote}/${req.branch}`, baseRef]).ok);
+    if (merged) {
+      closeMrRequest(t, remote, base, req.branch);
+      continue;
+    }
+    out.push(req);
+  }
+  out.sort((a, b) => a.created_at - b.created_at || a.branch.localeCompare(b.branch));
+  return out;
+}
+
+function listRequestedMerges(t: GitTarget, remote: string, base: string): RequestedMergeRecord[] {
+  const baseRef = `${remote}/${base}`;
+  return listMrRequests(t, remote, base).map((req) => {
+    const branchExists = tgGit(t, ["rev-parse", "-q", "--verify", `${remote}/${req.branch}`]).ok;
+    const ab = tgGit(t, ["rev-list", "--left-right", "--count", `${baseRef}...${req.sha}`]).stdout.trim();
+    const [behind, ahead] = ab ? ab.split(/\s+/).map((n) => Number(n) || 0) : [0, 0];
+    const diff = tgGit(t, ["diff", "--name-status", `${baseRef}...${req.sha}`]).stdout;
+    const changed: ChangedPath[] = [];
+    for (const cl of diff.split("\n")) {
+      if (!cl) continue;
+      const f = cl.split("\t");
+      changed.push({ path: f[1] ?? "", kind: f[0] ?? "" });
+    }
+    return {
+      request: req,
+      ahead,
+      behind,
+      changed_files: changed.filter((c) => c.path),
+      branch_exists: branchExists,
+    };
+  });
 }
 
 function mergeState(t: GitTarget): MergeState {

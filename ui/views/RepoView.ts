@@ -278,6 +278,16 @@ export async function renderRepoView(
   `;
   main.appendChild(commitCard);
 
+  // ── 병합 요청 카드 — push와 승인을 잇는 명시적 단계 ─────────────────────
+  //
+  // 팀원의 흐름: 커밋 → 푸시 → (여기서) 병합 요청 → 관리자 승인.
+  // 푸시만으로는 관리자의 승인 대기열에 오르지 않는다 — 푸시는 작업 공유이고,
+  // 요청은 "이제 병합해 주세요"라는 신호다.
+  const requestCard = document.createElement("div");
+  requestCard.className = "gc-card flex flex-col gap-2";
+  requestCard.style.display = "none";
+  main.appendChild(requestCard);
+
   // Fill button icons + labels (avoid HTML-entity parsing pitfalls for innerHTML).
   function fillBtn(el: HTMLButtonElement, name: Parameters<typeof icon>[0], label: string) {
     el.appendChild(icon(name, 16));
@@ -336,6 +346,9 @@ export async function renderRepoView(
     currentStatus = s;
     statusJson = JSON.stringify(s);
     renderStatusTable();
+    // 브랜치·ahead가 바뀌면 병합 요청 카드도 다시 그린다 (시그니처가 같으면
+    // 조용히 건너뛴다 — 6초 폴링이 원격 조회를 반복하지 않게).
+    void refreshRequestCard();
   }
 
   // Lightweight polling — teammates' commits/pushes surface without
@@ -648,6 +661,186 @@ export async function renderRepoView(
 
   // ── 병합 관리자 (프로젝트 설정 .gpconfig) ────────────────────────────────
   // 브랜치별 관리자를 표시하고, 명시된 관리자가 아닌 로그인 사용자의 푸시를 잠근다.
+  // ── 병합 요청 (푸시와 승인을 잇는 명시적 단계) ───────────────
+  //
+  // 현재 브랜치가 병합 대상이 아니고 푸시된 상태면, 관리자에게 승인을 요청하는
+  // 카드를 보여 준다. 이미 열린 요청이 있으면 그 상태(갱신/취소)를 보여 준다.
+  let mrSig = "";
+  let mrBusy = false;
+
+  function relativeTimeShort(unix: number): string {
+    const diff = Math.max(0, Date.now() / 1000 - unix);
+    if (diff < 60) return "방금";
+    if (diff < 3600) return `${Math.floor(diff / 60)}분 전`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}시간 전`;
+    return `${Math.floor(diff / 86400)}일 전`;
+  }
+
+  function mergeBaseNow(): string {
+    return projectCfg?.config?.default_base_branch || repo?.default_branch || "main";
+  }
+  function isCurrentBranchMergeTarget(): boolean {
+    const branch = currentStatus?.branch;
+    if (!branch) return false;
+    const fallback = mergeBaseNow();
+    const targets = projectCfg?.config?.merge_targets?.length
+      ? projectCfg.config.merge_targets
+      : [fallback];
+    return targets.includes(branch) || branch === fallback;
+  }
+
+  async function refreshRequestCard(force = false) {
+    if (mrBusy) return;
+    const branch = currentStatus?.branch || null;
+    const base = mergeBaseNow();
+    const ahead = currentStatus?.ahead ?? 0;
+    const sig = `${branch}|${ahead}|${base}`;
+    if (!force && sig === mrSig) return;
+    mrSig = sig;
+    mrBusy = true;
+    try {
+      requestCard.innerHTML = "";
+      const hide = () => { requestCard.style.display = "none"; };
+      if (!branch || isCurrentBranchMergeTarget() || noRemote) {
+        hide();
+        return;
+      }
+      const title = document.createElement("div");
+      title.className = "text-display-md font-medium";
+      title.textContent = "병합 요청";
+      requestCard.appendChild(title);
+
+      // 아직 푸시하지 않은 커밋이 있으면 요청할 수 없다 — 요청은 항상
+      // 푸시된 커밋을 대상으로 한다 (어느 컴퓨터에서 봐도 같아야 하므로).
+      if (ahead > 0) {
+        requestCard.style.display = "";
+        const note = document.createElement("div");
+        note.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+        note.textContent = `푸시하지 않은 커밋 ${ahead}개가 있습니다. 위의 푸시로 원격에 올린 뒤 병합 요청을 보낼 수 있습니다.`;
+        requestCard.appendChild(note);
+        return;
+      }
+      // 푸시된 상태 — 이 브랜치의 열린 요청이 있는지 본다.
+      const open = await ipc
+        .listRequestedMerges(repoId, base)
+        .then((list) => list.find((r) => r.request.branch === branch) ?? null)
+        .catch(() => null);
+      if (!open) {
+        requestCard.style.display = "";
+        const desc = document.createElement("div");
+        desc.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+        desc.textContent = `${branch}의 커밋이 원격에 올라와 있습니다. ${base} 병합 관리자에게 승인을 요청하세요 — 승인되면 ${base}에 병합되고 팀원에게 동기화 알림이 갑니다.`;
+        requestCard.appendChild(desc);
+        const reqBtn = document.createElement("button");
+        reqBtn.className = "gc-button-primary self-start";
+        reqBtn.textContent = "병합 요청 보내기";
+        reqBtn.addEventListener("click", () => openMergeRequestModal(branch, base, reqBtn));
+        requestCard.appendChild(reqBtn);
+        return;
+      }
+      // 이미 요청됨 — 관리자의 승인을 기다리는 중.
+      requestCard.style.display = "";
+      const row = document.createElement("div");
+      row.className = "flex flex-wrap items-center gap-2";
+      const waiting = document.createElement("span");
+      waiting.className = "gc-badge gc-badge--info";
+      waiting.textContent = "요청됨 · 관리자 승인 대기";
+      row.appendChild(waiting);
+      const meta = document.createElement("span");
+      meta.className = "text-display-sm text-[color:var(--color-ink-muted)] min-w-0 truncate flex-1";
+      meta.textContent = `${base} ← ${open.request.branch} · ${relativeTimeShort(open.request.created_at)} · ${open.request.title}`;
+      meta.title = open.request.local_only
+        ? "요청을 원격에 공유하지 못했습니다 (네트워크·권한). 갱신으로 다시 시도하세요."
+        : open.request.title;
+      row.appendChild(meta);
+      requestCard.appendChild(row);
+      const btnRow = document.createElement("div");
+      btnRow.className = "flex gap-2";
+      const renewBtn = document.createElement("button");
+      renewBtn.className = "gc-button-secondary";
+      renewBtn.textContent = "요청 갱신";
+      renewBtn.title = "푸시를 더 했거나 제목을 바꿀 때 — 요청이 최신 push된 커밋을 가리키게 합니다.";
+      renewBtn.addEventListener("click", () => openMergeRequestModal(branch, base, renewBtn, true));
+      btnRow.appendChild(renewBtn);
+      const cancelBtn = document.createElement("button");
+      cancelBtn.className = "gc-button-secondary";
+      cancelBtn.textContent = "요청 취소";
+      cancelBtn.addEventListener("click", async () => {
+        const ok = await confirmDialog({
+          title: "병합 요청 취소",
+          message: `${base} 병합 요청을 대기열에서 내립니다. 브랜치와 커밋은 그대로 남습니다.`,
+          confirmLabel: "취소",
+          destructive: true,
+        });
+        if (!ok) return;
+        setBusy(cancelBtn, true, "정리 중…");
+        try {
+          await ipc.closeMergeRequest(repoId, base, branch, "withdrawn");
+          toast("병합 요청을 취소했습니다.", "success");
+          mrSig = "";
+          await refreshRequestCard(true);
+        } catch (e) {
+          toast(`취소 실패: ${(e as Error).message ?? e}`, "error");
+        } finally {
+          setBusy(cancelBtn, false);
+        }
+      });
+      btnRow.appendChild(cancelBtn);
+      requestCard.appendChild(btnRow);
+    } finally {
+      mrBusy = false;
+    }
+  }
+
+  /** 병합 요청 보내기/갱신 — 제목을 받는 모달. 갱신이면 확인 문구가 다르다. */
+  function openMergeRequestModal(branch: string, base: string, trigger: HTMLButtonElement, renew = false) {
+    const m = openModal({
+      title: renew ? "병합 요청 갱신" : "병합 요청 보내기",
+      description: renew
+        ? `요청이 최신 push된 커밋을 가리키게 합니다. ${base} 병합 관리자의 승인을 기다립니다.`
+        : `${base} 병합 관리자에게 ${branch}의 push된 커밋을 승인 요청합니다. 승인되면 ${base}에 병합되고 팀원에게 동기화 알림이 갑니다.`,
+      submitLabel: renew ? "갱신" : "요청 보내기",
+      onSubmit: async (close) => {
+        const title = m.body.querySelector<HTMLInputElement>("#mr-title")!.value.trim();
+        m.setSubmitting(true);
+        m.setError(null);
+        try {
+          await ipc.requestMerge(repoId, base, branch, title || null);
+          toast(
+            renew
+              ? "병합 요청을 최신 커밋으로 갱신했습니다."
+              : `병합 요청을 보냈습니다 — ${base} 관리자의 승인을 기다립니다.`,
+            "success",
+          );
+          mrSig = "";
+          void refreshRequestCard(true);
+          close();
+        } catch (e) {
+          m.setError(`요청 실패: ${(e as Error).message ?? e}`);
+          m.setSubmitting(false);
+        }
+      },
+    });
+    m.body.innerHTML = `
+      <div class="flex flex-col gap-1">
+        <label class="text-display-sm font-medium" for="mr-title">요청 제목</label>
+        <input id="mr-title" class="gc-input" placeholder="마지막 커밋 제목이 기본값입니다" />
+        <div class="text-display-xs text-[color:var(--color-ink-muted)]">비워 두면 마지막 커밋 제목이 사용됩니다.</div>
+      </div>
+    `;
+    const input = m.body.querySelector<HTMLInputElement>("#mr-title")!;
+    // 마지막 커밋 제목을 기본값으로 채운다 (여러 줄이면 첫 줄만).
+    ipc
+      .listCommits(repoId, branch, 1)
+      .then((cs) => {
+        const first = cs[0]?.message?.split("\n")[0]?.trim();
+        if (first && !input.value) input.value = first;
+      })
+      .catch(() => undefined);
+    input.focus();
+    void trigger;
+  }
+
   let projectCfg = await ipc.projectConfigGet(repoId).catch(() => null);
   refreshSyncLabel();
   const pushBtnRef = () => commitCard.querySelector<HTMLButtonElement>("#btn-push")!;
@@ -699,6 +892,9 @@ export async function renderRepoView(
 
   window.addEventListener("gc-account-changed", refreshManagerBadge);
   refreshManagerBadge();
+
+  // 첫 그림 — 푸시된 상태면 병합 요청 카드를 바로 보여 준다.
+  void refreshRequestCard(true);
 
   // ── 누르면 반드시 실패하는 버튼은 막아 둔다 ──────────────────────────────
   //
@@ -821,6 +1017,9 @@ export async function renderRepoView(
       const outcome = await openPushCredentialFlow(repo, currentBranch);
       if (outcome === "ok") {
         toast("푸시 완료", "success");
+        // 푸시 직후가 병합 요청을 보낼 수 있는 순간이다 — 카드를 즉시 새로 그린다.
+        mrSig = "";
+        void refreshRequestCard(true);
       } else if (outcome === "cancelled") {
         toast("푸시를 취소했습니다.", "info");
       } else {

@@ -112,7 +112,7 @@ function data(merges: TimelineMerge[], openBranches: TimelineOpenBranch[] = []):
   const { items, laneCount } = layoutTimeline(d, { since: SINCE, until: UNTIL, width: WIDTH });
   assert(laneCount === 3, `laneCount=${laneCount}, expected 3 (레이블이 겹치므로 각자 레인)`);
   assert(items.every((i) => i.anchorEnd), "가장자리 항목은 끝 기준 정렬");
-  assert(items.every((i) => i.label.endsWith("병합 대기")), "열린 브랜치 레이블에 '병합 대기'");
+  assert(items.every((i) => i.label.endsWith("미병합")), "열린 브랜치 레이블에 '미병합'");
   assert(items.every((i) => i.occ0 < i.x0 && i.occ1 === WIDTH), "점유 구간이 레이블만큼 왼쪽으로 넓다");
   console.log("PASS: layout 오른쪽 가장자리 레이블 겹침 방지");
 }

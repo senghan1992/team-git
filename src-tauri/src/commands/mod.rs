@@ -3,6 +3,7 @@ pub mod ai;
 pub mod auto;
 pub mod config;
 pub mod git;
+pub mod mr;
 pub mod peer;
 pub mod project;
 pub mod repo;

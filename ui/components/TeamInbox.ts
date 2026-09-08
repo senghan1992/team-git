@@ -232,6 +232,24 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
   // 접미사 매칭으로 판별한다. 같은 브랜치가 합쳐진 group 이면 최신이 대표.
   function kindAction(group: TeamEventRow[]): { label: string; icon: IconName; run: () => Promise<void> } | null {
     const r = group[0];
+    if (r.event_kind.endsWith("merge_request")) {
+      return {
+        label: "병합 요청 검토",
+        icon: "merge",
+        run: async () => {
+          const repo = await resolveRepo(r);
+          if (!repo) {
+            toast(
+              `'${r.repo_name}' 저장소를 찾을 수 없습니다. 이 컴퓨터에 등록되지 않았거나 원격 주소가 다릅니다.`,
+              "error",
+            );
+            return;
+          }
+          await markReadGroup(group);
+          onNav({ kind: "repo", repoId: repo.id, tab: "merge" });
+        },
+      };
+    }
     if (r.event_kind.endsWith("branch_push")) {
       return {
         label: "병합 센터로",
@@ -314,10 +332,11 @@ function summaryOf(r: TeamEventRow): string {
 
 function eventKindLabel(kind: string): string {
   const k = kind.replace(/^team_/, "");
-  // 라벨은 알림이 *무엇을 하라는 것인지* 말한다 — branch_push 는 병합
-  // 관리자에게 병합을 요청하는 알림이고, main_push 는 구성원에게
-  // 동기화를 안내하는 알림이다.
-  if (k === "branch_push") return "병합 요청";
+  // 라벨은 알림이 *무엇을 하라는 것인지* 말한다 — merge_request 는 병합 관리자의
+  // 승인 대기열에 오른 요청이고, branch_push 는 참고용 push 알림이며,
+  // main_push 는 구성원에게 동기화를 안내하는 알림이다.
+  if (k === "merge_request") return "병합 요청";
+  if (k === "branch_push") return "push";
   if (k === "main_push") return "동기화 안내";
   if (k === "release") return "릴리스";
   return kind;

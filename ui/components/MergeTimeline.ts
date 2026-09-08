@@ -103,7 +103,7 @@ export function layoutTimeline(
     place({
       kind: "open",
       key: b.name,
-      label: `${b.name} · 커밋 ${b.commits.length} · 병합 대기`,
+      label: `${b.name} · 커밋 ${b.commits.length} · 미병합`,
       x0,
       x1,
       open: b,
@@ -282,7 +282,8 @@ export function renderMergeTimeline(opts: {
       name.textContent = it.open.name;
       const badge = document.createElement("span");
       badge.className = "gc-badge gc-badge--warning";
-      badge.textContent = "병합 대기";
+      badge.textContent = "미병합";
+      badge.title = "아직 병합 요청이 승인되지 않은 브랜치입니다.";
       head.appendChild(badge);
       meta.textContent = `최근 활동 ${formatRelative(it.open.last_date)}`;
       commits = it.open.commits;

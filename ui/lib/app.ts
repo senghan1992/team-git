@@ -145,6 +145,17 @@ export async function createApp(root: HTMLElement) {
     }
   }
 
+  /** 이벤트 payload에서 제목/커밋 메시지를 꺼낸다 (없으면 null). */
+  function titleOfEvent(r: TeamEventRow): string | null {
+    try {
+      const payload = JSON.parse(r.payload) as { data?: { message?: string } };
+      const t = payload.data?.message?.trim();
+      return t || null;
+    } catch {
+      return null;
+    }
+  }
+
   async function pollTeamEvents() {
     if (!getSession()) return;
     // 모달(커밋 메시지 등)을 쓰는 중에는 액션 토스트를 띄우지 않는다 —
@@ -218,7 +229,9 @@ export async function createApp(root: HTMLElement) {
       r.event_kind === "main_push" || r.event_kind.endsWith("main_push");
     const isBranchPush =
       r.event_kind === "branch_push" || r.event_kind.endsWith("branch_push");
-    if (!isMainPush && !isBranchPush) return null;
+    const isMergeRequest =
+      r.event_kind === "merge_request" || r.event_kind.endsWith("merge_request");
+    if (!isMainPush && !isBranchPush && !isMergeRequest) return null;
     if (isMyOwnEvent(r)) return null;
 
     const repo = repoOfEvent(r);
@@ -239,7 +252,7 @@ export async function createApp(root: HTMLElement) {
       };
     }
 
-    // ── 시나리오 7: 팀원이 자기 브랜치를 푸시함 → 병합 관리자에게만 알린다.
+    // ── 시나리오 7: 팀원의 push·병합 요청 → 병합 관리자에게만 알린다.
     if (!repo) return null;
     const base = repo.default_branch || "main";
     const cfg = await projectCfgOf(repo.id);
@@ -259,19 +272,38 @@ export async function createApp(root: HTMLElement) {
     }
 
     const branch = branchOfEvent(r);
+    if (isMergeRequest) {
+      // 병합 요청이 도착했다 — 할 일이 있는 알림. 승인 대기열(병합 탭)로 연다.
+      const title = titleOfEvent(r);
+      return {
+        text: branch
+          ? `${r.repo_name}: ${branch} 병합 요청 도착`
+          : `${r.repo_name}에 병합 요청이 도착했습니다`,
+        action: {
+          label: "검토하기",
+          run: () => {
+            ipc_peer.markTeamRead(r.id).then(reloadTeamUnread).catch(() => undefined);
+            page = { kind: "repo", repoId: repo.id, tab: "merge" };
+            rerender();
+          },
+        },
+        detail: `${base} 승인 대기열에 추가되었습니다${title ? ` — ${title}` : ""}.`,
+      };
+    }
+    // push 알림은 참고용이다 — 요청이 오기 전까지는 대기열에 오르지 않는다.
     return {
       text: branch
-        ? `${r.repo_name}: ${branch} 브랜치가 병합을 기다립니다`
+        ? `${r.repo_name}: ${branch} 브랜치에 새 push가 있습니다`
         : `${r.repo_name}에 새 푸시가 있습니다`,
       action: {
-        label: "병합하기",
+        label: "병합 센터 열기",
         run: () => {
           ipc_peer.markTeamRead(r.id).then(reloadTeamUnread).catch(() => undefined);
           page = { kind: "repo", repoId: repo.id, tab: "merge" };
           rerender();
         },
       },
-      detail: `${base}(으)로 병합할 수 있습니다.`,
+      detail: "병합은 요청이 왔을 때 승인합니다 — 승인 대기열에서 기다리는 요청을 볼 수 있습니다.",
     };
   }
 

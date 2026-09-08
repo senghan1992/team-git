@@ -57,12 +57,12 @@ export function computeNextAction(input: NextActionInput): NextAction {
     };
   }
 
-  // 관리자가 병합을 안 해 주면 팀 전체가 막힌다 — 내 커밋보다 우선.
+  // 관리자가 승인하지 않으면 팀 전체가 막힌다 — 내 커밋보다 우선.
   if (isMergeManager && pendingCount !== null && pendingCount > 0) {
     return {
       kind: "merge",
-      label: `${pendingCount}건 병합하기`,
-      reason: `팀원이 푸시한 브랜치 ${pendingCount}개가 ${baseBranch} 병합을 기다리고 있습니다.`,
+      label: `${pendingCount}건 병합 승인`,
+      reason: `팀원이 병합을 요청한 브랜치 ${pendingCount}개가 ${baseBranch} 승인 대기열에서 기다리고 있습니다.`,
       tab: "merge",
       urgent: true,
     };

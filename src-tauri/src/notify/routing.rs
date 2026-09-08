@@ -4,8 +4,10 @@
 //! 역할 판정은 각 기기의 `.gpconfig`(저장소 → 설정 탭)가 한다:
 //!
 //! - `branch_push` (팀원이 작업 브랜치에 푸시)
-//!   → 그 베이스 브랜치의 **병합 관리자**에게만 "병합 대기" 알림.
-//!   관리자가 병합 센터에서 병합을 마무리한다.
+//!   → 그 베이스 브랜치의 **병합 관리자**에게만 push 알림.
+//! - `merge_request` (팀원이 작업 탭에서 병합을 요청)
+//!   → push 알림과 달리 **할 일이 있는** 알림 — 마찬가지로 그 베이스의
+//!   병합 관리자에게만 보인다. 승인 대기열(병합 탭)로 이어진다.
 //! - `main_push` (병합 대상 브랜치에 병합 반영 — 관리자가 merge 후 push)
 //!   → **구성원 전체**에게 "동기화하세요" 안내.
 //! - `release` → 역할 구분 없이 전원에게.
@@ -59,8 +61,8 @@ pub fn event_visible_for_me(row: &TeamEventRow) -> bool {
     if !exists {
         return true;
     }
-    if kind == "branch_push" || kind.ends_with("branch_push") {
-        if !cfg.notify.on_branch_ready {
+    if kind == "branch_push" || kind.ends_with("branch_push") || kind == "merge_request" {
+        if kind != "merge_request" && !cfg.notify.on_branch_ready {
             return false;
         }
         let base = base_branch_of(&cfg, &repo);
