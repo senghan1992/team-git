@@ -157,10 +157,38 @@ class EventDetail(BaseModel):
 
 
 class EventCreateRequest(BaseModel):
+    """A push event from the desktop app's pre-push hook (device-authenticated)."""
     project_id: str
     event_kind: str = Field(..., pattern="^(main_push|branch_push|release)$")
     repo_name: str
     payload: str  # JSON string
+
+
+class ServerHookRequest(BaseModel):
+    """
+    A push event from a git server-side hook (post-receive / webhook).
+
+    앱을 설치하지 않은 팀원이 터미널·IDE 로 `git push` 해도 병합 관리자가
+    알림을 받게 하기 위한 통로다. 기기 토큰 대신 서버 운영자가 정한 공유
+    비밀키(`GC_HOOK_SECRET` 환경변수)로 인증한다.
+
+    `payload` 는 앱 훅과 같은 JSON 문자열을 그대로 보낼 때 쓴다. 비어 있으면
+    아래 필드들(author/message/sha/branch…)로 서버가 만든다 — 훅 스크립트가
+    JSON 이스케이프를 직접 하지 않아도 되게 하기 위함이다.
+    """
+    project_id: str
+    event_kind: str = Field(..., pattern="^(branch_push|main_push|release)$")
+    repo_name: str
+    payload: str = Field(default="")
+    author: str | None = Field(default=None, max_length=256)
+    author_email: str | None = Field(default=None, max_length=256)
+    message: str | None = Field(default=None, max_length=2048)
+    sha: str | None = Field(default=None, max_length=64)
+    branch: str | None = Field(default=None, max_length=256)
+    url: str | None = Field(default=None, max_length=512)
+    version: str | None = Field(default=None, max_length=64)
+    # 수신함에 보여 줄 이름 — 없으면 payload 의 author 를 쓴다.
+    sender_name: str | None = Field(default=None, max_length=256)
 
 
 class EventCreateResponse(BaseModel):

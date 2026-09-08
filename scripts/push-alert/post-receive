@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Git Companion 팀 알림 post-receive 훅
+#
+# 앱을 설치하지 않은 팀원이 터미널·IDE 로 그냥 `git push` 해도 팀 서버에
+# 알려서, 병합 관리자가 병합 대기 알림을 받게 한다. 이 훅은 **원격(origin)
+# 저장소가 있는 서버**에서 돈다 — push 하는 사람의 PC 에는 아무것도 필요없다.
+#
+# ── 설치 (원격 저장소 서버에서, 저장소마다 한 번) ──────────────────────────
+#   1. 같은 폴더의 push-alert.env.example 을 복사해 push-alert.env 를 만들고
+#      값을 채운다 (아래 "둘 곳" 참고).
+#   2. 이 파일을 <원격저장소>/hooks/post-receive 로 복사:
+#        cp scripts/push-alert/post-receive <원격저장소>/hooks/post-receive
+#      (bare 저장소: /srv/git/team-app.git/hooks/ 등)
+#   3. 실행 권한 부여: chmod +x <원격저장소>/hooks/post-receive
+#
+#   준비물: curl (거의 모든 서버에 있음). python3 는 있으면 더 정확한
+#   병합 대상 판정에 쓰고, 없어도 동작한다.
+#
+# ── 원칙 ──────────────────────────────────────────────────────────────────
+#   이 훅은 절대 push 를 막지 않는다 — 설정이 빠졌거나 서버가 죽어 있어도
+#   push 는 그대로 성공하고, 문제가 있으면 stderr 로 한 줄만 알린다.
+set -u
+
+HOOK_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONF="$HOOK_DIR/push-alert.env"
+if [ -f "$CONF" ]; then
+  # shellcheck disable=SC1090
+  . "$CONF"
+fi
+
+if [ -z "${TEAM_SERVER_URL:-}" ] || [ -z "${HOOK_SECRET:-}" ] || [ -z "${PROJECT_ID:-}" ]; then
+  echo "[push-alert] 설정 없음 — $CONF 에 TEAM_SERVER_URL / HOOK_SECRET / PROJECT_ID 를 채우세요 (push 는 정상 진행됨)" >&2
+  exit 0
+fi
+if ! command -v curl >/dev/null 2>&1; then
+  echo "[push-alert] curl 이 없어 알림을 보낼 수 없습니다 (push 는 정상 진행됨)" >&2
+  exit 0
+fi
+
+# 저장소 이름/주소 — 보통 그대로 두면 된다 (기본값: 저장소 폴더 이름).
+# REMOTE_URL 을 채우면 앱이 이 저장소를 정확히 찾는다 (이름이 다른 팀원도).
+REPO_NAME="${REPO_NAME:-$(basename "$(pwd)" .git)}"
+REMOTE_URL="${REMOTE_URL:-}"
+
+# JSON 문자열 값 이스케이프 (따옴표·역슬래시·줄바꿈). git 메시지의 그 밖의
+# 제어문자는 실용상 무시한다.
+json_escape() {
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+      -e ':a;N;$!ba;s/\n/\\n/g' -e 's/\t/\\t/g' -e 's/\r//g'
+}
+
+# 이 브랜치가 병합 대상(머지 브랜치)인가? .gpconfig 의 merge_targets /
+# default_base_branch 를 본다. python3 가 있으면 정확히, 없으면 텍스트로 근사.
+is_merge_target() {
+  local branch="$1" cfg
+  cfg="$(git show "${branch}:.gpconfig" 2>/dev/null || true)"
+  if [ -n "$cfg" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - "$branch" "$cfg" <<'PYEOF' && return 0
+import json, sys
+branch, raw = sys.argv[1], sys.argv[2]
+try:
+    c = json.loads(raw)
+    if branch in (c.get("merge_targets") or []):
+        sys.exit(0)
+    base = (c.get("default_base_branch") or "").strip()
+    if base and branch == base:
+        sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+PYEOF
+      return 1
+    fi
+    # python3 없을 때: 브랜치 이름이 .gpconfig 어딘가에 등장하면 대상으로 본다
+    echo "$cfg" | grep -q "\"$branch\"" && return 0
+    return 1
+  fi
+  # .gpconfig 가 아직 없으면 bare 저장소의 기본 브랜치(HEAD)와만 비교한다
+  [ "$branch" = "$(git symbolic-ref --short HEAD 2>/dev/null || echo main)" ]
+}
+
+post_hook() {
+  # $1=event_kind, 나머지는 --data 로 보낼 field=value 쌍 인자
+  local event_kind="$1"; shift
+  local args=()
+  for kv in "$@"; do
+    args+=(--data-urlencode "$kv")
+  done
+  curl -sS -m 5 -o /dev/null -X POST "${TEAM_SERVER_URL%/}/events/server-hook" \
+    -H "X-Hook-Secret: $HOOK_SECRET" \
+    --data-urlencode "project_id=$PROJECT_ID" \
+    --data-urlencode "event_kind=$event_kind" \
+    --data-urlencode "repo_name=$REPO_NAME" \
+    --data-urlencode "url=$REMOTE_URL" \
+    "${args[@]}" 2>/dev/null || {
+    echo "[push-alert] 팀 서버($TEAM_SERVER_URL)에 알림을 보내지 못했습니다 (push 는 정상 진행됨)" >&2
+  }
+}
+
+# post-receive 는 stdin 으로 "<옛 sha> <새 sha> <ref>" 를 한 줄씩 받는다.
+while read -r oldrev newrev refname; do
+  case "$refname" in
+    refs/heads/*)
+      # 브랜치 삭제 push (새 sha 가 전부 0) 는 알리지 않는다
+      case "$newrev" in
+        0000000000000000000000000000000000000000) continue ;;
+      esac
+      branch="${refname#refs/heads/}"
+      author="$(git log -1 --format='%an' "$newrev" 2>/dev/null || echo unknown)"
+      author_email="$(git log -1 --format='%ae' "$newrev" 2>/dev/null || echo '')"
+      message="$(git log -1 --format='%s' "$newrev" 2>/dev/null || echo '')"
+
+      if is_merge_target "$branch"; then
+        # 병합 대상 브랜치로의 push = 팀원에게 "동기화하세요" (main_push)
+        kind="main_push"
+      else
+        # 작업 브랜치 push = 병합 관리자에게 "병합 대기" (branch_push)
+        kind="branch_push"
+      fi
+
+      post_hook "$kind" \
+        "author=$author" \
+        "author_email=$author_email" \
+        "message=$message" \
+        "sha=$newrev" \
+        "branch=$branch"
+      ;;
+    refs/tags/v*)
+      # v1.2.3 형태 릴리스 태그 — release 알림
+      version="${refname#refs/tags/v}"
+      author="$(git log -1 --format='%an' "$newrev" 2>/dev/null || echo unknown)"
+      author_email="$(git log -1 --format='%ae' "$newrev" 2>/dev/null || echo '')"
+      post_hook "release" \
+        "author=$author" \
+        "author_email=$author_email" \
+        "version=$version"
+      ;;
+  esac
+done
+exit 0

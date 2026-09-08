@@ -8,7 +8,7 @@
 git clone https://github.com/senghan1992/team-git.git
 ```
 
-- **설치하기** → 아래 [설치 · 빌드](#설치--빌드) — 설치 파일 배포 없이 소스를 받아 직접 빌드합니다. 도구 설치부터 실행까지 **명령어를 순서대로 복사해 붙여넣기만** 하면 됩니다 (Windows / Linux / macOS).
+- **설치 파일 받기** → 아래 [설치 파일 공유하기 (배포)](#설치-파일-공유하기-배포) — 빌드된 설치 파일을 git 으로 공유합니다. 직접 빌드는 [설치 · 빌드](#설치--빌드) 참고.
 - **사용법(스크린샷)** → 아래 [팀 6명이 시작하는 법](#팀-6명이-시작하는-법--화면으로-보는-사용법) — 실제 화면과 함께 역할별로.
 - 전체 흐름과 화면별 사용법(상세) → **[docs/WORKFLOW.md](docs/WORKFLOW.md)**
 - 빌드 없이 **브라우저에서 바로 보면서 작업** → **[docs/PREVIEW.md](docs/PREVIEW.md)** — `pnpm seed:demo && pnpm dev:web` 두 줄이면 됩니다.
@@ -365,12 +365,99 @@ Google 로그인은 **계정을 새로 만들거나, 같은 이메일의 기존 
   새로 만든(untracked) 파일도 함께 보관되고, 복원 중 충돌이 나면 스태시
   항목을 지우지 않은 채 알려 줍니다.
 
+## 앱 없이 푸시하는 팀원도 알림 받기 (서버 훅)
+
+이 앱이 설치한 pre-push 훅은 **git 훅**이라 터미널·IDE·GUI 어느 클라이언트로
+push 해도, 앱이 안 켜져 있어도 동작합니다. 다만 앱을 **아예 설치하지 않은**
+팀원의 PC에는 훅이 없으므로 그 push 는 알림이 안 갑니다.
+
+그 경우 **원격 저장소가 있는 git 서버**에 `post-receive` 훅 하나를 설치하면
+끝입니다 — 팀원 쪽은 아무것도 필요 없습니다:
+
+```
+작업 브랜치 push  → 병합 관리자에게 "병합 요청"
+병합 대상 push    → 전 팀원에게 "동기화 안내"
+v1.2.3 태그 push  → 전원 "릴리스"
+```
+
+설치 방법은 두 가지 — **저장소가 GitHub/GitLab/Gitea 에 있으면** 저장소 설정
+화면에서 웹훅 등록 몇 번으로 끝나고(저장소에 코드 추가 없음, 병합 대상은
+웹훅 URL 에 `merge_targets=` 로 지정), **우리 서버가 직접 git 저장소를 갖고
+있으면** `post-receive` 훅 파일 2개를 복사한다. 둘 다 팀 서버에
+`GC_HOOK_SECRET` 환경변수 하나만 추가하면 된다 (docker-compose.yml 에 주석으로
+안내되어 있습니다). 자세한 절차는
+**[scripts/push-alert/README.md](scripts/push-alert/README.md)** 에 있습니다.
+팀 서버의 백엔드 엔드포인트는 `POST /events/server-hook` 이고, 같은 push 가
+앱 훅과 웹훅 양쪽으로 들어와도 sha 기준으로 한 번만 배달됩니다.
+
+## 설치 파일 공유하기 (배포)
+
+**main 브랜치에 push 하면 GitHub 가 Windows 설치 파일을 자동으로 빌드**하고,
+팀원이 받을 수 있는 곳을 두 군데 만들어 줍니다 (.github/workflows/release.yml).
+
+1. **다운로드 페이지** — <https://senghan1992.github.io/team-git/> —
+   큰 다운로드 버튼 하나 있는 안내 페이지. 설치 방법도 함께 보여 줍니다.
+   (처음 한 번만 저장소 Settings → **Pages** → Source 를
+   **GitHub Actions** 로 바꿔 주세요.)
+2. **GitHub Releases** — <https://github.com/senghan1992/team-git/releases> —
+   항상 최신 빌드(`continuous`)와 버전별 릴리스. `releases/latest` 의
+   `Git-Companion-setup.exe` 링크는 항상 최신 빌드를 가리킵니다.
+
+팀원에게는 다운로드 페이지 주소 하나만 알려 주면 됩니다. push 후 15~30분
+(첫 빌드는 더 오래) 뒤에 새 빌드가 올라옵니다.
+
+> **private 저장소 주의**: GitHub Pages 는 public 저장소는 무료지만,
+> private 저장소는 유료 플랜이 필요합니다. private 이면 Releases 페이지를
+> 다운로드 창구로 쓰세요 (그 경우 `.github/workflows/release.yml` 의
+> `pages` job 을 지우면 됩니다).
+
+### 버전으로 구분해 배포하고 싶다면 (선택)
+
+버전 태그를 push 하면 그 버전으로 **별도 릴리스**가 생성됩니다:
+
+```powershell
+git tag v0.1.6
+git push origin v0.1.6
+```
+
+- 태그 이름은 `v숫자.숫자.숫자` 형식이어야 합니다 (`v0.1.6` 처럼).
+- 버전 올리기: `Cargo.toml`(workspace) · `package.json` ·
+  `src-tauri/tauri.conf.json` 세 곳의 숫자를 맞춰 바꾼 뒤 커밋합니다.
+  (설정 화면 하단 표시 버전 `ui/views/SettingsView.ts` 도 함께.)
+
+### GitHub 이 아닌 git 서버를 쓴다면 (대안)
+
+Windows 에서 빌드한 뒤 `release/` 폴더에 모아서 커밋·push 하면, 팀원은
+`git pull` 한 번으로 설치 파일을 받습니다. 사내 git 서버, GitLab 등 어디서나
+동작합니다.
+
+```powershell
+pnpm tauri build                 # 설치 파일 생성 (첫 빌드는 10~20분)
+node dev/stage-installer.mjs     # release/ 폴더에 버전명으로 복사
+
+git add release/
+git commit -m "release: v0.1.6 설치 파일"
+git push
+```
+
+팀원 쪽:
+
+```powershell
+git pull
+.\release\Git-Companion-0.1.6-setup.exe
+```
+
+> 설치 파일은 10~20MB 수준이라 git 저장소에 그대로 커밋해도 문제없습니다
+> (GitHub 하드 제한 100MB 이내). 더 커지면 Git LFS 를 고려하세요.
+
+---
+
 ## 설치 · 빌드
 
-이 앱은 설치 파일을 따로 배포하지 않습니다 — **소스를 받아 내 컴퓨터에서 직접
-빌드**합니다. 아래 명령을 위에서부터 순서대로 복사해 붙여넣기만 하면 됩니다.
-개발 도구가 하나도 없는 컴퓨터 기준으로 도구 설치 30분 + 첫 빌드 10~20분이
-걸리고, 두 번째 빌드부터는 몇 분이면 끝납니다.
+저장소에 설치 파일이 없거나(아직 배포 전) 직접 빌드하고 싶다면 — **소스를
+받아 내 컴퓨터에서 직접 빌드**합니다. 아래 명령을 위에서부터 순서대로 복사해
+붙여넣기만 하면 됩니다. 개발 도구가 하나도 없는 컴퓨터 기준으로 도구 설치
+30분 + 첫 빌드 10~20분이 걸리고, 두 번째 빌드부터는 몇 분이면 끝납니다.
 
 Tauri는 크로스 컴파일을 지원하지 않으므로 **쓸 OS에서 빌드합니다** —
 Windows용 `.exe`는 Windows에서, Linux용은 Linux에서 만듭니다.
@@ -434,7 +521,7 @@ cargo tauri build
 설치해서 쓰려면 (시작 메뉴에 등록됨):
 
 ```powershell
-& ".\target\release\bundle\nsis\Git Companion_0.1.0_x64-setup.exe"
+& ".\target\release\bundle\nsis\Git Companion_0.1.6_x64-setup.exe"
 ```
 
 설치 없이 바로 실행해 보려면:

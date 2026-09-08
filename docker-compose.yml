@@ -50,4 +50,9 @@ services:
       - GOOGLE_CLIENT_ID=
       - GOOGLE_CLIENT_SECRET=
       - GOOGLE_REDIRECT_URI=
+      # 앱 미설치 팀원의 push 를 알릴 때 쓰는 공유 비밀키. 세 군데에서 같은
+      # 값을 쓴다: ①자체 git 서버 post-receive 훅(scripts/push-alert/) ②GitHub
+      # 웹훅의 Secret 칸 ③GitLab 웹훅의 Secret token 칸.
+      # 비워 두면 /events/server-hook 은 꺼진다 — 안 쓰면 그대로 둔다.
+      # - GC_HOOK_SECRET=<아무 긴 문자열>
     restart: unless-stopped
