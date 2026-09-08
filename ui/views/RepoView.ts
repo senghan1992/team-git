@@ -148,22 +148,32 @@ export async function renderRepoView(
   }
 
   // ── Sync — pull latest base into the current branch (step 3 of the flow) ─
+  //
+  // 이름은 “동기화” 한 단어가 아니라 “병합 브랜치명 + 동기화”로 — 무엇을
+  // 가져오는지 버튼만 봐도 보여야 한다 (예: main 동기화).
+  const syncBaseName = (): string =>
+    repo.default_branch || projectCfg?.config?.default_base_branch || "main";
+  function refreshSyncLabel() {
+    const base = syncBaseName();
+    syncLabel.textContent = `${base} 동기화`;
+    syncBtn.title = `origin/${base}의 최신 커밋을 지금 브랜치에 병합합니다.`;
+  }
   const syncBtn = document.createElement("button");
   syncBtn.className = "gc-button-secondary inline-flex items-center gap-1";
   syncBtn.appendChild(icon("arrow-right", 14));
   const syncLabel = document.createElement("span");
-  syncLabel.textContent = "동기화";
+  refreshSyncLabel();
   syncBtn.appendChild(syncLabel);
   syncBtn.addEventListener("click", async () => {
     const current = branchSel.value.replace(/^origin\//, "");
-    const base = repo.default_branch || projectCfg?.config?.default_base_branch || "main";
+    const base = syncBaseName();
     const confirmed = await confirmDialog({
-      title: "동기화",
+      title: `${base} 동기화`,
       message: `현재 브랜치(${current})에 origin/${base}의 최신 내용을 병합합니다.`,
-      confirmLabel: "동기화",
+      confirmLabel: `${base} 동기화`,
     });
     if (!confirmed) return;
-    setBusy(syncBtn, true, "동기화 중…");
+    setBusy(syncBtn, true, `${base} 동기화 중…`);
     try {
       const r = await ipc.syncBranch(repoId, base);
       await loadBranches();
@@ -226,6 +236,7 @@ export async function renderRepoView(
           applyStatus(await ipc.status(repoId).catch(() => null));
           projectCfg = await ipc.projectConfigGet(repoId).catch(() => null);
           refreshManagerBadge();
+          refreshSyncLabel();
         } catch (e) {
           m.setError(`생성 실패: ${(e as Error).message ?? e}`);
           m.setSubmitting(false);
@@ -638,6 +649,7 @@ export async function renderRepoView(
   // ── 병합 관리자 (프로젝트 설정 .gpconfig) ────────────────────────────────
   // 브랜치별 관리자를 표시하고, 명시된 관리자가 아닌 로그인 사용자의 푸시를 잠근다.
   let projectCfg = await ipc.projectConfigGet(repoId).catch(() => null);
+  refreshSyncLabel();
   const pushBtnRef = () => commitCard.querySelector<HTMLButtonElement>("#btn-push")!;
   /** 원격이 없으면 푸시·풀·동기화는 무엇을 해도 실패한다 — 아래 두 곳이 함께 본다. */
   const noRemote = !repo?.remote_url;
@@ -723,6 +735,7 @@ export async function renderRepoView(
       applyStatus(await ipc.status(repoId).catch(() => null));
       projectCfg = await ipc.projectConfigGet(repoId).catch(() => null);
       refreshManagerBadge();
+      refreshSyncLabel();
       // 전환 후에는 선택 상자도 로컬 브랜치 이름을 보여야 한다 (origin/ 항목을
       // 골랐어도 실제로는 같은 이름의 내 브랜치가 생겨 있다).
       const fresh = await ipc.listBranches(repoId).catch(() => null);

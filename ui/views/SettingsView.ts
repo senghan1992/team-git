@@ -519,7 +519,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
 
   const footer = document.createElement("div");
   footer.className = "mt-auto pt-4 text-display-xs text-[color:var(--color-ink-muted)]";
-  footer.textContent = "Git Companion v0.1.4";
+  footer.textContent = "Git Companion v0.1.5";
   main.appendChild(footer);
 
   return main;

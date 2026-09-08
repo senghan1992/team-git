@@ -128,12 +128,13 @@ export function computeNextAction(input: NextActionInput): NextAction {
   }
 
   // 병합 브랜치(origin/<base>)가 앞서 있다 — "동기화" 버튼이 실제로 가져올
-  // 커밋 수는 upstream 기준 behind 가 아니라 이 값이다.
+  // 커밋 수는 upstream 기준 behind 가 아니라 이 값이다. 버튼 문구에 병합
+  // 브랜치 이름을 넣어 "무엇을 가져오는지"를 한눈에 알게 한다.
   const behindBase = status?.behind_base ?? 0;
   if (behindBase > 0) {
     return {
       kind: "sync",
-      label: `최신 ${behindBase}개 가져오기`,
+      label: `${baseBranch} 동기화 (최신 ${behindBase}개)`,
       reason: `${baseBranch}에 팀원들의 작업이 반영되어 있습니다. 내 브랜치에 동기화하세요.`,
       tab: "work",
       urgent: false,

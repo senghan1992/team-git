@@ -142,14 +142,14 @@ export function renderRepoCard(
       // 동기화는 카드에서 바로 끝낼 수 있는 유일한 행동 — 되돌릴 수 있고,
       // 실패하면 병합 탭으로 안내한다.
       btn.addEventListener("click", async () => {
-        setBusy(btn, true, "동기화 중…");
+        setBusy(btn, true, `${baseBranch} 동기화 중…`);
         try {
           const r = await ipc.syncBranch(repo.id, baseBranch);
           if (r.conflicted) {
             toast(`충돌 ${r.files.length}개 발생 — 병합 탭에서 해결하세요.`, "info");
             onOpen("merge");
           } else {
-            toast("동기화 완료 — 최신 변경을 내 브랜치에 반영했습니다.", "success");
+            toast(`origin/${baseBranch} 최신 변경을 내 브랜치에 반영했습니다.`, "success");
             void load();
           }
         } catch (e) {
