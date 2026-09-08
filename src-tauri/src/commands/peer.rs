@@ -205,10 +205,18 @@ pub async fn peer_local_url() -> AppResult<String> {
 }
 
 /// Count unread peer push events in the local inbox DB.
+///
+/// 배지 수는 **내가 받을 알림**만 센다 — 서버는 전원에게 배달하므로
+/// 역할 라우팅(`notify/routing.rs`)으로 걸러낸 뒤 센다.
 #[tauri::command]
 pub fn peer_unread_count() -> AppResult<u32> {
     let store = crate::notify::store::Store::open()?;
-    store.count_unread_team_events()
+    let rows = store.list_team_events(10_000, true)?;
+    let n = rows
+        .iter()
+        .filter(|r| crate::notify::routing::event_visible_for_me(r))
+        .count();
+    Ok(n as u32)
 }
 /// Get current peer config.
 #[tauri::command]
@@ -362,13 +370,20 @@ pub async fn peer_leave_project(project_id: String) -> AppResult<()> {
 }
 
 /// List team push events from local inbox DB.
+///
+/// 수신함에는 **내가 받을 알림**만 나온다 — 병합 관리자가 아닌 사람에게
+/// 남의 브랜치 푸시 카드를 "병합 센터로" 버튼과 함께 보여주지 않는다.
 #[tauri::command]
 pub fn peer_list_team_events(
     limit: u32,
     unread_only: bool,
 ) -> AppResult<Vec<crate::notify::store::TeamEventRow>> {
     let store = crate::notify::store::Store::open()?;
-    store.list_team_events(limit, unread_only)
+    let all = store.list_team_events(limit, unread_only)?;
+    Ok(all
+        .into_iter()
+        .filter(|r| crate::notify::routing::event_visible_for_me(r))
+        .collect())
 }
 
 /// Mark a team event as read.

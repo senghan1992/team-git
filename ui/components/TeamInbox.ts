@@ -53,7 +53,8 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
       empty.appendChild(t);
       const d = document.createElement("div");
       d.className = "gc-empty__desc";
-      d.textContent = "팀원 모두가 푸시하면 알림이 도착합니다.";
+      d.textContent =
+        "병합 관리자로 맡은 브랜치에 푸시가 오거나, 병합 관리자가 병합을 반영하면 알림이 도착합니다.";
       empty.appendChild(d);
       list.appendChild(empty);
       return;
@@ -225,7 +226,10 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
             return;
           }
           try {
-            const res = await ipc.syncBranch(repo.id, repo.default_branch);
+            // 병합이 반영된 브랜치가 payload에 있다 — release/1.0 같은
+            // 두 번째 병합 대상도 그 브랜치로 동기화한다.
+            const base = branchOf(r) ?? (repo.default_branch || "main");
+            const res = await ipc.syncBranch(repo.id, base);
             if (res.conflicted) {
               await markRead(r);
               toast(`충돌 ${res.files.length}개 발생 — 병합 센터에서 해결하세요.`, "info");
@@ -272,10 +276,24 @@ function summaryOf(r: TeamEventRow): string {
 
 function eventKindLabel(kind: string): string {
   const k = kind.replace(/^team_/, "");
-  if (k === "branch_push") return "브랜치 푸시";
-  if (k === "main_push") return "메인 병합";
+  // 라벨은 알림이 *무엇을 하라는 것인지* 말한다 — branch_push 는 병합
+  // 관리자에게 병합을 요청하는 알림이고, main_push 는 구성원에게
+  // 동기화를 안내하는 알림이다.
+  if (k === "branch_push") return "병합 요청";
+  if (k === "main_push") return "동기화 안내";
   if (k === "release") return "릴리스";
   return kind;
+}
+
+/** payload에서 병합이 반영된 브랜치 이름 (없으면 null). */
+function branchOf(r: TeamEventRow): string | null {
+  try {
+    const p = JSON.parse(r.payload) as { data?: { branch?: string } };
+    const b = p.data?.branch?.trim();
+    return b || null;
+  } catch {
+    return null;
+  }
 }
 
 function escape(s: string): string {

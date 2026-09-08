@@ -103,7 +103,10 @@ export async function createApp(root: HTMLElement) {
       ipc_peer.markTeamRead(r.id).then(reloadTeamUnread).catch(() => undefined);
     };
     try {
-      const res = await ipc.syncBranch(repo.id, repo.default_branch);
+      // 병합이 반영된 브랜치가 payload에 있다 — release/1.0 같은 두 번째
+      // 병합 대상도 그 브랜치로 동기화한다.
+      const base = branchOfEvent(r) ?? (repo.default_branch || "main");
+      const res = await ipc.syncBranch(repo.id, base);
       markRead();
       if (res.conflicted) {
         toast(`충돌 ${res.files.length}개 발생 — 병합 센터에서 해결하세요.`, "info");
@@ -226,7 +229,7 @@ export async function createApp(root: HTMLElement) {
         return {
           text: `${r.repo_name}에 새 병합이 반영되었습니다`,
           action: { label: "내 브랜치에 동기화", run: () => void runSyncFromEvent(r, repo) },
-          detail: `${repo.default_branch || "main"}에 최신 코드가 푸시되었습니다. 내 브랜치에도 반영하세요.`,
+          detail: `${branchOfEvent(r) || repo.default_branch || "main"}에 최신 코드가 푸시되었습니다. 내 브랜치에도 반영하세요.`,
         };
       }
       return {

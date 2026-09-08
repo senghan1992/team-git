@@ -16,7 +16,9 @@ export async function renderSettingsView(): Promise<HTMLElement> {
   const sub = document.createElement("div");
   sub.className = "gc-page-head__sub";
   sub.textContent =
-    "SSH · AI 자동 병합 · 푸시 로그인 정보를 관리합니다. 팀 규칙(병합 대상·관리자·구성원)은 저장소 → 설정 탭에서 정합니다.";
+    "여기 값들은 모두 이 컴퓨터에만 저장됩니다 — 설치했다고 해서 넣어야 하는 값이 아닙니다. " +
+    "SSH 프로필은 서버 저장소를 등록할 때, AI 자동 병합은 충돌 자동 해결을 원할 때만 채우면 됩니다. " +
+    "팀이 함께 보는 규칙(병합 대상·병합 관리자·알림)은 저장소 → 설정 탭에서 정하고 .gpconfig로 팀원과 공유됩니다.";
   head.appendChild(sub);
   main.appendChild(head);
 
@@ -33,6 +35,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
     </div>
     <div class="text-display-sm text-[color:var(--color-ink-muted)]">
       저장소가 <strong>다른 서버</strong>에 있을 때 등록 화면의 기본값으로 씁니다. 내 컴퓨터 폴더만 쓰면 비워 두세요.
+      (이 값은 팀원에게 전달되지 않습니다.)
     </div>
     <div class="flex flex-col gap-2 text-display-sm" id="ssh-fields">
       <div class="flex gap-2"><span class="text-[color:var(--color-ink-muted)] w-32 shrink-0">사용자:</span><span id="ssh-d-user">—</span></div>
@@ -266,7 +269,7 @@ export async function renderSettingsView(): Promise<HTMLElement> {
     </div>
 
     <div class="text-display-xs text-[color:var(--color-ink-muted)]">
-      키는 <code>config.json</code>에 평문으로 저장됩니다 — 안 쓸 때는 비활성화하세요.
+      키는 <code>config.json</code>에 평문으로 저장되며 이 컴퓨터에서만 쓰입니다 — 팀원은 이 설정을 볼 수 없습니다. 안 쓸 때는 비활성화하세요.
     </div>
     <div class="flex justify-end items-center gap-2">
       <span id="ai-test-result" class="text-display-xs min-w-0"></span>

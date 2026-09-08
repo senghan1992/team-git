@@ -13,7 +13,10 @@ use crate::error::{AppError, AppResult};
 use crate::git::{read_file_at_target, run_at_target, write_file_at_target, Target};
 
 pub const GPCONFIG_FILE: &str = ".gpconfig";
-pub const GPCONFIG_VERSION: u32 = 2;
+/// v3: `notify` 플래그가 실제 알림 라우팅에 반영되기 시작한 버전.
+/// v2 이전에는 플래그가 저장만 되고 아무 효과가 없었으므로, v2의
+/// false 값은 "끔"이 아니라 "아직 설정 안 함"으로 보고 기본(켜짐)으로 승격한다.
+pub const GPCONFIG_VERSION: u32 = 3;
 const GP_COMMIT_MESSAGE: &str = "chore: update project config (.gpconfig)";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -31,16 +34,34 @@ fn default_member_role() -> String {
     "member".into()
 }
 
+/// 알림 기본값은 **켜짐** — 팀이 설정만 저장하면 (병합 관리자 지정 +)
+/// 원하는 라우팅이 그대로 동작한다. 끄고 싶은 쪽만 꺼야 하는 옵트아웃 방식.
+fn default_notify_on() -> bool {
+    true
+}
+
 fn default_gp_version() -> u32 {
     GPCONFIG_VERSION
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GpNotifySettings {
-    #[serde(default)]
+    /// 팀원이 작업 브랜치에 푸시 → 그 병합 대상의 병합 관리자에게 알림.
+    /// 관리자는 병합 센터에서 병합을 마무리한다.
+    #[serde(default = "default_notify_on")]
     pub on_branch_ready: bool,
-    #[serde(default)]
+    /// 병합 관리자가 병합 후 푸시 → 구성원 전체에게 "동기화하세요" 안내.
+    #[serde(default = "default_notify_on")]
     pub on_merge_complete: bool,
+}
+
+impl Default for GpNotifySettings {
+    fn default() -> Self {
+        Self {
+            on_branch_ready: true,
+            on_merge_complete: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -196,11 +217,13 @@ pub struct CommitOutcome {
 /// - members deduped by email (first wins)
 /// - non-member emails dropped from `merge_managers` and `notify_recipients`
 /// - version pinned to the current schema
+/// - v2 이하의 `notify: false,false` 를 기본(켜짐)으로 승격
 ///
 /// `merge_managers[branch]`는 한 명일 수도, 여러 명일 수도 있다 — 여러 명은
 /// 쉼표로 구분한다 (이메일에는 쉼표가 들어갈 수 없다). 구성원이 아닌 이메일만
 /// 골라내야 하므로 값 전체가 아니라 한 명씩 판정한다.
 fn normalize(mut cfg: ProjectConfig) -> ProjectConfig {
+    let old_version = cfg.gpconfig_version;
     cfg.gpconfig_version = GPCONFIG_VERSION;
     let mut seen: Vec<String> = Vec::new();
     cfg.members.retain(|m| {
@@ -229,6 +252,16 @@ fn normalize(mut cfg: ProjectConfig) -> ProjectConfig {
     cfg.notify_recipients
         .retain(|email| seen.contains(&email.trim().to_lowercase()));
     cfg.notify_recipients.dedup();
+    // v2 이하에서 저장된 notify=false 는 패널이 항상 기록하던 채워지지 않은
+    // 기본값이지 "끔"이 아니다 — 올리면 알림이 통째로 조용해지는 회귀이므로
+    // 새 기본값(켜짐)으로 승격한다. v3 부터는 저장 그대로 존중한다.
+    if old_version < GPCONFIG_VERSION
+        && !cfg.notify.on_branch_ready
+        && !cfg.notify.on_merge_complete
+    {
+        cfg.notify.on_branch_ready = true;
+        cfg.notify.on_merge_complete = true;
+    }
     // 병합 대상: 공백 제거 + 순서 유지 중복 제거.
     let mut seen_targets: Vec<String> = Vec::new();
     let mut targets_out: Vec<String> = Vec::new();

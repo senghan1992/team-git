@@ -179,7 +179,7 @@ const mockData: Record<string, any> = {
   project_config_get: {
     exists: true,
     config: {
-      gpconfig_version: 2,
+      gpconfig_version: 3,
       default_base_branch: "main",
       members: [
         { id: "u-me", name: "김민지", email: "minji@example.com", role: "admin" },
@@ -188,7 +188,7 @@ const mockData: Record<string, any> = {
       merge_managers: { "release/1.0": "junho@example.com" },
       merge_targets: ["main", "release/1.0", "feature/login"],
       notify_recipients: ["junho@example.com"],
-      notify: { on_branch_ready: true, on_merge_complete: false },
+      notify: { on_branch_ready: true, on_merge_complete: true },
     },
   },
   project_config_set: (args: { config: unknown }) =>

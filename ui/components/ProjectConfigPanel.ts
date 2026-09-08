@@ -19,15 +19,49 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   const summary = await ipc.projectConfigGet(repo.id).catch(() => null);
   const me = getSession();
   const config: ProjectConfig = summary?.config ?? {
-    gpconfig_version: 2,
+    gpconfig_version: 3,
     default_base_branch: repo.default_branch || "main",
     members: [],
     merge_managers: {},
     merge_targets: [],
     notify_recipients: [],
-    notify: { on_branch_ready: false, on_merge_complete: false },
+    notify: { on_branch_ready: true, on_merge_complete: true },
   };
   const fileExists = summary?.exists ?? false;
+
+  // ── 브랜치 목록 (병합 대상/기본 베이스 선택지) ──────────────────────────
+  // 브랜치 이름을 오타 없이 고르도록, 지금 존재하는 브랜치들로 드롭다운을
+  // 만든다. 로컬 브랜치가 우선이고 원격(origin/)에만 있는 브랜치는 짧은
+  // 이름으로 뒤에 붙는다. git 저장소가 아닌 폴더는 목록을 얻을 수 없으므로
+  // 그때만 예전처럼 자유 입력으로 돌아간다.
+  let branchOptions: string[] = [];
+  const branchSeen = new Set<string>();
+  try {
+    const branches = await ipc.listBranches(repo.id);
+    for (const b of branches) {
+      const name = b.is_remote ? b.name.replace(/^origin\//, "") : b.name;
+      // origin/HEAD 같은 심볼릭 ref(원격 기본 브랜치 표시)는 실제 브랜치가 아니다.
+      if (!name || name === "HEAD" || name.endsWith("/HEAD")) continue;
+      if (!branchSeen.has(name)) {
+        branchSeen.add(name);
+        branchOptions.push(name);
+      }
+    }
+  } catch {
+    branchOptions = [];
+  }
+  const hasBranchList = branchOptions.length > 0;
+
+  /** 드롭다운 옵션 HTML — 저장된 값이 목록에서 사라졌어도 선택값으로 보존한다. */
+  function branchOptionsHtml(selected: string): string {
+    const opts =
+      selected && !branchOptions.includes(selected)
+        ? [selected, ...branchOptions]
+        : branchOptions;
+    return opts
+      .map((v) => `<option value="${escape(v)}" ${v === selected ? "selected" : ""}>${escape(v)}</option>`)
+      .join("");
+  }
 
   // 로그아웃 상태에서도 이 탭은 쓸 수 있어야 한다. `.gpconfig` 는 저장소에
   // 커밋되는 파일이고 팀 서버와 아무 상관이 없다 — 예전에는 이 화면 전체를
@@ -158,7 +192,6 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
     memberList.innerHTML = "";
     const countEl = memberCard.querySelector<HTMLElement>("#gpc-member-count");
     if (countEl) countEl.textContent = `${config.members.length}명`;
-    renderRecipients();
     if (config.members.length === 0) {
       const empty = document.createElement("div");
       empty.className = "gc-empty-inline";
@@ -388,16 +421,30 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   baseLabel.className = "gc-input-label w-32 shrink-0";
   baseLabel.htmlFor = "gpc-base";
   baseLabel.textContent = "기본 베이스 브랜치";
-  const baseInput = document.createElement("input");
-  baseInput.id = "gpc-base";
-  baseInput.className = "gc-input w-52 font-mono";
-  baseInput.value = config.default_base_branch || repo.default_branch || "main";
-  baseInput.addEventListener("input", () => {
-    config.default_base_branch = baseInput.value.trim();
-    markDirty();
-  });
-  baseRow.appendChild(baseLabel);
-  baseRow.appendChild(baseInput);
+  const baseValue = () => config.default_base_branch || repo.default_branch || "main";
+  if (hasBranchList) {
+    const baseSel = document.createElement("select");
+    baseSel.id = "gpc-base";
+    baseSel.className = "gc-input w-52 font-mono";
+    baseSel.innerHTML = branchOptionsHtml(baseValue());
+    baseSel.addEventListener("change", () => {
+      config.default_base_branch = baseSel.value.trim();
+      markDirty();
+    });
+    baseRow.appendChild(baseLabel);
+    baseRow.appendChild(baseSel);
+  } else {
+    const baseInput = document.createElement("input");
+    baseInput.id = "gpc-base";
+    baseInput.className = "gc-input w-52 font-mono";
+    baseInput.value = baseValue();
+    baseInput.addEventListener("input", () => {
+      config.default_base_branch = baseInput.value.trim();
+      markDirty();
+    });
+    baseRow.appendChild(baseLabel);
+    baseRow.appendChild(baseInput);
+  }
   targetCard.appendChild(baseRow);
 
   const targetDivider = document.createElement("div");
@@ -439,24 +486,46 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
       group.className = "gc-rowgroup";
       const inputRow = document.createElement("div");
       inputRow.className = "flex items-center gap-2 w-full";
-      const input = document.createElement("input");
-      input.className = "gc-input--ghost font-mono flex-1";
-      input.value = branch;
-      input.setAttribute("aria-label", `병합 대상 브랜치 ${i + 1}`);
-      input.addEventListener("change", () => {
-        const v = input.value.trim();
-        if (!v || v === branch) return;
-        // 브랜치 이름을 바꾸면 병합 관리자 매핑도 따라간다.
-        const mgr = config.merge_managers[branch];
-        if (mgr) {
-          delete config.merge_managers[branch];
-          config.merge_managers[v] = mgr;
-        }
-        config.merge_targets[i] = v;
-        renderTargets();
-        markDirty();
-      });
-      inputRow.appendChild(input);
+      if (hasBranchList) {
+        // 브랜치 이름은 드롭다운으로 고른다 — 오타로 없는 브랜치가
+        // "병합 대상"으로 저장되는 실수를 막는다. 바꾸면 관리자 매핑도 따라간다.
+        const sel = document.createElement("select");
+        sel.className = "gc-input--ghost font-mono flex-1";
+        sel.setAttribute("aria-label", `병합 대상 브랜치 ${i + 1}`);
+        sel.innerHTML = branchOptionsHtml(branch);
+        sel.addEventListener("change", () => {
+          const v = sel.value.trim();
+          if (!v || v === branch) return;
+          const mgr = config.merge_managers[branch];
+          if (mgr) {
+            delete config.merge_managers[branch];
+            config.merge_managers[v] = mgr;
+          }
+          config.merge_targets[i] = v;
+          renderTargets();
+          markDirty();
+        });
+        inputRow.appendChild(sel);
+      } else {
+        const input = document.createElement("input");
+        input.className = "gc-input--ghost font-mono flex-1";
+        input.value = branch;
+        input.setAttribute("aria-label", `병합 대상 브랜치 ${i + 1}`);
+        input.addEventListener("change", () => {
+          const v = input.value.trim();
+          if (!v || v === branch) return;
+          // 브랜치 이름을 바꾸면 병합 관리자 매핑도 따라간다.
+          const mgr = config.merge_managers[branch];
+          if (mgr) {
+            delete config.merge_managers[branch];
+            config.merge_managers[v] = mgr;
+          }
+          config.merge_targets[i] = v;
+          renderTargets();
+          markDirty();
+        });
+        inputRow.appendChild(input);
+      }
       const vdiv = document.createElement("div");
       vdiv.className = "gc-vdivider";
       inputRow.appendChild(vdiv);
@@ -544,12 +613,28 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   targetLabel.className = "gc-input-label";
   targetLabel.htmlFor = "gpc-target";
   targetLabel.textContent = "새 병합 대상 추가";
-  const targetInput = document.createElement("input");
-  targetInput.id = "gpc-target";
-  targetInput.className = "gc-input font-mono";
-  targetInput.placeholder = "예: release/1.0";
-  targetField.appendChild(targetLabel);
-  targetField.appendChild(targetInput);
+  // 드롭다운에서 이미 대상인 브랜치는 제외한다 — "추가했다 또 추가"를 막는다.
+  let targetInput: HTMLInputElement | null = null;
+  const targetSel = document.createElement("select");
+  targetSel.id = "gpc-target";
+  targetSel.className = "gc-input font-mono";
+  if (hasBranchList) {
+    targetSel.innerHTML =
+      `<option value="">브랜치 선택…</option>` +
+      branchOptions
+        .filter((b) => !config.merge_targets.includes(b))
+        .map((b) => `<option value="${escape(b)}">${escape(b)}</option>`)
+        .join("");
+    targetField.appendChild(targetLabel);
+    targetField.appendChild(targetSel);
+  } else {
+    targetInput = document.createElement("input");
+    targetInput.id = "gpc-target";
+    targetInput.className = "gc-input font-mono";
+    targetInput.placeholder = "예: release/1.0";
+    targetField.appendChild(targetLabel);
+    targetField.appendChild(targetInput);
+  }
   const addTargetBtn = document.createElement("button");
   addTargetBtn.id = "gpc-add-target";
   addTargetBtn.className = "gc-button-secondary shrink-0 self-end";
@@ -560,9 +645,9 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   addTargetLabel.textContent = "대상 추가";
   addTargetBtn.appendChild(addTargetLabel);
   addTargetBtn.addEventListener("click", () => {
-    const v = targetInput.value.trim();
+    const v = (targetInput ? targetInput.value : targetSel.value).trim();
     if (!v) {
-      toast("브랜치 이름을 입력하세요.", "error");
+      toast("브랜치를 선택하세요.", "error");
       return;
     }
     if (config.merge_targets.includes(v)) {
@@ -570,7 +655,8 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
       return;
     }
     config.merge_targets.push(v);
-    targetInput.value = "";
+    if (targetInput) targetInput.value = "";
+    else targetSel.value = "";
     renderTargets();
     markDirty();
     toast(`${v} 브랜치를 병합 대상으로 추가했습니다. 저장(.gpconfig 커밋)하면 병합 센터에 반영됩니다.`, "success");
@@ -592,89 +678,72 @@ export async function renderProjectConfigPanel(repo: Repo): Promise<HTMLElement>
   nHead.appendChild(nTitle);
   const nDesc = document.createElement("p");
   nDesc.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-  nDesc.textContent = "브랜치가 병합 준비되거나 병합이 완료되면 어느 사람에게 알림을 보낼지 정합니다.";
+  nDesc.textContent =
+    "팀 알림은 두 갈래로 갑니다. 팀원이 브랜치에 푸시하면 병합 관리자에게 '병합 대기' 알림이 가고, 병합 관리자가 병합 후 푸시하면 구성원 전체에게 '동기화' 안내가 갑니다.";
   nHead.appendChild(nDesc);
   notifyCard.appendChild(nHead);
 
-  const recLabel = document.createElement("div");
-  recLabel.className = "gc-input-label";
-  recLabel.textContent = "알림을 받을 사람";
-  notifyCard.appendChild(recLabel);
-
-  const recipients = document.createElement("div");
-  recipients.className = "gc-list";
-  notifyCard.appendChild(recipients);
-
-  function renderRecipients() {
-    recipients.innerHTML = "";
-    if (config.members.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "gc-empty-inline";
-      empty.appendChild(icon("inbox", 16));
-      const t = document.createElement("span");
-      t.textContent = "구성원을 먼저 추가하세요.";
-      empty.appendChild(t);
-      recipients.appendChild(empty);
-      return;
-    }
-    for (const member of config.members) {
-      const row = document.createElement("label");
-      row.className = "gc-list__row cursor-pointer";
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.className = "accent-[color:var(--color-primary)]";
-      cb.checked = config.notify_recipients.includes(member.email);
-      cb.addEventListener("change", () => {
-        if (cb.checked) {
-          if (!config.notify_recipients.includes(member.email)) config.notify_recipients.push(member.email);
-        } else {
-          config.notify_recipients = config.notify_recipients.filter((e) => e !== member.email);
-        }
-        markDirty();
-      });
-      row.appendChild(cb);
-      const t = document.createElement("span");
-      t.className = "text-display-sm";
-      t.textContent = member.name;
-      row.appendChild(t);
-      recipients.appendChild(row);
-    }
-  }
-  renderRecipients();
-
-  const nDivider = document.createElement("div");
-  nDivider.className = "gc-hdivider";
-  notifyCard.appendChild(nDivider);
-
-  const flagLabel = document.createElement("div");
-  flagLabel.className = "gc-input-label";
-  flagLabel.textContent = "알림 시점";
-  notifyCard.appendChild(flagLabel);
-
-  const notifyFlags = document.createElement("div");
-  notifyFlags.className = "gc-list";
-  for (const [key, label] of [
-    ["on_branch_ready", "브랜치의 머지 준비가 되었을 때 병합 관리자에게 알림"],
-    ["on_merge_complete", "병합이 완료되었을 때 병합 관리자에게 알림"],
-  ] as const) {
+  // 알림 라우팅 — 수신자는 역할로 정해진다. 구성원 검색으로 추가된 사람이
+  // 대상이고, 로그인한 기기의 수신함/배지에만 표시된다.
+  const rules = document.createElement("div");
+  rules.className = "gc-list";
+  const rulesData: Array<{
+    key: "on_branch_ready" | "on_merge_complete";
+    badge: string;
+    title: string;
+    sub: string;
+  }> = [
+    {
+      key: "on_branch_ready",
+      badge: "병합 관리자에게",
+      title: "팀원이 작업 브랜치에 푸시하면 알림",
+      sub: "관리자는 수신함에서 바로 병합 센터로 갈 수 있습니다. 관리자가 지정되지 않은 브랜치는 구성원 모두에게 알림이 갑니다.",
+    },
+    {
+      key: "on_merge_complete",
+      badge: "구성원 전체에게",
+      title: "병합 관리자가 병합을 푸시하면 동기화 안내",
+      sub: "'내 브랜치에 병합' 버튼으로 최신 변경을 자기 브랜치에 받을 수 있습니다.",
+    },
+  ];
+  for (const rule of rulesData) {
     const row = document.createElement("label");
-    row.className = "gc-list__row cursor-pointer";
+    row.className = "gc-list__row cursor-pointer items-start";
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.className = "accent-[color:var(--color-primary)]";
-    cb.checked = config.notify[key];
+    cb.className = "accent-[color:var(--color-primary)] mt-0.5";
+    cb.checked = config.notify[rule.key];
     cb.addEventListener("change", () => {
-      config.notify[key] = cb.checked;
+      config.notify[rule.key] = cb.checked;
       markDirty();
     });
     row.appendChild(cb);
+    const body = document.createElement("span");
+    body.className = "flex flex-col gap-0.5 min-w-0";
+    const title = document.createElement("span");
+    title.className = "text-display-sm font-medium inline-flex items-center gap-2 flex-wrap";
+    const badge = document.createElement("span");
+    badge.className = "gc-badge gc-badge--info";
+    badge.textContent = rule.badge;
+    title.appendChild(badge);
     const t = document.createElement("span");
-    t.className = "text-display-sm";
-    t.textContent = label;
-    row.appendChild(t);
-    notifyFlags.appendChild(row);
+    t.textContent = rule.title;
+    title.appendChild(t);
+    body.appendChild(title);
+    const sub = document.createElement("span");
+    sub.className = "text-display-xs text-[color:var(--color-ink-muted)]";
+    sub.textContent = rule.sub;
+    body.appendChild(sub);
+    row.appendChild(body);
+    rules.appendChild(row);
   }
-  notifyCard.appendChild(notifyFlags);
+  notifyCard.appendChild(rules);
+
+  const nNote = document.createElement("div");
+  nNote.className = "text-display-xs text-[color:var(--color-ink-muted)]";
+  nNote.textContent =
+    "구성원에 추가된 사람이 알림 대상입니다. 알림은 로그인한 기기에서만 표시됩니다.";
+  notifyCard.appendChild(nNote);
 
   // ── 저장 ─────────────────────────────────────────────────────────────
   el.appendChild(saveBar);
