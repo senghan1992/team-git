@@ -846,6 +846,33 @@ interface EventDetail {
   payload?: string;
 }
 
+/** 같은 저장소·같은 브랜치의 이전 미읽음 branch_push 를 읽음으로 대체한다.
+ *  Rust store::insert_team_event 의 collapse 와 같은 규칙 (url · 브랜치 열쇠). */
+function collapseBranchPush(rows: InboxRow[], fresh: InboxRow): void {
+  if (!String(fresh.event_kind ?? "").endsWith("branch_push") || fresh.read) return;
+  const key = branchKeyOf(fresh);
+  if (!key) return;
+  for (const r of rows) {
+    if (r === fresh || r.read) continue;
+    if (String(r.event_kind ?? "").endsWith("branch_push") && branchKeyOf(r) === key) {
+      r.read = true;
+    }
+  }
+}
+
+/** branch_push payload 에서 (정규화 URL · 브랜치) 열쇠 — 없으면 null. */
+function branchKeyOf(r: InboxRow): string | null {
+  try {
+    const p = JSON.parse(r.payload) as { data?: { url?: string; branch?: string } };
+    const url = normalizeRemoteUrl(String(p.data?.url ?? ""));
+    const branch = String(p.data?.branch ?? "").trim();
+    if (!url || !branch) return null;
+    return `${url}\u0000${branch}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Rust `peer_poll_now` — 서버에 쌓인 이벤트를 전부 끌어와 수신함에 저장한다. */
 async function pollTeamEventsOnce(): Promise<number> {
   const peer = peerSettings(loadSettings());
@@ -878,6 +905,8 @@ async function pollTeamEventsOnce(): Promise<number> {
       received_at: new Date().toISOString(),
       read: false,
     });
+    // 같은 브랜치 재push 는 이전 알림을 읽음으로 대체한다 (Rust 와 동일).
+    collapseBranchPush(rows, rows[rows.length - 1]);
     added += 1;
     // 서버는 응답 시점에 이 이벤트를 '배달됨'으로 소비한다 — 한 건마다 바로 저장한다.
     saveInbox(rows);
@@ -1353,6 +1382,30 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
           }
         }
         if (n > 0) saveInbox(rows);
+        return n;
+      }
+      case "peer_mark_branch_push_read": {
+        const rows = loadInbox();
+        const repoId = String(args.repoId ?? "");
+        const branch = String(args.branch ?? "").trim();
+        if (!branch) return 0;
+        const repos = (loadSettings().repositories ?? []) as RepoRecord[];
+        const repo = repos.find((r) => r.id === repoId);
+        if (!repo) return 0;
+        const urlKey = normalizeRemoteUrl(String(repo.remote_url ?? ""));
+        const want = `${urlKey}\u0000${branch}`;
+        let n = 0;
+        let changed = false;
+        for (const r of rows) {
+          if (r.read) continue;
+          if (!String(r.event_kind ?? "").endsWith("branch_push")) continue;
+          if (branchKeyOf(r) === want) {
+            r.read = true;
+            changed = true;
+            n += 1;
+          }
+        }
+        if (changed) saveInbox(rows);
         return n;
       }
 

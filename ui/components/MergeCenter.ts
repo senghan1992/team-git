@@ -2,6 +2,7 @@
 // and resolving conflicts one block at a time.
 import {
   ipc,
+  ipc_peer,
   type AutoResolveReport,
   type BackupEntry,
   type ConflictDetail,
@@ -101,6 +102,9 @@ export async function renderMergeCenter(
   // reviewer moves between files.
   const conflictCache = new Map<string, ConflictFileState>();
   let selectedPath: string | null = null;
+  // 방금 병합한 브랜치 — 병합 완료 시점에 그 브랜치의 남은 "병합 요청"
+  // 알림을 읽음 처리할 때 쓴다 (동기화로 시작한 병합이면 null).
+  let mergeSourceBranch: string | null = null;
   let aiEnabled = false;
   // 설정에서 미리 켜 둔 "충돌 나면 곧바로 자동 해결" 스위치 (시나리오 5).
   let aiAutoResolve = false;
@@ -318,7 +322,9 @@ export async function renderMergeCenter(
         mergeState = null;
         conflictCache.clear();
         knownConflicts = new Set();
+        mergeSourceBranch = null;
         await refresh();
+        notifyRepoChanged();
       } catch (e) {
         toast(`중단 실패: ${(e as Error).message ?? e}`, "error");
       } finally {
@@ -608,13 +614,22 @@ export async function renderMergeCenter(
         if (!ok) return;
         setBusy(btn, true, "병합 중…");
         try {
+          // 이 병합이 끝나면 그 브랜치의 남은 "병합 요청" 알림을 정리한다.
+          mergeSourceBranch = b.short_name;
           // 검토한 tip(sha)을 함께 보낸다 — 목록을 본 뒤 팀원이 push(또는
           // force-push)했다면 백엔드가 병합을 멈추고 새로고침을 요구한다.
           const out: MergeOutcome = await ipc.startMerge(repo.id, b.name, base, b.sha);
           if (out.ok) {
             toast(`${b.short_name} 병합 완료`, "success");
+            const merged = mergeSourceBranch;
+            mergeSourceBranch = null;
             await pushMergedBranch();
             await refresh();
+            // 병합이 끝났으니 이 브랜치의 "병합 요청" 알림은 더 이상 할 일이
+            // 아니다 — 수신함·배지에서 치우고, 홈 카드도 즉시 새 상태를 말하게
+            // 한다 (30초 주기 재조회를 기다리면 "병합하기"가 남아 보인다).
+            if (merged) await markMergedRead(merged);
+            notifyRepoChanged();
           } else if (out.conflicted) {
             mergeState = { in_progress: true, conflicted_files: out.conflicted_files };
             knownConflicts = new Set(out.conflicted_files);
@@ -691,6 +706,7 @@ export async function renderMergeCenter(
           pushBanner.style.display = "none";
           // "푸시 대기" 카드와 대기 목록이 방금 push로 달라졌다.
           await refresh();
+          notifyRepoChanged();
         } else if (outcome !== "cancelled") {
           toast(`push 실패: ${outcome.message || "알 수 없는 오류"}`, "error");
         }
@@ -703,12 +719,32 @@ export async function renderMergeCenter(
     pushBanner.appendChild(pushBtn);
   }
 
+  /** 병합·push 결과가 홈 카드의 "다음 할 일"에 즉시 반영되게 알린다. */
+  function notifyRepoChanged() {
+    window.dispatchEvent(new CustomEvent("gc-repo-changed", { detail: repo.id }));
+  }
+
+  /** 병합이 끝난 브랜치의 남은 "병합 요청" 알림을 읽음 처리한다 — 탭에서
+   *  바로 병합한 경우(토스트·수신함 버튼을 안 거친 경우)에도 이미 병합한
+   *  항목이 다시 "병합 요청"으로 남지 않게 한다. 실패해도 병합 흐름은 막지
+   *  않는다. */
+  async function markMergedRead(branch: string) {
+    try {
+      await ipc_peer.markBranchPushRead(repo.id, branch);
+      // 수신함 배지가 즉시 따라오도록 알린다.
+      window.dispatchEvent(new CustomEvent("gc-team-read-changed"));
+    } catch {
+      // 읽음 정리는 부가 기능 — 병합 자체는 이미 끝났다.
+    }
+  }
+
   /** 병합 커밋 후 자동 푸시 — 실패하면 배너로 재시도를 남긴다. */
   async function pushMergedBranch(): Promise<void> {
     try {
       const outcome = await openPushCredentialFlow(repo, base);
       if (outcome === "ok") {
         toast(`${base} push 완료 — 팀원에게 알림이 전송됩니다.`, "success");
+        notifyRepoChanged();
         return;
       }
       if (outcome === "cancelled") {
@@ -840,8 +876,12 @@ export async function renderMergeCenter(
             conflictCache.clear();
             selectedPath = null;
             mergeState = null;
+            const merged = mergeSourceBranch;
+            mergeSourceBranch = null;
             await pushMergedBranch();
             await refresh();
+            if (merged) await markMergedRead(merged);
+            notifyRepoChanged();
           }
         } catch (e) {
           toast(`완료 실패: ${(e as Error).message ?? e}`, "error");
@@ -1196,6 +1236,12 @@ export async function renderMergeCenter(
       if (!aiTouched || aiAutoPush) {
         await pushMergedBranch();
       }
+      // 병합이 끝났으니 이 브랜치의 "병합 요청" 알림을 정리하고 홈 카드를
+      // 깨운다.
+      const merged = mergeSourceBranch;
+      mergeSourceBranch = null;
+      if (merged) await markMergedRead(merged);
+      notifyRepoChanged();
     } else if (report.remaining.length > 0) {
       // Partial success — the leftover files are still waiting.
       mergeState = { in_progress: true, conflicted_files: report.remaining };
@@ -1584,6 +1630,9 @@ export async function renderMergeCenter(
         knownConflicts = new Set();
         conflictCache.clear();
         selectedPath = null;
+        // 진행 중 병합이 끝나면(완료·중단·자동 해결) 소스 브랜치 기억을
+        // 비운다 — 다음 병합부터 새로 기록한다.
+        mergeSourceBranch = null;
         branches = await ipc.listPendingBranches(repo.id, base);
         // 병합 커밋은 만들어졌는데 push가 안 된 상태는 화면(그리고 앱)을
         // 다시 열어도 살아 있어야 한다 — 로컬 base와 origin/base를 비교해
@@ -1638,6 +1687,15 @@ export async function renderMergeCenter(
     renderRoleBadge();
     if (!mergeState?.in_progress) void renderBranchList();
   });
+
+  // 처음 열 때 한 번 fetch — 저장소 등록 직후나 앱 밖 터미널 push 는 20초
+  // 자동 감지의 첫 틱을 기다리지 않아도 바로 보인다. fetch 가 실패해도
+  // (오프라인) 마지막으로 아는 ref 로 목록을 그린다.
+  try {
+    await ipc.fetchRepo(repo.id);
+  } catch {
+    // 오프라인 등 — 아는 ref 만으로 목록을 그린다.
+  }
 
   await refresh();
   return root;

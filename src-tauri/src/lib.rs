@@ -222,6 +222,7 @@ pub fn run() {
             commands::peer::peer_list_team_events,
             commands::peer::peer_mark_team_read,
             commands::peer::peer_mark_all_team_read,
+            commands::peer::peer_mark_branch_push_read,
             commands::peer::peer_unread_count,
             commands::ai::ai_suggest_resolution,
             commands::ai::ai_probe,

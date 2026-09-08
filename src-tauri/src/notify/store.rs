@@ -221,7 +221,66 @@ impl Store {
                 row.read as i32,
             ],
         )?;
+        // 같은 브랜치의 재push 는 항목을 늘리지 않는다 — 팀원이 브랜치에 여러
+        // 번 push 하면 최신 push 에 이전 push 가 전부 포함되므로 알림도
+        // 하나(최신)로 합쳐야 수신함·배지가 "같은 브랜치가 여러 개"로 보이지
+        // 않는다. 이전 push 알림은 읽음으로 대체한다 (최신 건이 그 브랜치의
+        // 할 일을 대표한다).
+        if row.event_kind.ends_with("branch_push") && !row.read {
+            if let Some((url_key, branch)) = branch_key_of(&row.payload) {
+                self.collapse_branch_push(&row.project_id, &url_key, &branch, &row.id)?;
+            }
+        }
         Ok(())
+    }
+
+    /// 같은 저장소·같은 브랜치의 이전 미읽음 branch_push 를 읽음으로 대체한다.
+    fn collapse_branch_push(
+        &self,
+        project_id: &str,
+        url_key: &str,
+        branch: &str,
+        except_id: &str,
+    ) -> AppResult<()> {
+        for r in self.list_team_events(10_000, true)? {
+            if r.id == except_id || r.project_id != project_id {
+                continue;
+            }
+            if !r.event_kind.ends_with("branch_push") {
+                continue;
+            }
+            let Some((u, b)) = branch_key_of(&r.payload) else { continue };
+            if u == url_key && b == branch {
+                self.conn
+                    .execute("UPDATE team_events SET read = 1 WHERE id = ?1", params![r.id])?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 병합이 끝난 브랜치의 남은 "병합 요청" 알림을 읽음 처리한다.
+    ///
+    /// 관리자가 병합 센터에서 바로 병합한 경우(토스트·수신함 버튼을 거치지
+    /// 않음) 수신함에 "병합 요청" 카드가 남는다 — 이미 병합한 항목에 병합이
+    /// 또 남아 보이는 꼴이다. 병합이 끝난 시점에 이 저장소·이 브랜치의
+    /// 미읽음 branch_push 를 정리해 준다. 지운 건수를 돌려준다.
+    pub fn mark_branch_push_read(&self, url_key: &str, branch: &str) -> AppResult<u32> {
+        if url_key.is_empty() || branch.is_empty() {
+            return Ok(0);
+        }
+        let mut n = 0u32;
+        for r in self.list_team_events(10_000, true)? {
+            if !r.event_kind.ends_with("branch_push") {
+                continue;
+            }
+            let Some((u, b)) = branch_key_of(&r.payload) else { continue };
+            if u == url_key && b == branch {
+                self.conn
+                    .execute("UPDATE team_events SET read = 1 WHERE id = ?1", params![r.id])?;
+                n += 1;
+            }
+        }
+        Ok(n)
     }
 
     pub fn list_team_events(&self, limit: u32, unread_only: bool) -> AppResult<Vec<TeamEventRow>> {
@@ -298,4 +357,25 @@ impl Store {
 #[allow(dead_code)]
 pub fn new_id() -> String {
     Uuid::new_v4().to_string()
+}
+
+/// payload 에서 (정규화된 원격 URL, 브랜치) 짝을 뽑는다 — branch_push 를
+/// 같은 브랜치끼리 합칠 때의 판별 열쇠. URL 이나 브랜치가 없으면(구버전
+/// 서버·테스트용 payload) None — 합치지 않는다.
+fn branch_key_of(payload: &str) -> Option<(String, String)> {
+    if payload.is_empty() {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(payload).ok()?;
+    let data = v.get("data")?;
+    let url = data.get("url")?.as_str()?;
+    let url_key = crate::git::normalize_remote_url(url);
+    if url_key.is_empty() {
+        return None;
+    }
+    let branch = data.get("branch")?.as_str()?.trim().to_string();
+    if branch.is_empty() {
+        return None;
+    }
+    Some((url_key, branch))
 }

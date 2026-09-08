@@ -649,6 +649,9 @@ export const ipc_peer = {
     invoke<TeamEventRow[]>("peer_list_team_events", { limit, unreadOnly }),
   markTeamRead: (id: string) => invoke<void>("peer_mark_team_read", { id }),
   markAllTeamRead: () => invoke<number>("peer_mark_all_team_read"),
+  /** 병합 완료 후 그 브랜치의 남은 "병합 요청" 알림을 읽음 처리한다. */
+  markBranchPushRead: (repoId: Uuid, branch: string) =>
+    invoke<number>("peer_mark_branch_push_read", { repoId, branch }),
   localUrl: () => invoke<string>("peer_local_url"),
   inviteByEmail: (
     projectId: string,

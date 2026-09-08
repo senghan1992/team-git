@@ -250,5 +250,13 @@ export function renderRepoCard(
     }
   }, 30_000);
 
+  // 병합 탭에서 병합·push가 끝나면 30초 주기를 기다리지 않고 카드를 즉시
+  // 갱신한다 — 이미 병합한 항목에 "병합하기"가 남아 보이는 순간을 없앤다.
+  window.addEventListener("gc-repo-changed", (ev) => {
+    if ((ev as CustomEvent<unknown>).detail !== repo.id) return;
+    if (loading || document.querySelector("dialog[open]")) return;
+    void load();
+  });
+
   return card;
 }

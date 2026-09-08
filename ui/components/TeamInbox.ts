@@ -12,12 +12,46 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
 
   let rows: TeamEventRow[] = [];
 
+  /**
+   * 같은 저장소·같은 브랜치에서 온 branch_push 는 한 카드로 합친다. 팀원이
+   * 브랜치에 여러 번 push 하면 최신 push 에 이전 push 가 전부 포함되므로
+   * 알림도 하나(최신)로 보여야 한다 — 여러 개로 늘어서면 "같은 브랜치가
+   * 여러 개"로 읽힌다. 이전 push 알림은 저장 시점에 이미 읽음으로
+   * 대체된다(store insert collapse). branch_push 가 아니거나 브랜치 정보가
+   * 없으면 이벤트 하나가 카드 하나다 (rows 는 최신순이므로 group[0] 이 최신).
+   */
+  function groupRows(rows: TeamEventRow[]): TeamEventRow[][] {
+    const groups = new Map<string, TeamEventRow[]>();
+    const out: TeamEventRow[][] = [];
+    for (const r of rows) {
+      const key = branchKeyOf(r) ?? `event:${r.id}`;
+      let g = groups.get(key);
+      if (!g) {
+        g = [];
+        groups.set(key, g);
+        out.push(g);
+      }
+      g.push(r);
+    }
+    return out;
+  }
+
+  function branchKeyOf(r: TeamEventRow): string | null {
+    if (!r.event_kind.endsWith("branch_push")) return null;
+    const branch = branchOf(r);
+    if (!branch) return null;
+    return `${r.project_id}\u0000${r.repo_name}\u0000${branch}`;
+  }
+
   /** 카드의 액션이 성공했을 때만 읽음 처리한다 — 실패한 할 일은 배지에 남아야 한다. */
-  async function markRead(r: TeamEventRow) {
-    if (r.read) return;
+  async function markReadGroup(group: TeamEventRow[]) {
+    const unread = group.filter((r) => !r.read);
+    if (unread.length === 0) return;
     try {
-      await ipc_peer.markTeamRead(r.id);
-      r.read = true;
+      for (const r of unread) {
+        await ipc_peer.markTeamRead(r.id);
+        r.read = true;
+      }
       renderMeta();
       // 사이드바 배지가 즉시 따라오도록 알린다.
       window.dispatchEvent(new CustomEvent("gc-team-read-changed"));
@@ -59,8 +93,8 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
       list.appendChild(empty);
       return;
     }
-    for (const r of rows) {
-      list.appendChild(card(r));
+    for (const group of groupRows(rows)) {
+      list.appendChild(card(group));
     }
   }
 
@@ -101,13 +135,16 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
     return repoForEvent(repos, r);
   }
 
-  function card(r: TeamEventRow): HTMLElement {
+  function card(group: TeamEventRow[]): HTMLElement {
+    // 같은 브랜치 push 가 모였으면 최신(맨 앞) 이 카드를 대표한다.
+    const r = group[0];
     const el = document.createElement("div");
     el.className = "gc-card cursor-pointer";
     el.innerHTML = `
       <div class="flex items-center gap-3">
         <span class="gc-badge gc-badge--info" data-new-chip>새 알림</span>
         <span class="gc-badge gc-badge--neutral">${eventKindLabel(r.event_kind)}</span>
+        ${group.length > 1 ? `<span class="gc-badge gc-badge--muted" data-dup-chip title="같은 브랜치의 이전 push 는 최신 push 에 포함되어 읽음 처리됩니다.">push ${group.length}회 — 최신 push 가 병합 대상</span>` : ""}
         <span class="text-display-sm text-[color:var(--color-ink-muted)]">${escape(r.sender_device_name)}</span>
         <span class="text-display-sm text-[color:var(--color-ink-muted)] ml-auto">${formatRelative(r.received_at)}</span>
       </div>
@@ -139,7 +176,7 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
       markBtn.appendChild(lbl);
       markBtn.addEventListener("click", async (ev) => {
         ev.stopPropagation();
-        await markRead(r);
+        await markReadGroup(group);
         applyReadStyle();
       });
     }
@@ -148,14 +185,14 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
       if ((e.target as HTMLElement).closest("button")) return;
       pre.classList.toggle("hidden");
       // 내용을 펼쳐 봤다면 읽은 것이다.
-      void markRead(r).then(applyReadStyle);
+      void markReadGroup(group).then(applyReadStyle);
     });
     const viewBtn = el.querySelector<HTMLButtonElement>("[data-view-repo]");
     viewBtn?.addEventListener("click", async (ev) => {
       ev.stopPropagation();
       const repo = await resolveRepo(r);
       if (repo) {
-        await markRead(r);
+        await markReadGroup(group);
         onNav({ kind: "repo", repoId: repo.id });
       } else {
         toast(
@@ -167,7 +204,7 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
 
     // 종류별 다음 단계 버튼 — 알림이 곧바로 "다음 해야 할 일"로 이어진다.
     const kindBtn = el.querySelector<HTMLButtonElement>("[data-kind-action]");
-    const action = kindAction(r);
+    const action = kindAction(group);
     if (kindBtn && action) {
       kindBtn.prepend(icon(action.icon, 14));
       const label = document.createElement("span");
@@ -192,8 +229,9 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
 
   // 알림 종류에 맞는 다음 단계 액션. release 등은 리포 보기만 제공한다.
   // event_kind는 과거 버전에서 "team_" 접두사가 붙은 값도 저장됐으므로
-  // 접미사 매칭으로 판별한다.
-  function kindAction(r: TeamEventRow): { label: string; icon: IconName; run: () => Promise<void> } | null {
+  // 접미사 매칭으로 판별한다. 같은 브랜치가 합쳐진 group 이면 최신이 대표.
+  function kindAction(group: TeamEventRow[]): { label: string; icon: IconName; run: () => Promise<void> } | null {
+    const r = group[0];
     if (r.event_kind.endsWith("branch_push")) {
       return {
         label: "병합 센터로",
@@ -207,7 +245,7 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
             );
             return;
           }
-          await markRead(r);
+          await markReadGroup(group);
           onNav({ kind: "repo", repoId: repo.id, tab: "merge" });
         },
       };
@@ -231,11 +269,11 @@ export async function renderInboxList(onNav: (p: Page) => void): Promise<HTMLEle
             const base = branchOf(r) ?? (repo.default_branch || "main");
             const res = await ipc.syncBranch(repo.id, base);
             if (res.conflicted) {
-              await markRead(r);
+              await markReadGroup(group);
               toast(`충돌 ${res.files.length}개 발생 — 병합 센터에서 해결하세요.`, "info");
               onNav({ kind: "repo", repoId: repo.id, tab: "merge" });
             } else {
-              await markRead(r);
+              await markReadGroup(group);
               toast("동기화 완료 — 최신 변경을 병합했습니다.", "success");
               onNav({ kind: "repo", repoId: repo.id });
             }

@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Git Companion — 설치 파일 받기</title>
+<style>
+  :root {
+    --bg: #f4f6fb;
+    --card: #ffffff;
+    --ink: #1c2e3f;
+    --muted: #5b6b7d;
+    --primary: #2563eb;
+    --primary-strong: #1d4ed8;
+    --hairline: #e3e8f0;
+    --success: #16a34a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: "Pretendard", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--ink);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: 16px;
+    max-width: 480px;
+    width: 100%;
+    padding: 36px 32px;
+    box-shadow: 0 10px 30px rgba(28, 46, 63, 0.08);
+  }
+  .logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 52px;
+    height: 52px;
+    border-radius: 14px;
+    background: var(--primary);
+    color: #fff;
+    font-weight: 800;
+    font-size: 22px;
+    margin-bottom: 18px;
+  }
+  h1 { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; }
+  .desc { color: var(--muted); font-size: 14px; line-height: 1.6; margin-top: 8px; }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 16px 0 20px;
+  }
+  .chip {
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--bg);
+    border: 1px solid var(--hairline);
+    border-radius: 999px;
+    padding: 3px 10px;
+  }
+  .chip b { color: var(--ink); font-weight: 700; }
+  .download {
+    display: block;
+    width: 100%;
+    text-align: center;
+    background: var(--primary);
+    color: #fff;
+    font-size: 16px;
+    font-weight: 700;
+    padding: 14px 0;
+    border-radius: 12px;
+    text-decoration: none;
+    transition: background 0.15s ease;
+  }
+  .download:hover { background: var(--primary-strong); }
+  .alt {
+    display: block;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+    margin-top: 12px;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+  .steps {
+    margin-top: 22px;
+    border-top: 1px solid var(--hairline);
+    padding-top: 16px;
+  }
+  .steps h2 { font-size: 13px; color: var(--muted); font-weight: 700; margin-bottom: 10px; }
+  .steps ol { padding-left: 18px; }
+  .steps li {
+    font-size: 13px;
+    color: var(--ink);
+    line-height: 1.7;
+  }
+  .steps code {
+    background: var(--bg);
+    border: 1px solid var(--hairline);
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: 12px;
+  }
+  .note {
+    margin-top: 14px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+  }
+  .note.ok { color: var(--success); font-weight: 600; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">GC</div>
+    <h1>Git Companion</h1>
+    <p class="desc">
+      팀이 하나의 프로젝트를 각자 브랜치로 나눠 작업할 때, 커밋·푸시·병합을
+      터미널 없이 처리하는 데스크톱 앱입니다.
+    </p>
+
+    <div class="meta">
+      <span class="chip">버전 <b>v__VERSION__</b></span>
+      <span class="chip">빌드일 <b>__DATE__</b></span>
+      <span class="chip">커밋 <b>__SHA__</b></span>
+    </div>
+
+    <a class="download" href="./Git-Companion-setup.exe" download>Windows 설치 파일 다운로드 (.exe)</a>
+    <a class="alt" href="https://github.com/__REPO__/releases" target="_blank" rel="noopener">
+      GitHub Releases 에서 받기
+    </a>
+
+    <div class="steps">
+      <h2>설치 방법</h2>
+      <ol>
+        <li>위 버튼으로 <code>.exe</code> 파일을 내려받습니다.</li>
+        <li>파일을 더블클릭해 설치합니다 (기존 버전 위에 바로 설치 가능).</li>
+        <li>시작 메뉴의 <b>Git Companion</b>을 실행합니다.</li>
+      </ol>
+    </div>
+
+    <p class="note">
+      이 페이지는 저장소에 push 할 때마다 자동으로 새로 빌드·갱신됩니다.
+      설치 파일이 오래된 것 같다면 잠시 후 다시 와서 받으세요.
+    </p>
+    <p class="note ok">
+      ✓ 기존 버전 위에 덮어 설치해도 설정과 저장소 목록은 그대로 유지됩니다.
+    </p>
+  </div>
+</body>
+</html>

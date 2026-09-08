@@ -210,6 +210,7 @@ const mockData: Record<string, any> = {
   peer_unread_count: 0,
   peer_mark_team_read: undefined,
   peer_mark_all_team_read: 0,
+  peer_mark_branch_push_read: 0,
   peer_repos_for_project: [],
   peer_list_team_events: [
     {

@@ -1,0 +1,161 @@
+# Push 만 하면 Windows 설치 파일을 자동으로 빌드해 공유한다.
+#
+# - main 브랜치에 push → Windows 에서 설치 파일(.exe) 빌드
+#   → "continuous" 릴리스(항상 최신)에 업로드 + GitHub Pages 다운로드 페이지 갱신
+# - v0.1.6 같은 버전 태그 push → 같은 빌드 + 버전별 릴리스(v0.1.6)에도 업로드
+#
+# 팀원은 아래 중 편한 곳에서 받습니다:
+#   - 다운로드 페이지: https://<사용자>.github.io/<저장소>/   (아래 "Pages 활성화" 참고)
+#   - Releases:        https://github.com/<사용자>/<저장소>/releases
+#     (최신 빌드: .../releases/download/continuous/Git-Companion-setup.exe)
+#
+# ── 한 번만 할 일: GitHub Pages 켜기 ─────────────────────────────────────
+# 저장소 Settings → Pages → Source 를 "GitHub Actions" 로 바꾼다.
+# (public 저장소는 무료, private 저장소는 유료 플랜 필요 — private 이면
+#  Releases 페이지로 받게 해도 된다. 아래 pages job 만 지우면 됨.)
+name: Build installer
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: write # 릴리스 생성·업로드
+
+jobs:
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build installer
+        # beforeBuildCommand(dev/tauri-pre.mjs) 가 vite 빌드까지 맡는다.
+        # CI 는 NSIS(.exe)만 만든다 — MSI 는 WiX 다운로드 실패 리스크가 있어 로컬 빌드 전용.
+        run: pnpm tauri build --bundles nsis
+
+      - name: Stage installer files
+        shell: bash
+        run: |
+          mkdir -p staged
+          V="${{ steps.version.outputs.version }}"
+          # 버전명 파일(릴리스용) + 고정 이름 파일(다운로드 페이지용)
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe "staged/Git-Companion-${V}-setup.exe"
+          cp src-tauri/target/release/bundle/nsis/*-setup.exe "staged/Git-Companion-setup.exe"
+          if ls src-tauri/target/release/bundle/msi/*.msi >/dev/null 2>&1; then
+            cp src-tauri/target/release/bundle/msi/*.msi "staged/Git-Companion-${V}.msi"
+          fi
+          ls -lh staged
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundle
+          path: staged
+
+      - name: Update rolling release (항상 최신 빌드)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.version.outputs.version }}"
+          gh release delete continuous --yes --cleanup-tag 2>/dev/null || true
+          gh release create continuous "staged/Git-Companion-setup.exe" \
+            --target "$GITHUB_SHA" \
+            --title "최신 빌드 — v${V}" \
+            --notes "push 할 때마다 자동으로 빌드된 최신 설치 파일입니다. 버전: v${V} 커밋: ${GITHUB_SHA::8}"
+
+      - name: Create versioned release (버전 태그일 때만)
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.version.outputs.version }}"
+          gh release create "$GITHUB_REF_NAME" \
+            "staged/Git-Companion-${V}-setup.exe" \
+            --target "$GITHUB_SHA" \
+            --title "v${V}" \
+            --notes "버전 태그 ${GITHUB_REF_NAME} 기준 설치 파일입니다."
+
+  pages:
+    name: Publish download page
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-bundle
+          path: staged
+
+      - name: Generate download page
+        shell: bash
+        run: |
+          VERSION="${{ needs.build.outputs.version }}"
+          REPO="${{ github.repository }}"
+          SHA="${GITHUB_SHA::8}"
+          DATE="$(date -u +%Y-%m-%d)"
+          mkdir -p site
+          sed -e "s/__VERSION__/${VERSION}/g" \
+              -e "s|__REPO__|${REPO}|g" \
+              -e "s/__SHA__/${SHA}/g" \
+              -e "s/__DATE__/${DATE}/g" \
+              dev/download-site/index.html > site/index.html
+          # 다운로드 버튼이 같은 사이트의 파일을 가리키도록 설치 파일도 함께 게시
+          cp staged/Git-Companion-setup.exe site/
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: Deploy Pages
+        uses: actions/deploy-pages@v4

@@ -826,16 +826,51 @@ fn n3_round_trip_inbox_accumulates_and_read_marking_and_no_duplicate_drain() {
     // ── 수신함 누적 + 읽음 처리 ──
     let rows = doyun_store.list_team_events(50, false).unwrap();
     assert_eq!(rows.len(), 3, "도윤 수신함: branch_push, main_push, branch_push");
-    assert_eq!(doyun_store.count_unread_team_events().unwrap(), 3);
-
-    doyun_store.mark_team_read(&rows[0].id).unwrap();
+    // 같은 브랜치 재push 는 이전 알림을 읽음으로 대체한다 (store insert 시
+    // collapse) — 라운드 1 push 는 라운드 2 push 에 이미 대체됐다.
     assert_eq!(doyun_store.count_unread_team_events().unwrap(), 2);
-    assert_eq!(doyun_store.list_team_events(50, true).unwrap().len(), 2);
+
+    // 병합 완료 정리: 남은 미읽음 branch_push(라운드 2) 를 지운다 — 탭에서
+    // 바로 병합한 경우(토스트·수신함 버튼을 안 거친 경우)에도 "병합 요청"이
+    // 남지 않게 하는 경로다.
+    let url_key = git_companion::git::normalize_remote_url(&rig.url);
+    let n = doyun_store
+        .mark_branch_push_read(&url_key, "feature/junho")
+        .unwrap();
+    assert_eq!(n, 1, "라운드 1 은 이미 대체, 라운드 2 만 남아 있다");
+    assert_eq!(
+        doyun_store.count_unread_team_events().unwrap(),
+        1,
+        "남은 미읽음은 main_push 뿐"
+    );
+
+    // 엉뚱한 브랜치·URL 은 건드리지 않는다.
+    assert_eq!(
+        doyun_store
+            .mark_branch_push_read(&url_key, "feature/other")
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        doyun_store
+            .mark_branch_push_read("wrong/key", "feature/junho")
+            .unwrap(),
+        0
+    );
+    assert_eq!(doyun_store.count_unread_team_events().unwrap(), 1);
+
+    doyun_store.mark_team_read(&rows[1].id).unwrap(); // main_push
+    assert_eq!(doyun_store.count_unread_team_events().unwrap(), 0);
+    assert_eq!(doyun_store.list_team_events(50, true).unwrap().len(), 0);
 
     let cleared = doyun_store.mark_all_team_read().unwrap();
-    assert_eq!(cleared, 2, "모두 읽음은 남은 미읽음 수를 돌려준다");
+    assert_eq!(cleared, 0, "이미 전부 읽음이므로 0");
     assert_eq!(doyun_store.count_unread_team_events().unwrap(), 0);
-    assert_eq!(doyun_store.list_team_events(50, false).unwrap().len(), 3, "읽어도 행은 남는다");
+    assert_eq!(
+        doyun_store.list_team_events(50, false).unwrap().len(),
+        3,
+        "읽어도 행은 남는다"
+    );
 
     // 없는 id 읽음 처리는 깔끔한 에러.
     assert!(doyun_store.mark_team_read("없는-id").is_err());

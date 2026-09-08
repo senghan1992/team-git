@@ -400,6 +400,26 @@ pub fn peer_mark_all_team_read() -> AppResult<u32> {
     store.mark_all_team_read()
 }
 
+/// 병합 완료 후 그 브랜치의 남은 "병합 요청" 알림을 읽음 처리한다.
+///
+/// 관리자가 병합 센터에서 바로 병합한 경우(토스트·수신함 버튼을 거치지
+/// 않음) 수신함에 "병합 요청" 카드가 남는다 — 이미 병합한 항목에 병합이
+/// 또 남아 보이는 꼴이다. 병합이 끝난 시점에 이 저장소·이 브랜치의
+/// 미읽음 branch_push 를 정리해 준다 (지운 건수 반환).
+#[tauri::command]
+pub fn peer_mark_branch_push_read(repo_id: Uuid, branch: String) -> AppResult<u32> {
+    let cfg = crate::config_store::load()?;
+    let repo = cfg
+        .repositories
+        .iter()
+        .find(|r| r.id == repo_id)
+        .ok_or_else(|| AppError::RepoNotFound(repo_id.to_string()))?;
+    // 수신함 payload 의 url 도 같은 규칙으로 정규화돼 있으므로 이 열쇠로 맞춘다.
+    let url_key = crate::git::normalize_remote_url(&repo.remote_url);
+    let store = crate::notify::store::Store::open()?;
+    store.mark_branch_push_read(&url_key, &branch)
+}
+
 // ── Email invite commands ────────────────────────────────────────────────────────
 
 /// Invite someone to a project by email.
