@@ -1,11 +1,91 @@
 // 푸시 실행 공통 유틸 — 저장된 자격증명 자동 사용, 없으면 아이디/비밀번호 모달.
 // 성공 시(저장 체크) 설정에 자격증명을 저장해 다음 푸시부터 자동 입력된다.
-import { ipc, type PushOutcome, type Repo } from "../lib/ipc";
+import { ipc, type PushCredential, type PushOutcome, type Repo } from "../lib/ipc";
 import { openModal } from "./Modal";
 import { toast } from "./Toast";
 import { setBusy } from "./Busy";
 
 export type PushFlowResult = "ok" | "cancelled" | PushOutcome;
+
+/**
+ * Git 호스트(HTTPS 원격) 로그인 모달 — 아이디/비밀번호를 입력받아
+ * `attempt` 로 직접 시도한다. 푸시와 원격 브랜치 삭제가 같은 모달을 쓴다.
+ *
+ * - 성공하면 모달을 닫고 `true` 를 돌려준다 (입력값·저장 체크는 attempt 의 몫).
+ * - 실패하면 모달을 연 채 오류를 보여 주고, 사용자가 고쳐서 다시 시도하거나
+ *   닫을 수 있다. 닫으면 `false`.
+ */
+export async function openGitLoginModal(opts: {
+  title: string;
+  description: string;
+  submitLabel: string;
+  prefill?: PushCredential | null;
+  /** 입력된 자격증명(과 저장 여부)으로 실제 요청을 보낸다. */
+  attempt: (
+    credentials: PushCredential,
+    save: boolean,
+  ) => Promise<{ ok: boolean; message: string }>;
+}): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const m = openModal({
+      title: opts.title,
+      description: opts.description,
+      submitLabel: opts.submitLabel,
+      onSubmit: async (close) => {
+        const username = (m.body.querySelector<HTMLInputElement>("#push-user")!).value.trim();
+        const password = (m.body.querySelector<HTMLInputElement>("#push-pass")!).value;
+        const save = (m.body.querySelector<HTMLInputElement>("#push-save")!)?.checked ?? false;
+        if (!username || !password) {
+          m.setError("아이디와 비밀번호를 입력하세요.");
+          return;
+        }
+        m.setSubmitting(true);
+        m.setError(null);
+        try {
+          const res = await opts.attempt({ username, password }, save);
+          if (res.ok) {
+            close();
+            resolve(true);
+          } else {
+            // 모달을 열어 둔 채 메시지만 보여 준다 — 사용자가 고쳐서 재시도하거나
+            // 닫으면 false 로 끝난다.
+            m.setError(res.message || "로그인 실패");
+            m.setSubmitting(false);
+          }
+        } catch (e) {
+          m.setError((e as Error).message ?? String(e));
+          m.setSubmitting(false);
+        }
+      },
+    });
+
+    m.body.innerHTML = `
+      <div class="flex flex-col gap-3">
+        <label class="flex flex-col gap-1">
+          <span class="text-display-sm text-[color:var(--color-ink-muted)]">아이디</span>
+          <input id="push-user" class="gc-input" type="text" autocomplete="username" value="${(opts.prefill?.username ?? "").replace(/"/g, "&quot;")}" />
+        </label>
+        <label class="flex flex-col gap-1">
+          <span class="text-display-sm text-[color:var(--color-ink-muted)]">비밀번호 / 토큰</span>
+          <input id="push-pass" class="gc-input" type="password" autocomplete="current-password" value="${(opts.prefill?.password ?? "").replace(/"/g, "&quot;")}" />
+        </label>
+        <label class="flex items-center gap-2 text-display-sm cursor-pointer">
+          <input id="push-save" type="checkbox" />
+          <span>이 자격증명을 설정에 저장 (다음부터 자동 입력)</span>
+        </label>
+        <div class="text-display-xs text-[color:var(--color-ink-muted)]">
+          저장한 자격증명은 이 기기의 설정(푸시 자격증명)에서 언제든 삭제할 수 있습니다.
+        </div>
+      </div>
+    `;
+
+    m.el.addEventListener("close", () => {
+      // 제출로 닫힌 경우는 이미 resolve됨 — 그 외(취소/백드롭)는 false.
+      setTimeout(() => resolve(false), 0);
+      // resolve 중복 방지: Promise는 첫 resolve만 반영된다.
+    });
+  });
+}
 
 /**
  * 현재 브랜치를 origin에 푸시한다.
@@ -43,73 +123,28 @@ export async function openPushCredentialFlow(
     if (!outcome.auth_required) return outcome;
   }
 
-  // 3) HTTPS + 인증 필요 → 아이디/비밀번호 모달.
-  return await new Promise<PushFlowResult>((resolve) => {
-    const m = openModal({
-      title: "Git 호스트 로그인",
-      description: savedCredExpired
-        ? `${repo.display_name} — 저장된 자격증명이 더 이상 유효하지 않습니다. 다시 입력하세요.`
-        : `${repo.display_name} — origin에 푸시하려면 Git 호스트 아이디/비밀번호가 필요합니다.`,
-      submitLabel: "푸시",
-      onSubmit: async (close) => {
-        const username = (m.body.querySelector<HTMLInputElement>("#push-user")!).value.trim();
-        const password = (m.body.querySelector<HTMLInputElement>("#push-pass")!).value;
-        const save = (m.body.querySelector<HTMLInputElement>("#push-save")!)?.checked ?? false;
-        if (!username || !password) {
-          m.setError("아이디와 비밀번호를 입력하세요.");
-          return;
+  // 3) HTTPS + 인증 필요 → 아이디/비밀번호 모달. 성공하면 (저장 체크 시)
+  //    설정에 보관해 다음 푸시부터 자동 입력되게 한다.
+  const ok = await openGitLoginModal({
+    title: "Git 호스트 로그인",
+    description: savedCredExpired
+      ? `${repo.display_name} — 저장된 자격증명이 더 이상 유효하지 않습니다. 다시 입력하세요.`
+      : `${repo.display_name} — origin에 푸시하려면 Git 호스트 아이디/비밀번호가 필요합니다.`,
+    submitLabel: "푸시",
+    prefill: prefill ?? null,
+    attempt: async (creds, save) => {
+      const res = await attempt(creds, save);
+      if (res.ok) {
+        if (save) {
+          await ipc.pushCredentialSet(repo.id, creds).catch(() => undefined);
+          toast("자격증명을 설정에 저장했습니다. 다음 푸시부터 자동 입력됩니다.", "info");
         }
-        m.setSubmitting(true);
-        m.setError(null);
-        try {
-          const res = await attempt({ username, password }, save);
-          if (res.ok) {
-            if (save) {
-              await ipc.pushCredentialSet(repo.id, { username, password }).catch(() => undefined);
-              toast("자격증명을 설정에 저장했습니다. 다음 푸시부터 자동 입력됩니다.", "info");
-            }
-            close();
-            resolve("ok");
-          } else {
-            // 모달을 열어 둔 채 메시지만 보여 준다 — 사용자가 고쳐서 재시도하거나
-            // 닫으면 "cancelled"로 끝난다.
-            m.setError(res.message || "푸시 실패");
-            m.setSubmitting(false);
-          }
-        } catch (e) {
-          m.setError((e as Error).message ?? String(e));
-          m.setSubmitting(false);
-        }
-      },
-    });
-
-    m.body.innerHTML = `
-      <div class="flex flex-col gap-3">
-        <label class="flex flex-col gap-1">
-          <span class="text-display-sm text-[color:var(--color-ink-muted)]">아이디</span>
-          <input id="push-user" class="gc-input" type="text" autocomplete="username" value="${(prefill?.username ?? "").replace(/"/g, "&quot;")}" />
-        </label>
-        <label class="flex flex-col gap-1">
-          <span class="text-display-sm text-[color:var(--color-ink-muted)]">비밀번호 / 토큰</span>
-          <input id="push-pass" class="gc-input" type="password" autocomplete="current-password" value="${(prefill?.password ?? "").replace(/"/g, "&quot;")}" />
-        </label>
-        <label class="flex items-center gap-2 text-display-sm cursor-pointer">
-          <input id="push-save" type="checkbox" />
-          <span>이 자격증명을 설정에 저장 (다음부터 자동 입력)</span>
-        </label>
-        <div class="text-display-xs text-[color:var(--color-ink-muted)]">
-          저장한 자격증명은 이 기기의 설정(푸시 자격증명)에서 언제든 삭제할 수 있습니다.
-        </div>
-      </div>
-    `;
-
-    m.el.addEventListener("close", () => {
-      // 제출로 닫힌 경우는 이미 resolve됨 — 그 외(취소/백드롭)는 cancelled.
-      setTimeout(() => resolve("cancelled"), 0);
-      // resolve 중복 방지: close 이후에는 resolve 자체가 no-op이 아니면 문제 없음
-      // (Promise는 첫 resolve만 반영된다).
-    });
+        return { ok: true, message: "" };
+      }
+      return { ok: false, message: res.message || "푸시 실패" };
+    },
   });
+  return ok ? "ok" : "cancelled";
 }
 
 /** 버튼에 붙이는 표준 푸시 핸들러 — RepoView 등에서 재사용. */

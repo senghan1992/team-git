@@ -671,8 +671,8 @@ fn s1_canonical_manager_week_under_both_invariants() {
         assert!(names.contains(*branch), "{branch} 는 정리 후보여야 한다: {names:?}");
     }
     for (branch, _) in &members {
-        checked(&chk, &format!("delete_remote_branch({branch})"), &[], || {
-            delete_remote_branch(&mgr_t, "origin", "main", branch)
+        checked(&chk, &format!("delete_remote_branch({branch}, None)"), &[], || {
+            delete_remote_branch(&mgr_t, "origin", "main", branch, None)
         })
         .unwrap();
         assert!(!bare_branch_exists(bare.path(), branch));
@@ -1300,8 +1300,8 @@ fn s6a_delete_remote_branch_refetches_and_refuses_fresh_push() {
 
     // 관리자(낡은 refs)가 "병합 끝난" 브랜치를 정리하려 한다 — 회귀 방지
     // (MLOSS-1): 삭제 직전 fetch 로 원격의 실제 tip(x2)을 확인해 거부한다.
-    let err = checked(&chk, "delete_remote_branch(낡은 refs)", &[], || {
-        delete_remote_branch(&mgr_t, "origin", "main", "feature/x")
+    let err = checked(&chk, "delete_remote_branch(낡은 refs, None)", &[], || {
+        delete_remote_branch(&mgr_t, "origin", "main", "feature/x", None)
     })
     .expect_err("낡은 refs 여도 방금 push 된 커밋을 보고 거부해야 한다");
     assert!(err.to_string().contains("없는 커밋"), "{err}");
@@ -1336,8 +1336,8 @@ fn s6a_delete_remote_branch_refetches_and_refuses_fresh_push() {
     ledger.record(bare.path());
 
     checked(&chk, "fetch(신선)", &[], || fetch_target(&mgr_t, "origin")).unwrap();
-    let err = checked(&chk, "delete_remote_branch(신선 refs)", &[], || {
-        delete_remote_branch(&mgr_t, "origin", "main", "feature/y")
+    let err = checked(&chk, "delete_remote_branch(신선 refs, None)", &[], || {
+        delete_remote_branch(&mgr_t, "origin", "main", "feature/y", None)
     })
     .expect_err("신선한 refs 에서는 가드가 거부한다");
     assert!(err.to_string().contains("없는 커밋"), "{err}");
@@ -1378,8 +1378,8 @@ fn s6b_stale_clone_after_legit_delete_breaks_nothing() {
 
     // 팀원은 여전히 feature/z 위에 있다 (낡은 clone — 삭제를 모른다).
     // 정당한 삭제: refs 신선, 완전 병합.
-    checked(&chk, "delete_remote_branch(z)", &[], || {
-        delete_remote_branch(&mgr_t, "origin", "main", "feature/z")
+    checked(&chk, "delete_remote_branch(z, None)", &[], || {
+        delete_remote_branch(&mgr_t, "origin", "main", "feature/z", None)
     })
     .unwrap();
     ledger.assert_deleted_branch_absorbed(bare.path(), "feature/z", "main");

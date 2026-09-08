@@ -1005,8 +1005,8 @@ fn s5_remote_branch_deleted_under_member() {
     // 검사기로 감싸 관리자 쪽 손실이 없는지 함께 본다.
     manager_merge_and_push(mgr.path(), "feature/gone");
     let mgr_t = target(mgr.path());
-    checked(mgr.path(), "delete_remote_branch(feature/gone)", || {
-        delete_remote_branch(&mgr_t, "origin", "main", "feature/gone")
+    checked(mgr.path(), "delete_remote_branch(feature/gone, None)", || {
+        delete_remote_branch(&mgr_t, "origin", "main", "feature/gone", None)
     })
     .unwrap();
 

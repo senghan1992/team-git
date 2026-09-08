@@ -302,7 +302,18 @@ const mockData: Record<string, any> = {
   merge_state: { in_progress: false, conflicted_files: [] },
   base_unpushed_count: 0,
   list_merged_remote_branches: [],
-  delete_remote_branch: undefined,
+  // dev 모드 — 실제 삭제 대신 목록에서 제거하고 성공 응답을 돌려준다.
+  delete_remote_branch: (args: { branch: string }) => {
+    const list = mockData.list_merged_remote_branches as {
+      short_name: string;
+    }[];
+    mockData.list_merged_remote_branches = list.filter((b) => b.short_name !== args.branch);
+    return {
+      ok: true,
+      message: `origin/${args.branch} 브랜치를 삭제했습니다.`,
+      auth_required: false,
+    };
+  },
   // ── 병합 요청 — 푸시(작업 공유)와 승인(병합)을 분리하는 대기열 ──
   list_requested_merges: [
     {

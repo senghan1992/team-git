@@ -15,6 +15,7 @@ import {
   type MergeState,
   type PendingBranch,
   type ProjectConfigResult,
+  type PushCredential,
   type PushOutcome,
   type Repo,
   type RequestedMerge,
@@ -29,7 +30,7 @@ import { parseConflictBlocks, reassemble, type ConflictBlock } from "./conflictP
 import { renderCommitList } from "./CommitList";
 import { renderChangeMap } from "./ChangeMap";
 import { renderMergeTimeline } from "./MergeTimeline";
-import { openPushCredentialFlow } from "./PushButton";
+import { openGitLoginModal, openPushCredentialFlow } from "./PushButton";
 import { mergeManagerEmails } from "./nextAction";
 
 interface BlockEdit {
@@ -1463,6 +1464,78 @@ export async function renderMergeCenter(
   // 삭제 직전에 백엔드가 조상 여부를 다시 확인한다.
   let cleanupExpanded = false;
 
+  // 병합이 끝난 원격 브랜치 삭제에 쓸 Git 호스트 자격증명 — 푸시와 같은
+  // 저장소에서 재사용한다. 한 번 로그인하면 "모두 삭제"의 나머지 브랜치에도
+  // 모달 없이 그대로 쓴다. (저장된 값이 거부되면 prefill 로만 남긴다.)
+  let deleteCreds: PushCredential | null = null;
+  let deleteCredsLoaded = false;
+
+  /** 병합이 끝난 원격 브랜치 하나를 삭제한다.
+   *
+   * HTTPS 원격(mod.lge.com 같은 Git 호스트)은 `push --delete` 도 로그인이
+   * 필요하다 — 푸시와 같은 흐름으로 자격증명을 처리한다:
+   *   1) 저장된/이번 세션의 자격증명으로 시도 (없으면 null 로 시도)
+   *   2) 결과가 auth_required 면 로그인 모달 → 입력값으로 재시도
+   * SSH 원격은 자격증명 없이 그대로 성공한다.
+   * @returns "deleted" | "failed" | "cancelled" */
+  async function deleteMergedRemoteBranch(
+    branch: string,
+  ): Promise<"deleted" | "failed" | "cancelled"> {
+    if (!deleteCredsLoaded) {
+      deleteCredsLoaded = true;
+      const saved = await ipc
+        .pushCredentialsList()
+        .catch(() => ({} as Record<string, PushCredential>));
+      deleteCreds = saved[repo.id] ?? null;
+    }
+    const attempt = (creds: PushCredential | null, save: boolean) =>
+      ipc.deleteRemoteBranch(repo.id, base, branch, creds, save);
+
+    // 1) 아는 자격증명(저장값·이번 세션 입력값)으로 시도한다.
+    let res: { ok: boolean; message: string; auth_required?: boolean };
+    try {
+      res = await attempt(deleteCreds, false);
+    } catch (e) {
+      toast(`삭제 실패: ${(e as Error).message ?? e}`, "error");
+      return "failed";
+    }
+    if (res.ok) return "deleted";
+    if (!res.auth_required) {
+      toast(`삭제 실패: ${res.message || "알 수 없는 오류"}`, "error");
+      return "failed";
+    }
+
+    // 2) HTTPS + 인증 필요 → 로그인 모달. 성공한 값은 이번 세션의 나머지
+    //    삭제에 재사용하고, 저장 체크 시 설정에도 보관한다.
+    const hadCreds = deleteCreds !== null;
+    const ok = await openGitLoginModal({
+      title: "Git 호스트 로그인",
+      description: hadCreds
+        ? `${repo.display_name} — 이 자격증명으로는 원격에서 브랜치를 삭제할 수 없습니다. 다시 입력하세요.`
+        : `${repo.display_name} — origin에서 브랜치를 삭제하려면 Git 호스트 아이디/비밀번호가 필요합니다.`,
+      submitLabel: "삭제",
+      prefill: deleteCreds ?? null,
+      attempt: async (creds, save) => {
+        let r: { ok: boolean; message: string; auth_required?: boolean };
+        try {
+          r = await attempt(creds, save);
+        } catch (e) {
+          return { ok: false, message: (e as Error).message ?? String(e) };
+        }
+        if (r.ok) {
+          deleteCreds = creds; // "모두 삭제"의 나머지 브랜치에 재사용.
+          if (save) {
+            toast("자격증명을 설정에 저장했습니다. 다음부터 자동 입력됩니다.", "info");
+          }
+          return { ok: true, message: "" };
+        }
+        return { ok: false, message: r.message || (r.auth_required ? "로그인 실패" : "삭제 실패") };
+      },
+    });
+    if (!ok) return "cancelled";
+    return "deleted";
+  }
+
   async function renderCleanupCard() {
     if (mergeState?.in_progress || !viewerCanMerge() || mergedRemote.length === 0) {
       cleanupCard.style.display = "none";
@@ -1523,12 +1596,13 @@ export async function renderMergeCenter(
         if (!ok) return;
         setBusy(delBtn, true, "삭제 중…");
         try {
-          await ipc.deleteRemoteBranch(repo.id, base, b.short_name);
-          toast(`origin/${b.short_name} 브랜치를 삭제했습니다.`, "success");
-          mergedRemote = mergedRemote.filter((x) => x.short_name !== b.short_name);
-          await renderCleanupCard();
-        } catch (e) {
-          toast(`삭제 실패: ${(e as Error).message ?? e}`, "error");
+          const r = await deleteMergedRemoteBranch(b.short_name);
+          if (r === "deleted") {
+            toast(`origin/${b.short_name} 브랜치를 삭제했습니다.`, "success");
+            mergedRemote = mergedRemote.filter((x) => x.short_name !== b.short_name);
+            await renderCleanupCard();
+          }
+          // "failed"는 함수 안에서 이미 토스트로 알렸고, "cancelled"는 취소다.
         } finally {
           setBusy(delBtn, false);
         }
@@ -1551,20 +1625,28 @@ export async function renderMergeCenter(
         });
         if (!ok) return;
         setBusy(allBtn, true, "삭제 중…");
+        let deleted = 0;
         let failed = 0;
+        let cancelled = false;
         for (const short of names) {
-          try {
-            await ipc.deleteRemoteBranch(repo.id, base, short);
+          const r = await deleteMergedRemoteBranch(short);
+          if (r === "deleted") {
+            deleted += 1;
             mergedRemote = mergedRemote.filter((x) => x.short_name !== short);
-          } catch {
+          } else if (r === "cancelled") {
+            cancelled = true;
+            break;
+          } else {
             failed += 1;
           }
         }
         setBusy(allBtn, false);
-        if (failed > 0) {
-          toast(`브랜치 ${names.length - failed}개를 삭제했습니다. ${failed}개는 실패했습니다 — 새 push가 있었을 수 있으니 목록을 다시 확인하세요.`, "error");
+        if (cancelled) {
+          toast(`삭제를 중단했습니다. ${deleted}개는 삭제됐습니다.`, "info");
+        } else if (failed > 0) {
+          toast(`${deleted}개를 삭제했습니다. ${failed}개는 실패했습니다 — 새 push가 있었을 수 있으니 목록을 다시 확인하세요.`, "error");
         } else {
-          toast(`브랜치 ${names.length}개를 삭제했습니다.`, "success");
+          toast(`브랜치 ${deleted}개를 삭제했습니다.`, "success");
         }
         await renderCleanupCard();
       });

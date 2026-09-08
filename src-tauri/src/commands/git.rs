@@ -234,8 +234,19 @@ pub async fn list_merged_remote_branches(
 }
 
 /// 병합이 끝난 원격 브랜치를 origin에서 삭제한다.
+///
+/// `credentials` 는 HTTPS 원격(Git 호스트) 삭제에 쓸 로그인 정보다 — 없으면
+/// 결과의 `auth_required` 가 true 로 돌아와 UI 가 아이디/비밀번호 모달을
+/// 띄운다(푸시와 같은 계약). 성공하면서 `save_credential` 이면 다음부터
+/// 자동 입력되도록 설정에 보관한다.
 #[tauri::command]
-pub async fn delete_remote_branch(repo_id: Uuid, base: String, branch: String) -> AppResult<()> {
+pub async fn delete_remote_branch(
+    repo_id: Uuid,
+    base: String,
+    branch: String,
+    credentials: Option<config_store::PushCredential>,
+    save_credential: bool,
+) -> AppResult<git::merge::DeleteBranchOutcome> {
     let (target, _) = resolve_target(repo_id)?;
     // .gpconfig의 병합 대상 브랜치는 어떤 경우에도 지우지 않는다.
     if merge_target_branches(&target, &base).contains(&branch) {
@@ -243,7 +254,19 @@ pub async fn delete_remote_branch(repo_id: Uuid, base: String, branch: String) -
             "{branch}은(는) 병합 대상 브랜치라 삭제할 수 없습니다."
         )));
     }
-    git::merge::delete_remote_branch(&target, MERGE_REMOTE, &base, &branch)
+    let outcome = git::merge::delete_remote_branch(
+        &target,
+        MERGE_REMOTE,
+        &base,
+        &branch,
+        credentials.as_ref(),
+    )?;
+    if outcome.ok && save_credential {
+        if let Some(cred) = credentials {
+            config_store::set_push_credential(&repo_id, &cred)?;
+        }
+    }
+    Ok(outcome)
 }
 
 /// `.gpconfig`의 병합 대상 브랜치 + 기본 base. 설정을 못 읽어도 base는 지킨다.

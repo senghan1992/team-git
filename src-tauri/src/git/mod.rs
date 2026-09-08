@@ -69,9 +69,9 @@ pub use ops::{
 
 /// Re-export merge-center types for use by commands.
 pub use merge::{
-    abort_merge, complete_merge, conflict_detail, list_pending_branches, merge_in_progress,
-    remaining_conflicts, resolve_conflict, start_merge, ChangedPath, ConflictDetail, MergeOutcome,
-    PendingBranch, Resolution,
+    abort_merge, complete_merge, conflict_detail, delete_remote_branch, list_pending_branches,
+    merge_in_progress, remaining_conflicts, resolve_conflict, start_merge, ChangedPath,
+    ConflictDetail, DeleteBranchOutcome, MergeOutcome, PendingBranch, Resolution,
 };
 
 /// Re-export merge-request types for use by commands.

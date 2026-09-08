@@ -624,7 +624,7 @@ fn bug6_start_merge_on_branch_deleted_underfoot_fails_with_korean_guidance() {
     // 관리자 2: 앱의 삭제 기능은 미병합 브랜치를 거부한다 (정상동작확인 —
     // 팀원 커밋을 지키는 안전장치가 레이스에서도 동작).
     let mgr2 = person(&url, "manager2");
-    let err = delete_remote_branch(&tgt(mgr2.path()), "origin", "main", "feature/gone")
+    let err = delete_remote_branch(&tgt(mgr2.path()), "origin", "main", "feature/gone", None)
         .expect_err("미병합 브랜치 삭제는 거부돼야 한다");
     assert!(err.to_string().contains("없는 커밋"));
 

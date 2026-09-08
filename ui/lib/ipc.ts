@@ -76,6 +76,13 @@ export interface PushOutcome {
   auth_required?: boolean;
 }
 
+export interface DeleteBranchOutcome {
+  ok: boolean;
+  message: string;
+  /** HTTPS 원격 + 자격증명 부재/거부 → UI가 아이디/비밀번호 모달을 띄워야 한다. */
+  auth_required?: boolean;
+}
+
 export interface PullOutcome {
   ok: boolean;
   message: string;
@@ -505,8 +512,23 @@ export const ipc = {
     invoke<MergedRemoteBranch[]>("list_merged_remote_branches", { repoId, base }),
   mergeTimeline: (repoId: Uuid, base: string, days: number) =>
     invoke<MergeTimeline>("merge_timeline", { repoId, base, days }),
-  deleteRemoteBranch: (repoId: Uuid, base: string, branch: string) =>
-    invoke<void>("delete_remote_branch", { repoId, base, branch }),
+  deleteRemoteBranch: (
+    repoId: Uuid,
+    base: string,
+    branch: string,
+    credentials?: PushCredential | null,
+    saveCredential?: boolean,
+  ) =>
+    invoke<DeleteBranchOutcome>("delete_remote_branch", {
+      repoId,
+      base,
+      branch,
+      // `credentials`가 없으면 저장된 자격증명만 사용하고, HTTPS 원격이라면
+      // 결과의 auth_required가 true로 돌아온다 → UI가 아이디/비밀번호 모달을
+      // 띄운다 (푸시와 같은 계약 — 같은 로그인 모달을 공유한다).
+      credentials: credentials ?? null,
+      saveCredential: saveCredential ?? false,
+    }),
   branchFileDiff: (repoId: Uuid, base: string, branchRef: string, path: string) =>
     invoke<string>("branch_file_diff", { repoId, base, branchRef, path }),
   conflictDetail: (repoId: Uuid, path: string) =>

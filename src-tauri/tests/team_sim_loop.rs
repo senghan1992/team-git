@@ -633,7 +633,7 @@ fn scenario4_custom_merge_targets_develop_and_release() {
 
     // ── 삭제 가드 ──
     // merge.rs 계층: base(develop) 자신은 거부한다.
-    let err = delete_remote_branch(&mt, "origin", "develop", "develop").unwrap_err();
+    let err = delete_remote_branch(&mt, "origin", "develop", "develop", None).unwrap_err();
     assert!(err.to_string().contains("삭제할 수 없습니다"), "{err}");
 
     // 커맨드 계층(commands/git.rs:235-251 merge_target_branches)이 추가하는
@@ -667,7 +667,7 @@ fn scenario4_custom_merge_targets_develop_and_release() {
     // 브랜치가 origin/develop 의 조상인 동안 merge 계층을 직접 부르면 원격에서
     // 지워졌다 (보호는 커맨드 계층에만 있었다). 지금은 delete_remote_branch 가
     // .gpconfig 의 merge_targets/default_base_branch 도 스스로 거부한다.
-    let err = delete_remote_branch(&mt, "origin", "develop", "release/1.0")
+    let err = delete_remote_branch(&mt, "origin", "develop", "release/1.0", None)
         .expect_err("병합 대상 브랜치 삭제는 merge 계층에서도 거부돼야 한다");
     assert!(
         err.to_string()

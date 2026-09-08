@@ -25,6 +25,8 @@ pub enum AppError {
     Hook(String),
     #[error("internal: {0}")]
     Internal(String),
+    #[error("{0}")]
+    AuthRequired(String),
 }
 
 impl From<std::io::Error> for AppError {
@@ -67,6 +69,7 @@ impl Serialize for AppError {
             AppError::Db(_) => "db",
             AppError::Hook(_) => "hook",
             AppError::Internal(_) => "internal",
+            AppError::AuthRequired(_) => "auth_required",
         };
         Body {
             kind,

@@ -949,7 +949,7 @@ fn f2_origin_vanishes_and_returns() {
 
     // delete_remote_branch: 병합 전 브랜치라 가드가 한국어로 거부 — 삭제 없음.
     let de = checked(&rig.mgr, "delete(원격 소실)", || {
-        delete_remote_branch(&t, "origin", "main", "feature/gone")
+        delete_remote_branch(&t, "origin", "main", "feature/gone", None)
     })
     .expect_err("병합 전 브랜치 삭제는 거부돼야");
     let demsg = de.to_string();
@@ -985,7 +985,7 @@ fn f2_origin_vanishes_and_returns() {
     );
     // 병합이 끝난 브랜치는 이제 삭제 가능 — 그리고 커밋은 main 에 남는다.
     checked(&rig.mgr, "delete(복구)", || {
-        delete_remote_branch(&t, "origin", "main", "feature/gone")
+        delete_remote_branch(&t, "origin", "main", "feature/gone", None)
     })
     .unwrap();
     assert!(

@@ -6,7 +6,7 @@ use crate::config_store::PushCredential;
 use crate::error::{AppError, AppResult};
 use crate::git::status::{FileChange, FileChangeKind};
 use crate::git::{
-    log, run_at_target, run_ssh_command, shell_quote, status, Target, WorkingTreeStatus,
+    log, run_at_target, status, Target, WorkingTreeStatus,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -310,33 +310,48 @@ pub fn push_with_credentials(
     branch: &str,
     cred: &PushCredential,
 ) -> AppResult<crate::git::GitOutput> {
+    let refspec = format!("HEAD:{branch}");
+    run_http_with_credentials(target, cred, &["push", "-u", "origin", refspec.as_str()])
+}
+
+/// HTTPS 원격에 Basic 인증 헤더를 실어 임의의 git 명령을 실행한다.
+///
+/// [`push_with_credentials`] 를 일반화한 것 — 푸시뿐 아니라 원격 브랜치
+/// 삭제(`push <remote> --delete`)처럼 같은 서버 인증이 필요한 명령도 이
+/// 경로를 쓴다. `cmd_args` 는 서브커맨드 이후의 인자들(예:
+/// `["push", "origin", "--delete", "feature/x"]`)이고, 그 앞에
+/// `-c http.extraheader=…` 를 붙여 실행한다. `GIT_TERMINAL_PROMPT=0` 도
+/// 함께 걸어 자격증명이 틀렸을 때 git 이 프롬프트에 매달리지 않고 즉시
+/// 실패하게 한다.
+pub fn run_http_with_credentials(
+    target: &Target,
+    cred: &PushCredential,
+    cmd_args: &[&str],
+) -> AppResult<crate::git::GitOutput> {
     let basic = base64_encode(format!("{}:{}", cred.username, cred.password).as_bytes());
     let extra = format!("AUTHORIZATION: Basic {basic}");
     let header_cfg = format!("http.extraheader={extra}");
-    let refspec = format!("HEAD:{branch}");
     match target {
-        Target::Local(_) => crate::git::run_with_env(
-            Some(target.path()),
-            ["-c", header_cfg.as_str(), "push", "-u", "origin", refspec.as_str()],
-            &[("GIT_TERMINAL_PROMPT", "0")],
-        ),
-        Target::Ssh {
-            user,
-            host,
-            key,
-            password,
-            port,
-            ..
-        } => {
+        Target::Local(_) => {
+            let mut args: Vec<&str> = vec!["-c", header_cfg.as_str()];
+            args.extend_from_slice(cmd_args);
+            crate::git::run_with_env(
+                Some(target.path()),
+                args,
+                &[("GIT_TERMINAL_PROMPT", "0")],
+            )
+        }
+        Target::Ssh { .. } => {
             // base64 는 [A-Za-z0-9+/=] 뿐이라 셸 특수문자가 없지만, 값 전체를
-            // 작은따옴표로 감싸 안전하게 만든다.
-            let remote = format!(
-                "git -C {} -c {} push -u origin HEAD:{}",
-                shell_quote(&target.path().to_string_lossy()),
-                shell_quote(&header_cfg),
-                shell_quote(&refspec)
-            );
-            run_ssh_command(user, host, key, password, *port, &remote)
+            // 작은따옴표로 감싸 안전하게 만든다. GIT_TERMINAL_PROMPT 는 원격
+            // 쪽 git 프로세스에 걸려야 하므로 run_at_target_env 로 함께 보낸다.
+            let mut args: Vec<String> = vec!["-c".into(), header_cfg.clone()];
+            args.extend(cmd_args.iter().map(|s| s.to_string()));
+            crate::git::run_at_target_env(
+                target,
+                args.iter().map(|s| s.as_str()),
+                &[("GIT_TERMINAL_PROMPT", "0")],
+            )
         }
     }
 }

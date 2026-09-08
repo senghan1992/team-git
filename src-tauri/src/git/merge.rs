@@ -526,6 +526,20 @@ pub fn parse_pending_output(stdout: &str, remote: &str, base: &str) -> AppResult
     Ok(out)
 }
 
+/// 원격 브랜치 삭제 결과. `auth_required` 는 HTTPS 원격(mod.lge.com 같은
+/// Git 호스트)에 자격증명이 없거나 거부된 경우 — UI 는 이 플래그를 보고
+/// 아이디/비밀번호 모달을 띄운 뒤 같은 브랜치로 재시도한다. 푸시
+/// (`ops::PushOutcome`)와 같은 계약이라 두 흐름이 같은 로그인 모달을
+/// 공유할 수 있다.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteBranchOutcome {
+    pub ok: bool,
+    pub message: String,
+    /// HTTPS 원격 + 자격증명 부재/거부 → 로그인 모달이 필요하다.
+    #[serde(default)]
+    pub auth_required: bool,
+}
+
 /// 병합이 끝나 base에 완전히 포함된 원격 브랜치 — origin에 쌓인 죽은
 /// feature 브랜치를 정리할 후보 목록이다.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -606,12 +620,19 @@ pub fn list_merged_remote_branches(
 /// (=커밋이 전부 base에 들어갔는지) 삭제 직전에 다시 확인한다 — 목록을 본
 /// 뒤 팀원이 새 커밋을 push했다면 여기서 멈춘다. 성공하면 `fetch --prune`으로
 /// 로컬 트래킹 ref도 정리한다.
+///
+/// HTTPS 원격(Git 호스트)은 `push --delete` 도 로그인이 필요하다 — 푸시와
+/// 같은 [`ops::PushCredential`] 을 받아 Basic 인증 헤더를 실어 보내고,
+/// 자격증명이 없으면 git 이 터미널 프롬프트에 매달리는 대신(앱은 stdin 이
+/// 닫혀 있어 "could not read Username … No such device or address" 로
+/// 죽는다) `auth_required: true` 를 돌려줘 UI 가 로그인 모달을 띄우게 한다.
 pub fn delete_remote_branch(
     target: &Target,
     remote: &str,
     base: &str,
     branch: &str,
-) -> AppResult<()> {
+    credentials: Option<&crate::config_store::PushCredential>,
+) -> AppResult<DeleteBranchOutcome> {
     if branch == base {
         return Err(AppError::Git(format!(
             "병합 브랜치({base})는 삭제할 수 없습니다."
@@ -630,11 +651,37 @@ pub fn delete_remote_branch(
             )));
         }
     }
+    // HTTPS 원격인가 — 자격증명이 필요한지 결정한다. URL 에 이미
+    // `http://user:pass@host/…` 처럼 자격증명이 박혀 있으면 git 이 그걸
+    // 쓰므로(프롬프트 없음) 평범한 push 로 충분하다.
+    let remote_url = run_at_target(target, ["remote", "get-url", remote]).ok();
+    let url = remote_url.as_ref().map(|o| o.stdout.trim()).unwrap_or("");
+    let https = crate::git::ops::is_https_url(url) && !url.contains('@');
+    if https && credentials.is_none() {
+        // 푸시와 같은 정책: 자격증명 없이 HTTPS push 는 아예 시도하지 않는다
+        // — 터미널 프롬프트를 쓸 수 없는 이 앱에서는 반드시 실패한다.
+        return Ok(DeleteBranchOutcome {
+            ok: false,
+            message: "Git 호스트 로그인이 필요합니다. 삭제할 때 아이디/비밀번호를 입력하세요."
+                .to_string(),
+            auth_required: true,
+        });
+    }
     // 낡은 트래킹 ref 로 검사하면 마지막 fetch **이후**에 팀원이 push한
     // 커밋이 보이지 않아 가드가 뚫린다 — 삭제 직전에 그 브랜치를 다시
     // 받아 실제 tip 기준으로 확인한다. (fetch 실패는 관용: 오프라인이면
-    // 아래 push --delete 도 어차피 실패한다.)
-    let _ = run_at_target(target, ["fetch", remote, branch]);
+    // 아래 push --delete 도 어차피 실패한다. 자격증명이 있으면 fetch 도
+    // 같은 헤더로 보낸다.)
+    if https {
+        let cred = credentials.unwrap();
+        let _ = crate::git::ops::run_http_with_credentials(
+            target,
+            cred,
+            &["fetch", remote, branch],
+        );
+    } else {
+        let _ = run_at_target(target, ["fetch", remote, branch]);
+    }
     let branch_ref = format!("{remote}/{branch}");
     let base_ref = format!("{remote}/{base}");
     let ancestor = run_at_target(
@@ -646,15 +693,52 @@ pub fn delete_remote_branch(
             "{branch} 브랜치에 아직 {base}에 없는 커밋이 있습니다 — 방금 새 push가 있었을 수 있습니다. 삭제하지 않았습니다."
         )));
     }
-    let out = run_at_target(target, ["push", remote, "--delete", branch])?;
+    // 여기까지 왔으면 삭제해도 안전하다 — 이제 진짜 삭제.
+    let out = if https {
+        crate::git::ops::run_http_with_credentials(
+            target,
+            credentials.unwrap(),
+            &["push", remote, "--delete", branch],
+        )?
+    } else {
+        run_at_target(target, ["push", remote, "--delete", branch])?
+    };
     if !out.ok() {
-        return Err(AppError::Git(format!(
-            "원격 브랜치 삭제 실패: {}",
-            crate::git::ops::friendly_git_error(&out.stderr)
-        )));
+        let auth_required = https && crate::git::ops::is_auth_failure(&out.stderr);
+        let message = if auth_required {
+            // 실제 stderr 를 함께 보여 준다 — "could not read Username" 같은
+            // 원인이 그대로 보여야 저장된 자격증명이 잘못됐음을 알 수 있다.
+            format!(
+                "Git 호스트 로그인 실패: {}",
+                crate::git::ops::friendly_git_error(&out.stderr)
+            )
+        } else {
+            format!(
+                "원격 브랜치 삭제 실패: {}",
+                crate::git::ops::friendly_git_error(&out.stderr)
+            )
+        };
+        return Ok(DeleteBranchOutcome {
+            ok: false,
+            message,
+            auth_required,
+        });
     }
-    let _ = run_at_target(target, ["fetch", "--prune", remote]);
-    Ok(())
+    // 성공 — 로컬 트래킹 ref 정리. best-effort(오프라인이어도 삭제는 됐다).
+    if https {
+        let _ = crate::git::ops::run_http_with_credentials(
+            target,
+            credentials.unwrap(),
+            &["fetch", "--prune", remote],
+        );
+    } else {
+        let _ = run_at_target(target, ["fetch", "--prune", remote]);
+    }
+    Ok(DeleteBranchOutcome {
+        ok: true,
+        message: format!("{remote}/{branch} 브랜치를 삭제했습니다."),
+        auth_required: false,
+    })
 }
 
 /// How many commits the *local* base carries that `<remote>/<base>` doesn't —

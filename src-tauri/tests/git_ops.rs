@@ -213,14 +213,14 @@ fn merged_remote_branches_are_listed_and_deletable() {
     assert!(!names.contains(&"main"), "base 자신은 제외");
 
     // 병합 안 된 브랜치 삭제는 거부.
-    let err = delete_remote_branch(&target, "origin", "main", "feature/wip")
+    let err = delete_remote_branch(&target, "origin", "main", "feature/wip", None)
         .expect_err("병합 안 된 브랜치는 지울 수 없어야 한다");
     assert!(err.to_string().contains("없는 커밋"), "이유를 말한다: {err}");
     // base 삭제도 거부.
-    assert!(delete_remote_branch(&target, "origin", "main", "main").is_err());
+    assert!(delete_remote_branch(&target, "origin", "main", "main", None).is_err());
 
     // 병합 끝난 브랜치는 삭제되고, 원격 ref와 트래킹 ref 모두 사라진다.
-    delete_remote_branch(&target, "origin", "main", "feature/done").unwrap();
+    delete_remote_branch(&target, "origin", "main", "feature/done", None).unwrap();
     let ls = git_run(work.path(), &["ls-remote", "--heads", "origin", "feature/done"]);
     assert!(
         String::from_utf8_lossy(&ls.stdout).trim().is_empty(),
@@ -1158,6 +1158,56 @@ fn push_https_with_credentials_succeeds_end_to_end() {
         outcome2.message.contains("로그인 실패"),
         "사유가 보여야 한다: {}",
         outcome2.message
+    );
+
+    // 5) 원격 브랜치 삭제(`push --delete`)도 같은 인증 경로를 타야 한다 —
+    //    병합이 끝난 브랜치를 만들고, 자격증명 없이/틀린 값으로는
+    //    auth_required, 올바른 값으로는 실제로 삭제되는지 확인한다.
+    git_run(&work, &["checkout", "-q", "-b", "feature/legacy"]);
+    touch(&format!("{}/legacy.txt", work.display()));
+    git_run(&work, &["add", "-A"]);
+    git_run(&work, &["commit", "-q", "-m", "legacy work"]);
+    let push_legacy =
+        git_companion::git::push(&target, Some("feature/legacy"), Some(&cred)).unwrap();
+    assert!(push_legacy.ok, "branch push failed: {}", push_legacy.message);
+    // main 에 병합·푸시 → feature/legacy 는 origin/main 의 조상이 된다.
+    git_run(&work, &["checkout", "-q", "main"]);
+    git_run(&work, &["merge", "-q", "--no-ff", "feature/legacy", "-m", "merge legacy"]);
+    let push_main = git_companion::git::push(&target, Some("main"), Some(&cred)).unwrap();
+    assert!(push_main.ok, "main push failed: {}", push_main.message);
+
+    // 5-1) 자격증명 없이 삭제 → 프롬프트에 매달리지 않고 auth_required.
+    let no_creds =
+        git_companion::git::merge::delete_remote_branch(&target, "origin", "main", "feature/legacy", None)
+            .unwrap();
+    assert!(!no_creds.ok && no_creds.auth_required, "자격증명 없이 HTTPS 삭제는 auth_required: {}", no_creds.message);
+    assert!(no_creds.message.contains("로그인"), "로그인 안내가 필요하다: {}", no_creds.message);
+
+    // 5-2) 틀린 비밀번호 → auth_required + 사유.
+    let bad_del = git_companion::git::merge::delete_remote_branch(
+        &target, "origin", "main", "feature/legacy", Some(&bad),
+    )
+    .unwrap();
+    assert!(!bad_del.ok && bad_del.auth_required, "틀린 자격증명 삭제는 auth_required: {}", bad_del.message);
+
+    // 5-3) 올바른 자격증명 → 삭제 성공, 원격 ref 도 사라진다.
+    let del = git_companion::git::merge::delete_remote_branch(
+        &target, "origin", "main", "feature/legacy", Some(&cred),
+    )
+    .unwrap();
+    assert!(del.ok, "delete failed: {}", del.message);
+    let ls = git_run(&origin, &["ls-remote", "--heads", "origin", "feature/legacy"]);
+    assert!(
+        String::from_utf8_lossy(&ls.stdout).trim().is_empty(),
+        "원격 ref 가 남아 있다: {}",
+        String::from_utf8_lossy(&ls.stdout)
+    );
+    assert!(
+        git_run(&work, &["rev-parse", "-q", "--verify", "refs/remotes/origin/feature/legacy"])
+            .status
+            .code()
+            != Some(0),
+        "fetch --prune 후 트래킹 ref 도 정리돼야 한다"
     );
 
     let _ = server.kill();

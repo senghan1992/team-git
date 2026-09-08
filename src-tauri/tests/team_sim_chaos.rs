@@ -814,11 +814,11 @@ impl Manager {
             }
             88..=93 => {
                 // 병합 브랜치(base) 자신을 지우려는 실수 — 가드가 한국어로 거부해야 한다.
-                match delete_remote_branch(&t, "origin", "main", "main") {
+                match delete_remote_branch(&t, "origin", "main", "main", None) {
                     Err(e) => {
                         expect_or_violate(ctx, "민지", "delete_remote_branch(main)", &e.to_string(), &mut self.stats);
                     }
-                    Ok(()) => ctx.violate("민지", "base 브랜치 삭제가 허용됐다".into()),
+                    Ok(out) => ctx.violate("민지", format!("base 브랜치 삭제가 허용됐다: {out:?}")),
                 }
             }
             _ => {
@@ -1009,7 +1009,7 @@ fn final_checks(ctx: &Ctx, bare: &Path, mgr: &mut Manager, members: &mut [Member
         );
     }
     let victim = members[(ctx.seed % 5) as usize].branch.clone();
-    let del = delete_remote_branch(&mgr.t(), "origin", "main", &victim);
+    let del = delete_remote_branch(&mgr.t(), "origin", "main", &victim, None);
     chk!(ctx, del.is_ok(), "병합 완료 브랜치 {victim} 삭제 실패: {del:?}");
     ctx.log("민지", format!("원격 브랜치 삭제: {victim}"));
 

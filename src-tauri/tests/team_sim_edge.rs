@@ -392,7 +392,7 @@ fn korean_slashed_branch_full_lifecycle() {
     assert!(p.ok, "{}", p.message);
     assert_eq!(base_unpushed_count(&target, "origin", "main").unwrap(), 0);
 
-    delete_remote_branch(&target, "origin", "main", "기능/로그인-개선").unwrap();
+    delete_remote_branch(&target, "origin", "main", "기능/로그인-개선", None).unwrap();
     let ls = git_run(
         work.path(),
         &["ls-remote", "--heads", "origin", "기능/로그인-개선"],
@@ -491,14 +491,14 @@ fn base_prefix_branch_names_are_not_confused_with_base() {
     assert!(!mnames.contains(&"mainline"), "unmerged excluded: {mnames:?}");
 
     assert!(
-        delete_remote_branch(&target, "origin", "main", "main").is_err(),
+        delete_remote_branch(&target, "origin", "main", "main", None).is_err(),
         "deleting the base is refused"
     );
     assert!(
-        delete_remote_branch(&target, "origin", "main", "mainline").is_err(),
+        delete_remote_branch(&target, "origin", "main", "mainline", None).is_err(),
         "unmerged prefix-named branch refused"
     );
-    delete_remote_branch(&target, "origin", "main", "main-hotfix").unwrap();
+    delete_remote_branch(&target, "origin", "main", "main-hotfix", None).unwrap();
     let ls = git_run(work.path(), &["ls-remote", "--heads", "origin"]);
     let heads = String::from_utf8_lossy(&ls.stdout);
     assert!(!heads.contains("refs/heads/main-hotfix"));
