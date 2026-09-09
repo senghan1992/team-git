@@ -89,7 +89,8 @@ export function renderSidebar(
     chipLabel.classList.remove("text-[color:var(--color-ink-muted)]");
     if (acc) {
       chipLabel.textContent = `${acc.name} (${acc.email})`;
-      chip.title = "내 정보";
+      // 이 칩이 마이페이지만이 아니라 이용 가이드의 문이라는 것을 알려 준다.
+      chip.title = "내 정보 · 이용 가이드 — 누르면 앱 사용법을 볼 수 있습니다";
     } else if (acc === null) {
       // 로그아웃 상태로도 앱을 쓸 수 있으므로, 여기서 왜 눌러야 하는지까지
       // 알려 준다. "로그인" 한 단어만 있으면 눌러야 하는지 알 수 없다.

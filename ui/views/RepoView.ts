@@ -30,7 +30,10 @@ export async function renderRepoView(
 
   // ── Header ────────────────────────────────────────────────────────────────
   const headRow = document.createElement("div");
-  headRow.className = "flex items-start justify-between gap-4";
+  // 좌측 "여기는 어디"(프로젝트명·경로), 우측 "여기서 무엇을 할지"(작업 버튼).
+  // 데스크톱 앱의 정석 헤더 패턴 — 마우스 사용자의 눈이 먼저 가는 자리에
+  // 주요 동사를 놓는다. 좁은 창에서는 버튼이 아랦으로 내려와도 우측 정렬(ml-auto).
+  headRow.className = "flex flex-wrap items-center justify-between gap-4";
   const head = document.createElement("div");
   head.className = "gc-page-head min-w-0";
   const title = document.createElement("div");
@@ -83,7 +86,7 @@ export async function renderRepoView(
 
   // ── Working branch + status row ───────────────────────────────────────────
   const meta = document.createElement("div");
-  meta.className = "flex items-center gap-4";
+  meta.className = "flex items-center gap-4 flex-wrap";
   main.appendChild(meta);
 
   // 브랜치 선택은 이 화면의 첫 행동이다 — 평범한 선택 상자가 아니라 눈에 띄는
@@ -112,39 +115,30 @@ export async function renderRepoView(
   const statusPill = document.createElement("span");
   statusPill.className = "gc-status-chip";
 
-  // 병합 관리자 배지 — .gpconfig의 브랜치별 관리자 지정을 보여준다.
+  // 병합 관리자 배지 — 이 브랜치의 규칙을 알려 주는 메타데이터일 뿐이므로
+  // 행의 끝(오른쪽)으로 보낸다. 컨트롤(동기화·새 브랜치)과 섞이면
+  // "누가 할 일"과 "무엇을 누를지"가 한 행에 섞여 읽힌다.
   const managerBadge = document.createElement("span");
-  managerBadge.className = "gc-badge gc-badge--neutral";
+  managerBadge.className = "gc-badge gc-badge--neutral ml-auto";
   managerBadge.style.display = "none";
 
   meta.appendChild(branchWrap);
   meta.appendChild(statusPill);
   meta.appendChild(managerBadge);
 
-  // 브랜치 선택 바로 아래의 안내 한 줄 — 원격(origin/) 브랜치가 왜 보이는지,
-  // 무엇을 골라야 하는지를 미리 말해 준다.
+  // 원격 브랜치를 골랐을 때만 나타나는 안내 한 줄 — 항상 떠 있으면 잡음이고,
+  // 필요한 순간(서버 브랜치를 고른 순간)에만 읽힌다.
   const branchHint = document.createElement("div");
-  branchHint.className =
-    "text-display-xs text-[color:var(--color-ink-muted)] -mt-2";
+  branchHint.className = "text-display-xs text-[color:var(--color-primary)] font-medium";
+  branchHint.style.display = "none";
   main.appendChild(branchHint);
 
   function paintBranchHint(selectedRemote: boolean) {
-    const hasRemote = branchSel.querySelector<HTMLOptGroupElement>("optgroup[data-remote]");
+    branchHint.style.display = selectedRemote ? "" : "none";
     if (selectedRemote) {
       branchHint.textContent =
-        "서버 브랜치를 골랐습니다 — 같은 이름의 내 브랜치로 전환됩니다.";
-      branchHint.className =
-        "text-display-xs text-[color:var(--color-primary)] font-medium -mt-2";
-      return;
+        "서버 브랜치를 골랐습니다 — 전환하면 같은 이름의 내 브랜치로 바뀝니다.";
     }
-    if (!hasRemote) {
-      branchHint.textContent = "내 컴퓨터의 브랜치만 있습니다 — 위에서 골라 전환할 수 있습니다.";
-      branchHint.className = "text-display-xs text-[color:var(--color-ink-muted)] -mt-2";
-      return;
-    }
-    branchHint.textContent =
-      "origin/…은 서버에 있는 브랜치입니다(팀원 브랜치가 섞여 보일 수 있습니다). 내 작업 브랜치는 위에서 골라 전환하세요.";
-    branchHint.className = "text-display-xs text-[color:var(--color-ink-muted)] -mt-2";
   }
 
   // ── Sync — pull latest base into the current branch (step 3 of the flow) ─
@@ -261,22 +255,20 @@ export async function renderRepoView(
   table.className = "gc-card overflow-x-auto";
   main.appendChild(table);
 
-  // ── Commit preview card ───────────────────────────────────────────────────
+  // ── Action row — 커밋·푸시·풀·스태시. ↑↓는 위의 상태 칩이 말하므로
+  // 헤더·중복 표시는 두지 않고, "다음" 표식으로 지금 누를 곳을 가리킨다.
+  // 카드로 감싸지 않고 프로젝트명 행 우측에 앉는다 — 버튼은 이미 유약 두께감의
+  // 독립된 대상이고, 마우스로 누르는 데스크톱 화면에서 버튼은 버튼 크기여야
+  // 읽힌다. 페이지 중간의 도구 행보다 헤더 액션이 데스크톱 관습이다.
   const commitCard = document.createElement("div");
-  commitCard.className = "gc-card flex flex-col gap-3";
+  commitCard.className = "flex flex-wrap items-center gap-2 ml-auto";
   commitCard.innerHTML = `
-    <div class="flex items-center justify-between">
-      <div class="text-display-md font-medium">이 저장소에서 할 일</div>
-      <span id="upstream-pill" class="inline-flex items-center gap-1"></span>
-    </div>
-    <div class="gc-action-bar gc-action-bar--4col">
-      <button id="btn-commit" class="gc-action-cell"></button>
-      <button id="btn-push" class="gc-action-cell"></button>
-      <button id="btn-pull" class="gc-action-cell"></button>
-      <button id="btn-stash" class="gc-action-cell"></button>
-    </div>
+    <button id="btn-commit" class="gc-action-btn"></button>
+    <button id="btn-push" class="gc-action-btn"></button>
+    <button id="btn-pull" class="gc-action-btn"></button>
+    <button id="btn-stash" class="gc-action-btn"></button>
   `;
-  main.appendChild(commitCard);
+  headRow.appendChild(commitCard);
 
   // ── 병합 요청 카드 — push와 승인을 잇는 명시적 단계 ─────────────────────
   //
@@ -289,16 +281,35 @@ export async function renderRepoView(
   main.appendChild(requestCard);
 
   // Fill button icons + labels (avoid HTML-entity parsing pitfalls for innerHTML).
+  // 각 버튼은 [아이콘 + 라벨 + 다음 태그] — "다음" 태그는 평소 숨겨 두고
+  // paintNextAction이 지금 누를 버튼에만 세운다.
+  function buildActionBtn(el: HTMLButtonElement, name: Parameters<typeof icon>[0], label: string) {
+    el.dataset.action = label;
+    el.appendChild(icon(name, 16));
+    const row = document.createElement("span");
+    row.className = "gc-action-btn__row";
+    const s = document.createElement("span");
+    s.textContent = label;
+    row.appendChild(s);
+    const next = document.createElement("span");
+    next.className = "gc-next-tag";
+    next.textContent = "다음";
+    next.hidden = true;
+    row.appendChild(next);
+    el.appendChild(row);
+  }
+  buildActionBtn(commitCard.querySelector<HTMLButtonElement>("#btn-commit")!, "commit", "커밋");
+  buildActionBtn(commitCard.querySelector<HTMLButtonElement>("#btn-push")!, "push", "푸시");
+  buildActionBtn(commitCard.querySelector<HTMLButtonElement>("#btn-pull")!, "pull", "풀");
+  buildActionBtn(commitCard.querySelector<HTMLButtonElement>("#btn-stash")!, "stash", "스태시");
+
+  // 배너·버튼 한 줄용 — 아이콘 + 라벨 (다음 태그 없음).
   function fillBtn(el: HTMLButtonElement, name: Parameters<typeof icon>[0], label: string) {
     el.appendChild(icon(name, 16));
     const s = document.createElement("span");
     s.textContent = label;
     el.appendChild(s);
   }
-  fillBtn(commitCard.querySelector<HTMLButtonElement>("#btn-commit")!, "commit", "커밋");
-  fillBtn(commitCard.querySelector<HTMLButtonElement>("#btn-push")!, "push", "푸시");
-  fillBtn(commitCard.querySelector<HTMLButtonElement>("#btn-pull")!, "pull", "풀");
-  fillBtn(commitCard.querySelector<HTMLButtonElement>("#btn-stash")!, "stash", "스태시");
 
   // Conflict banner — shown when the most recent pull produced conflicts.
   let conflictBanner: HTMLDivElement | null = null;
@@ -327,7 +338,8 @@ export async function renderRepoView(
     gotoBtn.addEventListener("click", () => onTab?.("merge"));
     banner.appendChild(gotoBtn);
     conflictBanner = banner;
-    main.insertBefore(banner, commitCard);
+    // 프로젝트명 행 바로 아래 — 충돌은 흐름을 막는 상태이므로 최상단에서 마주쳐야 한다.
+    headRow.after(banner);
   }
   function hideConflictBanner() {
     if (conflictBanner) {
@@ -548,10 +560,59 @@ export async function renderRepoView(
     firstStep.appendChild(body);
   }
 
+  /** 상태 → 액션 바의 "다음" 표식. 홈 카드의 다음 할 일과 같은 순서
+   *  (커밋 → 푸시 → 받기)이되, 막혀 있는 버튼은 건너뛴다 — 다음 행동을
+   *  가리키면서 누를 수 없으면 거짓말이 된다. 관리자 잠금·원격 없음으로
+   *  버튼이 나중에 막히는 경우를 위해 잠금 갱신 쪽에서도 다시 그린다. */
+  function paintNextAction() {
+    const fileCount = currentStatus?.files.length ?? 0;
+    const ahead = currentStatus?.ahead ?? 0;
+    const behind = currentStatus?.behind ?? 0;
+    const candidates: (HTMLButtonElement | null)[] = [];
+    if (fileCount > 0) candidates.push(commitCard.querySelector<HTMLButtonElement>("#btn-commit"));
+    if (ahead > 0) candidates.push(commitCard.querySelector<HTMLButtonElement>("#btn-push"));
+    if (behind > 0) candidates.push(commitCard.querySelector<HTMLButtonElement>("#btn-pull"));
+    let picked: HTMLButtonElement | null = null;
+    for (const c of candidates) {
+      if (c && !c.disabled) { picked = c; break; }
+    }
+    for (const btn of commitCard.querySelectorAll<HTMLButtonElement>(".gc-action-btn")) {
+      const tag = btn.querySelector<HTMLElement>(".gc-next-tag");
+      const isNext = btn === picked;
+      btn.classList.toggle("is-next", isNext);
+      if (tag) tag.hidden = !isNext;
+      if (isNext) btn.setAttribute("aria-label", `다음 할 일: ${btn.dataset.action}`);
+      else btn.removeAttribute("aria-label");
+    }
+  }
+
+  /** 상태 한 줄 스트립 — "변경 사항 없음"을 온 카드로 말하는 대신 조용한
+   *  한 줄로. 상태는 색만이 아니라 표식으로도 읽히게 (Pattern-Carry Rule). */
+  function paintCleanStrip(kind: "clean" | "error", text: string, sub?: string) {
+    table.className = "gc-clean";
+    table.innerHTML = "";
+    const ic = document.createElement("span");
+    ic.className = "gc-clean__icon";
+    if (kind === "error") ic.style.color = "var(--color-danger)";
+    ic.appendChild(icon(kind === "clean" ? "check" : "warn", 14));
+    table.appendChild(ic);
+    const t = document.createElement("span");
+    t.className = "gc-clean__text";
+    t.textContent = text;
+    table.appendChild(t);
+    if (sub) {
+      const s = document.createElement("span");
+      s.className = "gc-clean__sub";
+      s.textContent = sub;
+      table.appendChild(s);
+    }
+  }
+
   function renderStatusTable() {
     if (!currentStatus) {
-      table.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)]">상태를 불러올 수 없습니다</div>`;
+      paintCleanStrip("error", "상태를 불러올 수 없습니다");
       statusPill.textContent = "?";
+      paintNextAction();
       return;
     }
     const { ahead, behind, files } = currentStatus;
@@ -561,26 +622,21 @@ export async function renderRepoView(
     if (ahead > 0) parts.push(`↑${ahead}`);
     if (behind > 0) parts.push(`↓${behind}`);
     parts.push(files.length === 0 ? "변경 없음" : `변경 ${files.length}개`);
-    statusPill.textContent = parts.join(" ");
+    // 완전히 깨끗한 상태는 셀라돈 체크로도 읽히게 — 색만이 아니라 표식.
+    statusPill.innerHTML = "";
+    if (ahead === 0 && behind === 0 && files.length === 0) {
+      const ok = document.createElement("span");
+      ok.className = "inline-flex items-center self-center text-[color:var(--color-success)]";
+      ok.appendChild(icon("check", 12));
+      statusPill.appendChild(ok);
+    }
+    const pillText = document.createElement("span");
+    pillText.textContent = parts.join(" ");
+    statusPill.appendChild(pillText);
     statusPill.title =
       (ahead > 0 ? `푸시하지 않은 커밋 ${ahead}개. ` : "") +
       (behind > 0 ? `아직 받지 않은 커밋 ${behind}개. ` : "") +
       (files.length === 0 ? "커밋할 변경이 없습니다." : `커밋하지 않은 파일 ${files.length}개.`);
-    // Upstream pill near commit row.
-    const pill = commitCard.querySelector<HTMLElement>("#upstream-pill")!;
-    pill.innerHTML = "";
-    if (ahead > 0) {
-      const a = document.createElement("span");
-      a.className = "gc-badge gc-badge--success";
-      a.textContent = `↑${ahead}`;
-      pill.appendChild(a);
-    }
-    if (behind > 0) {
-      const b = document.createElement("span");
-      b.className = "gc-badge gc-badge--muted";
-      b.textContent = `↓${behind}`;
-      pill.appendChild(b);
-    }
     // 커밋할 것이 없을 때 '커밋'을 누르면 메시지를 다 쓴 뒤에야 실패한다.
     // 눌리지 않게 하고, 무엇을 하면 눌리는지 툴팁에 적는다.
     const commitBtnEl = commitCard.querySelector<HTMLButtonElement>("#btn-commit")!;
@@ -589,9 +645,11 @@ export async function renderRepoView(
       ? "커밋할 변경이 없습니다. 파일을 고치면 아래 목록에 나타납니다."
       : "";
     if (files.length === 0) {
-      table.innerHTML = `<div class="text-display-sm text-[color:var(--color-ink-muted)]">변경 사항 없음</div>`;
+      paintCleanStrip("clean", "커밋할 변경이 없습니다", "파일을 고치면 여기에 나타납니다");
+      paintNextAction();
       return;
     }
+    table.className = "gc-card overflow-x-auto";
     // 라벨/설명은 StatusTable 의 것을 쓴다. 예전에는 같은 표가 여기에도
     // 복사돼 있어서, 한쪽만 고치면 화면은 그대로였다.
     const rows = files.map((f) => `
@@ -654,6 +712,7 @@ export async function renderRepoView(
         });
       });
     }
+    paintNextAction();
   }
 
   renderStatusTable();
@@ -705,18 +764,36 @@ export async function renderRepoView(
         hide();
         return;
       }
+      requestCard.style.display = "";
+
+      // 세 상태(푸시 필요 · 요청 가능 · 요청됨)가 같은 카드 모양을 공유한다:
+      // [아이콘 + 병합 요청 + 상태 배지] → 한 줄 설명 → 행동.
+      const head = document.createElement("div");
+      head.className = "flex items-center gap-2 flex-wrap";
+      const ic = document.createElement("span");
+      ic.className = "text-[color:var(--color-ink-muted)] inline-flex";
+      ic.appendChild(icon("merge", 15));
+      head.appendChild(ic);
       const title = document.createElement("div");
-      title.className = "text-display-md font-medium";
+      title.className = "font-medium";
       title.textContent = "병합 요청";
-      requestCard.appendChild(title);
+      head.appendChild(title);
+      requestCard.appendChild(head);
+
+      const badge = (text: string, cls: string) => {
+        const b = document.createElement("span");
+        b.className = `gc-badge ${cls}`;
+        b.textContent = text;
+        head.appendChild(b);
+      };
 
       // 아직 푸시하지 않은 커밋이 있으면 요청할 수 없다 — 요청은 항상
       // 푸시된 커밋을 대상으로 한다 (어느 컴퓨터에서 봐도 같아야 하므로).
       if (ahead > 0) {
-        requestCard.style.display = "";
+        badge("푸시 필요", "gc-badge--warning");
         const note = document.createElement("div");
         note.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-        note.textContent = `푸시하지 않은 커밋 ${ahead}개가 있습니다. 위의 푸시로 원격에 올린 뒤 병합 요청을 보낼 수 있습니다.`;
+        note.textContent = `푸시하지 않은 커밋 ${ahead}개가 있습니다. 푸시로 원격에 올린 뒤 ${base} 관리자에게 승인을 요청할 수 있습니다.`;
         requestCard.appendChild(note);
         return;
       }
@@ -726,10 +803,9 @@ export async function renderRepoView(
         .then((list) => list.find((r) => r.request.branch === branch) ?? null)
         .catch(() => null);
       if (!open) {
-        requestCard.style.display = "";
         const desc = document.createElement("div");
         desc.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-        desc.textContent = `${branch}의 커밋이 원격에 올라와 있습니다. ${base} 병합 관리자에게 승인을 요청하세요 — 승인되면 ${base}에 병합되고 팀원에게 동기화 알림이 갑니다.`;
+        desc.textContent = `${branch}의 커밋이 원격에 올라와 있습니다. 승인을 요청하면 ${base} 병합 관리자의 대기열에 오르고, 승인·push되면 팀원 전원에게 동기화 알림이 갑니다.`;
         requestCard.appendChild(desc);
         const reqBtn = document.createElement("button");
         reqBtn.className = "gc-button-primary self-start";
@@ -739,21 +815,14 @@ export async function renderRepoView(
         return;
       }
       // 이미 요청됨 — 관리자의 승인을 기다리는 중.
-      requestCard.style.display = "";
-      const row = document.createElement("div");
-      row.className = "flex flex-wrap items-center gap-2";
-      const waiting = document.createElement("span");
-      waiting.className = "gc-badge gc-badge--info";
-      waiting.textContent = "요청됨 · 관리자 승인 대기";
-      row.appendChild(waiting);
-      const meta = document.createElement("span");
-      meta.className = "text-display-sm text-[color:var(--color-ink-muted)] min-w-0 truncate flex-1";
+      badge("요청됨 · 관리자 승인 대기", "gc-badge--info");
+      const meta = document.createElement("div");
+      meta.className = "text-display-sm text-[color:var(--color-ink-muted)] min-w-0 truncate";
       meta.textContent = `${base} ← ${open.request.branch} · ${relativeTimeShort(open.request.created_at)} · ${open.request.title}`;
       meta.title = open.request.local_only
         ? "요청을 원격에 공유하지 못했습니다 (네트워크·권한). 갱신으로 다시 시도하세요."
         : open.request.title;
-      row.appendChild(meta);
-      requestCard.appendChild(row);
+      requestCard.appendChild(meta);
       const btnRow = document.createElement("div");
       btnRow.className = "flex gap-2";
       const renewBtn = document.createElement("button");
@@ -906,6 +975,7 @@ export async function renderRepoView(
       : noRemote
         ? noRemoteWhy
         : "";
+    paintNextAction();
   }
 
   window.addEventListener("gc-account-changed", refreshManagerBadge);
@@ -933,6 +1003,7 @@ export async function renderRepoView(
       b.disabled = true;
       b.title = why;
     }
+    paintNextAction();
   }
   refreshRemoteDependentButtons();
 
@@ -940,6 +1011,7 @@ export async function renderRepoView(
   branchSel.addEventListener("change", async () => {
     // 원격 트래킹 항목(origin/…)을 선택한 경우 로컬 브랜치 이름으로 정규화해 전환한다.
     const branch = branchSel.value.replace(/^origin\//, "");
+    paintBranchHint(branchSel.value.startsWith("origin/"));
     branchSel.disabled = true;
     setBusy(statusPill, true, "전환 중…");
     try {
@@ -963,6 +1035,8 @@ export async function renderRepoView(
     } finally {
       branchSel.disabled = false;
       setBusy(statusPill, false);
+      // 전환 실패로 선택이 되돌아갔을 수도 있다 — 실제 선택값으로 힌트를 맞춘다.
+      paintBranchHint(branchSel.value.startsWith("origin/"));
     }
   });
   // ── Commit modal ─────────────────────────────────────────────────────────
