@@ -640,9 +640,9 @@ Rust 툴체인이나 WebKitGTK 없이 화면만 보려면 브라우저 미리보
 (git 동작은 실제로 실행됩니다 — [docs/PREVIEW.md](docs/PREVIEW.md)):
 
 ```bash
-pnpm seed:demo    # 데모 저장소 + 팀원 브랜치 3개 + 팀 알림 (한 번만)
+pnpm seed:demo    # 데모 저장소 + 팀원 브랜치 3개·병합 요청 3건 + 팀 알림 (한 번만)
 pnpm dev:web      # 접속 주소를 출력합니다
-pnpm demo:push    # (보면서) 팀원이 지금 push 하는 상황 → 우측 하단 알림
+pnpm demo:push    # (보면서) 팀원이 지금 push 하고 병합 요청까지 보내는 상황 → 우측 하단 알림
 ```
 
 ## 개발자 문서

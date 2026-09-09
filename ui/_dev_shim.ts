@@ -217,6 +217,27 @@ const mockData: Record<string, any> = {
       id: "team_evt_1",
       project_id: "p1",
       sender_device_name: "김민지의 MacBook",
+      event_kind: "merge_request",
+      repo_name: "demo-app",
+      payload: JSON.stringify({
+        kind: "merge_request",
+        data: {
+          author: "박준호",
+          message: "feat: 결제 실패 재시도",
+          sha: "b71e044",
+          repo_name: "demo-app",
+          branch: "feature/payment",
+          base: "main",
+          url: "",
+        },
+      }),
+      received_at: new Date().toISOString(),
+      read: false,
+    },
+    {
+      id: "team_evt_2",
+      project_id: "p1",
+      sender_device_name: "김민지의 MacBook",
       event_kind: "main_push",
       repo_name: "demo-app",
       payload: JSON.stringify({
@@ -230,8 +251,8 @@ const mockData: Record<string, any> = {
           url: "",
         },
       }),
-      received_at: new Date().toISOString(),
-      read: false,
+      received_at: new Date(Date.now() - 3600_000).toISOString(),
+      read: true,
     },
   ],
   sync_branch: { conflicted: false, files: [], message: "mock sync ok" },
@@ -370,6 +391,28 @@ const mockData: Record<string, any> = {
       changed_files: [
         { path: "ui/views/LoginView.ts", kind: "M" },
         { path: "ui/components/Sidebar.ts", kind: "M" },
+      ],
+      branch_exists: true,
+    },
+    // feature/payment 도 src/api/user.ts 를 고친다 — 변경 지도의 겹침 경고와
+    // 충돌 시나리오가 이 요청에서 이어진다.
+    {
+      request: {
+        base: "main",
+        branch: "feature/payment",
+        ref_path: "refs/gc-mr/main/feature/payment",
+        sha: "b71e044",
+        title: "결제 실패 재시도",
+        author: "박준호",
+        email: "junho@team.kr",
+        created_at: Math.floor(Date.now() / 1000) - 7200,
+        open: true,
+      },
+      ahead: 2,
+      behind: 1,
+      changed_files: [
+        { path: "src/api/user.ts", kind: "M" },
+        { path: "src/pay/retry.ts", kind: "A" },
       ],
       branch_exists: true,
     },

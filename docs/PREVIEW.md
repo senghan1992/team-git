@@ -102,35 +102,40 @@ GC_ALLOWED_HOSTS=diehyb9eq4w2q.cloudfront.net pnpm dev:web
 `pnpm seed:demo` 가 만드는 것:
 
 - `~/gc-demo/origin.git` — 원격 역할을 하는 bare 저장소
-- `~/gc-demo/demo-app` — `main` + 팀원 3명이 push한 브랜치
-  (`feature/login`, `feature/payment`, `fix/nav`)
+- `~/gc-demo/demo-app` — `main` + 팀원 3명이 push하고 **병합 요청까지 보낸** 브랜치
+  (`feature/login`, `feature/payment`, `fix/nav` — `refs/gc-mr/main/*` 요청 ref 포함)
 - 저장소에 커밋된 `.gpconfig` — 병합 대상 `main`, 병합 관리자 `minji@example.com`
 - 앱 설정에 저장소 등록 + AI 자동 병합 켜기
 - (팀 서버가 떠 있으면) **팀 알림 데모** — 이 앱의 기기를 서버에 등록해
   `demo-app 팀` 프로젝트를 만들고 저장소와 연결한 뒤, 가상 팀원 기기
-  (`~/gc-demo/teammate_token`)가 병합 대기 브랜치 3개의 push 알림을 보낸다.
-  알림은 **실제 배달 경로**(팀 서버 → 앱 폴링 → 수신함)로 도착한다.
+  (`~/gc-demo/teammate_token`)가 열려 있는 병합 요청 3건의 `merge_request` 알림을 보낸다.
+  알림은 **실제 배달 경로**(팀 서버 → 앱 폴링 → 수신함)로 도착하고,
+  병합 관리자(minji) 화면에만 보인다.
 
 그래서 열자마자 이 순서로 눌러 볼 수 있다:
 
-1. 로그인하면 5초 안에 **우측 하단에 "… 브랜치가 병합을 기다립니다" 알림**과
+1. 로그인하면 5초 안에 **우측 하단에 "… 병합 요청 도착" 알림**과
    사이드바 **알림 배지**가 뜬다 — 알림 탭에 들어가지 않아도 된다.
    알림 탭에서는 카드별 **읽음 표시**·**모두 읽음**이 남는다 (새로 고쳐도 유지).
-2. 홈 카드의 **다음 할 일: 3건 병합하기**
-3. 병합 탭 맨 위의 **최근 7일 병합 흐름** — 브랜치들이 언제 작업되어 `main` 에
-   어떻게 합쳐졌는지 시간축으로 보인다 (병합 대기 브랜치는 점선).
-4. 병합 탭의 **변경 지도** — `src/api/user.ts` 를 `feature/login`(김민지)과
+   `junho` (일반 팀원)로 로그인하면 같은 알림이 **안 보인다** — 요청은 그 베이스의
+   병합 관리자에게만 배달된다.
+2. 홈 카드의 **다음 할 일: 3건 병합 승인**
+3. 병합 탭의 **승인 대기열** — 요청 3건이 "병합 요청" 배지와 함께 기다린다.
+   요청은 push와 분리되어 있다: push만 한 브랜치는 오르지 않고, **병합 요청**만 승인을 기다린다.
+4. 병합 탭 맨 위의 **최근 7일 병합 흐름** — 브랜치들이 언제 작업되어 `main` 에
+   어떻게 합쳐졌는지 시간축으로 보인다 (요청 대기 중인 브랜치는 점선).
+5. 병합 탭의 **변경 지도** — `src/api/user.ts` 를 `feature/login`(김민지)과
    `feature/payment`(박준호)가 같이 고치고 있다는 경고
-5. `feature/login` 병합 → 깨끗하게 통과
-6. `feature/payment` 병합 → **충돌** → 자동 해결이 켜져 있으므로 바로 실행됨
-7. `junho / junho-demo-pw` 로 바꿔 로그인 → 같은 저장소가 팀원 시점(커밋/푸시/동기화)으로 보인다
+6. `feature/login` **병합하기(승인)** → 깨끗하게 통과하고 요청이 닫힌다
+7. `feature/payment` 병합 → **충돌** → 자동 해결이 켜져 있으므로 바로 실행됨
+8. `junho / junho-demo-pw` 로 바꿔 로그인 → 같은 저장소가 팀원 시점(커밋/푸시/동기화)으로 보인다
 
 팀원이 **지금** push 하는 상황을 보고 싶으면 (브라우저를 보고 있는 채로):
 
 ```bash
-pnpm demo:push                                   # 박준호가 새 브랜치에 커밋 → push → 알림
+pnpm demo:push                                   # 박준호가 새 브랜치에 커밋 → push → 병합 요청 → 알림
 pnpm demo:push -- --branch fix/typo --message "fix: 오타"
-pnpm seed:demo -- --notify                       # 병합 대기 3건의 알림을 다시 보내기
+pnpm seed:demo -- --notify                       # 열려 있는 병합 요청의 알림을 다시 보내기
 ```
 
 ```bash

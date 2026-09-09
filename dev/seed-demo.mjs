@@ -8,11 +8,13 @@
 //   ~/gc-demo/origin.git   원격 역할을 하는 bare 저장소
 //   ~/gc-demo/demo-app     작업 클론 — main + 팀원 3명의 브랜치가 push된 상태
 //                          (그중 2개는 같은 파일을 고쳐서 병합 시 충돌한다)
+//   + 팀원 3명 모두 병합 요청까지 보낸 상태 (refs/gc-mr/main/*)
 //   ~/.config/com.gitcompanion.app/config.json 에 저장소 등록 + AI 자동 병합 켜기
 //   + 팀 서버 주소 설정, 서버가 떠 있으면 데모 계정까지 가입
 //
-// 이렇게 해 두면 앱을 열자마자 "다음 할 일: 3건 병합하기" → 병합 탭의 변경
-// 지도 → 충돌 → AI 자동 해결까지 전부 실제 git 위에서 눌러 볼 수 있다.
+// 이렇게 해 두면 앱을 열자마자 "다음 할 일: 3건 병합 승인" → 병합 탭의 승인
+// 대기열 → 변경 지도 → 충돌 → AI 자동 해결까지 전부 실제 git 위에서 눌러 볼
+// 수 있다.
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -247,6 +249,17 @@ export async function fetchUser(id: string): Promise<User> {
     git(REPO, "push", "-q", "-u", "origin", b.name);
   }
 
+  // ── 팀원 3명이 병합 요청까지 보낸 상태 (refs/gc-mr/<base>/<branch>) ──────
+  // push는 작업 공유일 뿐 — **병합 요청**이 승인 신호다. 작업 탭의 "병합 요청
+  // 보내기"와 같은 상태를 실제 git으로 만든다: 요청 메타데이터(제목·요청자·
+  // 시각)를 태그 객체 message에 JSON으로 넣고 ref를 origin에 올린다. Rust
+  // git::mr::request_merge 와 dev/git-bridge.ts 가 같은 규칙으로 읽는다.
+  // 이 ref가 없으면 병합 탭의 승인 대기열·변경 지도, 홈 카드의 "N건 병합
+  // 승인"이 전부 빈 채로 보인다.
+  for (const b of branches) {
+    createMergeRequestRef(b.name, b.author, b.email, b.message);
+  }
+
   // 병합 관리자 시점으로 돌려 둔다.
   git(REPO, "checkout", "-q", "main");
   git(REPO, "config", "user.name", "김민지");
@@ -254,7 +267,38 @@ export async function fetchUser(id: string): Promise<User> {
 
   console.log(`데모 저장소 생성: ${REPO}`);
   console.log(`  원격: ${ORIGIN}`);
-  console.log(`  병합 대기 브랜치: ${branches.map((b) => b.name).join(", ")}`);
+  console.log(`  병합 요청 대기: ${branches.map((b) => b.name).join(", ")}`);
+}
+
+/** 병합 요청 하나를 만들어 origin에 공유한다 (앱의 병합 요청 보내기와 같음). */
+function createMergeRequestRef(branchName, author, email, title) {
+  const refPath = `refs/gc-mr/main/${branchName}`;
+  // 요청은 **푸시된 커밋**만 — origin/<branch> tip 을 고정한다 (Rust와 같은 규칙:
+  // 검토한 것이 곧 병합되는 것일 수 있게).
+  const sha = git(REPO, "rev-parse", `refs/remotes/origin/${branchName}`).trim();
+  const payload = JSON.stringify({
+    base: "main",
+    branch: branchName,
+    ref_path: refPath,
+    sha,
+    title,
+    author,
+    email,
+    created_at: Math.floor(Date.now() / 1000),
+    open: true,
+  });
+  // 임의 경로의 ref는 git tag 로 직접 못 만든다 — 임시 태그 → update-ref (앱과 같음).
+  const tmp = `gc-mr-tmp-${randomUUID()}`;
+  git(
+    REPO,
+    "-c", `user.name=${author}`,
+    "-c", `user.email=${email || "merge-request@gitcompanion.local"}`,
+    "tag", "-a", "-f", "-m", payload, tmp, sha,
+  );
+  const tagSha = git(REPO, "rev-parse", `refs/tags/${tmp}`).trim();
+  git(REPO, "tag", "-d", tmp);
+  git(REPO, "update-ref", refPath, tagSha);
+  git(REPO, "push", "-q", "origin", `+${refPath}:${refPath}`);
 }
 
 // ── 앱 설정에 등록 ──────────────────────────────────────────────────────────
@@ -386,8 +430,9 @@ if (serverUp && (usable.length > 0 || existsWithOtherPassword.length > 0)) {
 //   ① 이 앱(기기 토큰 peer_token)을 서버에 등록하고 "demo-app 팀" 프로젝트를 만들어
 //      demo-app 저장소와 연결한다 (repo_projects.json — 앱과 같은 파일).
 //   ② 가상 팀원 기기(~/gc-demo/teammate_token)를 만들어 같은 팀에 합류시킨다.
-//   ③ 팀원 기기가 병합 대기 브랜치 3개의 branch_push 알림을 보낸다
-//      (데모를 처음 만들 때, 또는 --notify 를 줬을 때).
+//   ③ 팀원 기기가 열려 있는 병합 요청의 merge_request 알림을 보낸다
+//      (데모를 처음 만들 때, 또는 --notify 를 줬을 때) — 관리자에게만
+//      "병합 요청 도착" 알림이 가고, 일반 팀원 화면에는 안 보인다.
 // 이후 `pnpm demo:push` 로 팀원의 새 push 를 언제든 흘려 넣을 수 있다.
 const DEMO_PROJECT_NAME = "demo-app 팀";
 const APP_TOKEN_FILE = join(CONFIG_DIR, "peer_token");
@@ -471,8 +516,11 @@ if (serverUp) {
       links = {};
     }
     const repoKey = REPO; // 앱은 canonicalize 한 실제 경로를 열쇠로 쓴다 — 데모 경로에는 심볼릭 링크가 없다.
-    const linked = links[repoKey] ?? [];
-    if (!linked.includes(project.id)) links[repoKey] = [...linked, project.id];
+    // 서버에 더 이상 없는 팀(예전 DB의 프로젝트) 링크는 정리한다 — 남아 있으면
+    // 팀원 기기의 알림 전송이 403으로 계속 실패해 데모 출력이 소음이 된다.
+    const liveIds = new Set((list.json?.projects ?? []).map((p) => p.id));
+    const linked = (links[repoKey] ?? []).filter((id) => liveIds.has(id));
+    links[repoKey] = [...new Set([...linked, project.id])];
     writeFileSync(REPO_PROJECTS, JSON.stringify(links, null, 2));
 
     // ② 팀원 기기
@@ -486,20 +534,37 @@ if (serverUp) {
     const wantEvents = created || args.has("--notify") || !existsSync(join(DEMO_ROOT, ".notified"));
     let sent = 0;
     if (wantEvents) {
-      const refs = git(REPO, "for-each-ref", "refs/remotes/origin", "--format=%(refname:short)%09%(objectname)%09%(authorname)%09%(subject)")
+      // 대기열에 실제로 열려 있는 병합 요청만 읽어 알림으로 보낸다 — 알림과
+      // 승인 대기열이 같은 상태를 가리키게. 요청 메타데이터는 태그 message의
+      // JSON (commands/mr.rs notify_request 와 같은 payload 모양).
+      const mrRefs = git(REPO, "for-each-ref", "refs/gc-mr/main", "--format=%(objectname)%09%(refname)")
         .split("\n")
         .filter(Boolean)
-        .map((l) => l.split("\t"))
-        .filter(([name]) => name !== "origin/main" && name !== "origin/HEAD" && name !== "origin");
-      for (const [name, sha, author, subject] of refs) {
-        const branch = name.replace(/^origin\//, "");
+        .map((l) => l.split("\t"));
+      for (const [object] of mrRefs) {
+        const tagOut = git(REPO, "cat-file", "tag", object);
+        const body = tagOut.split("\n\n")[1] ?? "";
+        let req;
+        try {
+          req = JSON.parse(body.trim());
+        } catch {
+          continue; // 읽을 수 없는 ref 는 건너뛴다 (앱의 목록 조회와 같은 규칙).
+        }
         const payload = JSON.stringify({
-          kind: "branch_push",
-          data: { author, message: subject, sha, repo_name: "demo-app", url: normalizeRemoteUrl(ORIGIN), branch },
+          kind: "merge_request",
+          data: {
+            author: req.author,
+            message: req.title,
+            sha: req.sha,
+            repo_name: "demo-app",
+            url: normalizeRemoteUrl(ORIGIN),
+            branch: req.branch,
+            base: req.base ?? "main",
+          },
         });
         const ev = await api(mateToken, "POST", "/events", {
           project_id: project.id,
-          event_kind: "branch_push",
+          event_kind: "merge_request",
           repo_name: "demo-app",
           payload,
         });
@@ -509,7 +574,7 @@ if (serverUp) {
     }
     console.log("");
     console.log(`팀 알림 데모: 프로젝트 "${DEMO_PROJECT_NAME}" (합류 코드 ${project.join_code}) — demo-app 저장소 연결됨`);
-    if (sent > 0) console.log(`  팀원 기기가 branch_push 알림 ${sent}건을 보냈습니다 — 앱이 5초 안에 받아 우측 하단에 띄웁니다.`);
+    if (sent > 0) console.log(`  팀원 기기가 병합 요청(merge_request) 알림 ${sent}건을 보냈습니다 — 병합 관리자(minji) 화면에 5초 안에 "병합 요청 도착"이 뜹니다.`);
     console.log("  팀원의 새 push 를 흘려 넣으려면: pnpm demo:push   (알림을 다시 보내려면: pnpm seed:demo -- --notify)");
   } catch (e) {
     console.log(`\n⚠ 팀 알림 데모를 준비하지 못했습니다: ${e.message}`);

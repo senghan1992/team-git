@@ -226,16 +226,22 @@ impl Store {
         // 하나(최신)로 합쳐야 수신함·배지가 "같은 브랜치가 여러 개"로 보이지
         // 않는다. 이전 push 알림은 읽음으로 대체한다 (최신 건이 그 브랜치의
         // 할 일을 대표한다).
-        if row.event_kind.ends_with("branch_push") && !row.read {
+        // 병합 요청도 같은 규칙이다 — 같은 브랜치에 요청을 다시 보내면(커밋을
+        // 추가한 뒤 갱신) 최신 요청이 대표하고 이전 미읽음 요청 알림은 읽음으로
+        // 대체한다 (브릿지 emitMergeRequestEvent 와 같은 규칙).
+        if !row.read
+            && (row.event_kind.ends_with("branch_push") || row.event_kind.ends_with("merge_request"))
+        {
             if let Some((url_key, branch)) = branch_key_of(&row.payload) {
-                self.collapse_branch_push(&row.project_id, &url_key, &branch, &row.id)?;
+                self.collapse_branch_notifications(&row.project_id, &url_key, &branch, &row.id)?;
             }
         }
         Ok(())
     }
 
-    /// 같은 저장소·같은 브랜치의 이전 미읽음 branch_push 를 읽음으로 대체한다.
-    fn collapse_branch_push(
+    /// 같은 저장소·같은 브랜치의 이전 미읽음 push·병합 요청 알림을 읽음으로
+    /// 대체한다 (branch_push 와 merge_request 가 같은 대상).
+    fn collapse_branch_notifications(
         &self,
         project_id: &str,
         url_key: &str,
@@ -246,7 +252,7 @@ impl Store {
             if r.id == except_id || r.project_id != project_id {
                 continue;
             }
-            if !r.event_kind.ends_with("branch_push") {
+            if !r.event_kind.ends_with("branch_push") && !r.event_kind.ends_with("merge_request") {
                 continue;
             }
             let Some((u, b)) = branch_key_of(&r.payload) else { continue };
@@ -258,19 +264,19 @@ impl Store {
         Ok(())
     }
 
-    /// 병합이 끝난 브랜치의 남은 "병합 요청" 알림을 읽음 처리한다.
+    /// 병합이 끝난 브랜치의 남은 push·병합 요청 알림을 읽음 처리한다.
     ///
     /// 관리자가 병합 센터에서 바로 병합한 경우(토스트·수신함 버튼을 거치지
     /// 않음) 수신함에 "병합 요청" 카드가 남는다 — 이미 병합한 항목에 병합이
     /// 또 남아 보이는 꼴이다. 병합이 끝난 시점에 이 저장소·이 브랜치의
-    /// 미읽음 branch_push 를 정리해 준다. 지운 건수를 돌려준다.
+    /// 미읽음 branch_push·merge_request 를 정리해 준다. 지운 건수를 돌려준다.
     pub fn mark_branch_push_read(&self, url_key: &str, branch: &str) -> AppResult<u32> {
         if url_key.is_empty() || branch.is_empty() {
             return Ok(0);
         }
         let mut n = 0u32;
         for r in self.list_team_events(10_000, true)? {
-            if !r.event_kind.ends_with("branch_push") {
+            if !r.event_kind.ends_with("branch_push") && !r.event_kind.ends_with("merge_request") {
                 continue;
             }
             let Some((u, b)) = branch_key_of(&r.payload) else { continue };

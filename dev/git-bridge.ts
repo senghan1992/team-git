@@ -995,6 +995,62 @@ async function emitPushEvent(r: RepoRecord, t: GitTarget, branch: string): Promi
     }
   }
 }
+/**
+ * 병합 요청이 원격 ref 로 공유되면 관리자에게 알린다 — Rust `notify_request`
+ * 와 같은 payload(`{kind:"merge_request", data:{author, message, sha, repo_name,
+ * url, branch, base}}`) 와 같은 보내는 규칙(같은 서버·기기 토큰·프로젝트 연결,
+ * 실패해도 요청 자체는 ref 로 이미 공유됐으므로 조용히 넘어간다).
+ * 같은 브랜치의 미읽음 merge_request 알림은 최신 요청이 대표하도록 읽음으로
+ * 대체한다 (Rust store 의 collapse 와 같은 규칙).
+ */
+async function emitMergeRequestEvent(r: RepoRecord, t: GitTarget, req: MergeRequestRecord): Promise<void> {
+  const peer = peerSettings(loadSettings());
+  const backend = String(peer.backend_url ?? "").trim();
+  const token = String(peer.device_token ?? "").trim() || (peer.device_id ? peerToken() : "");
+  if (!backend || !token) return;
+  const projects = projectsForRepo(r);
+  if (projects.length === 0) return;
+  const url = normalizeRemoteUrl(tgGit(t, ["remote", "get-url", "origin"]).stdout.trim());
+  const payload = JSON.stringify({
+    kind: "merge_request",
+    data: {
+      author: req.author,
+      message: req.title,
+      sha: req.sha,
+      repo_name: r.display_name,
+      url,
+      branch: req.branch,
+      base: req.base,
+    },
+  });
+  // 같은 브랜치의 이전 미읽음 요청 알림을 읽음으로 대체한다 — 대기열에
+  // "같은 브랜치가 여러 개"로 보이지 않게 (최신 요청이 그 브랜치를 대표).
+  const rows = loadInbox();
+  let changed = false;
+  const want = `${url}\u0000${req.branch}`;
+  for (const row of rows) {
+    if (row.read) continue;
+    if (!String(row.event_kind ?? "").endsWith("merge_request")) continue;
+    if (branchKeyOf(row) === want) {
+      row.read = true;
+      changed = true;
+    }
+  }
+  if (changed) saveInbox(rows);
+  for (const projectId of projects) {
+    try {
+      const res = await peerFetch(backend, token, "POST", "/events", {
+        project_id: projectId,
+        event_kind: "merge_request",
+        repo_name: r.display_name,
+        payload,
+      });
+      if (res.status >= 300) console.warn(`[gc-bridge] 병합 요청 알림 전송 실패 (${res.status}) project=${projectId}`);
+    } catch (e) {
+      console.warn(`[gc-bridge] 병합 요청 알림 전송 실패: ${(e as Error).message}`);
+    }
+  }
+}
 
 /** Rust `gpconfig::is_merge_target` — merge_targets → default_base_branch → 등록 기본 브랜치. */
 async function isMergeTargetBranch(r: RepoRecord, branch: string): Promise<boolean> {
@@ -1157,7 +1213,14 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
           email,
         );
         if ("error" in res) return jsonError("git", res.error);
-        return res;
+        // HTTPS 원격에서 ref push 가 실패한 경우에만 로그인 모달로 이어준다
+        // (Rust 는 remote_is_https 로 판정 — SSH 는 auth_required 를 내지 않는다).
+        const remoteUrl = tgGit(t, ["remote", "get-url", "origin"]).stdout.trim();
+        const authRequired = /^https?:\/\//.test(remoteUrl) && res.local_only === true;
+        // 미리보기에는 pre-push hook 실행 파일이 없으므로 여기서 관리자에게
+        // 알린다 (Rust `notify_request` 와 같은 payload·규칙, fail-open).
+        if (!res.local_only) await emitMergeRequestEvent(r, t, res);
+        return { request: res, auth_required: authRequired };
       }
       case "list_requested_merges": {
         const r = repoById(args.repoId as string);
@@ -1433,7 +1496,8 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         let changed = false;
         for (const r of rows) {
           if (r.read) continue;
-          if (!String(r.event_kind ?? "").endsWith("branch_push")) continue;
+          const kind = String(r.event_kind ?? "");
+          if (!kind.endsWith("branch_push") && !kind.endsWith("merge_request")) continue;
           if (branchKeyOf(r) === want) {
             r.read = true;
             changed = true;
@@ -1443,23 +1507,12 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         if (changed) saveInbox(rows);
         return n;
       }
-
-      // ── 기기 · 프로젝트 · 구성원 (팀 서버 그대로) ─────────────────────
-      case "peer_register_device": {
-        const backend = String(args.backendUrl ?? args.backend_url ?? "").trim().replace(/\/+$/, "");
-        if (!backend) return jsonError("bad_request", "서버 주소를 입력하세요.");
-        try {
-          return await registerDevice(backend, peerToken(), String(args.name ?? "").trim() || "Git Companion");
-        } catch (e) {
-          return jsonError("internal", (e as Error).message ?? String(e));
-        }
-      }
       case "peer_list_projects": {
         try {
           const { backend, token } = await ensureDeviceRegistered();
           const body = peerOk(
-            await peerFetch<{ projects: unknown[] }>(backend, token, "GET", "/projects"),
-            "프로젝트 목록",
+            await peerFetch<{ projects?: unknown[] }>(backend, token, "GET", "/projects"),
+            "팀 목록",
           );
           return body?.projects ?? [];
         } catch (e) {
