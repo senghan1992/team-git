@@ -80,8 +80,9 @@ fn status_returns_branch_and_files() {
 // ── Merge center tests ─────────────────────────────────────────────────────────
 
 use git_companion::git::merge::{
-    abort_merge, complete_merge, conflict_detail, list_pending_branches, merge_in_progress,
-    remaining_conflicts, resolve_conflict, start_merge, Resolution,
+    abort_merge, complete_merge, conflict_detail, delete_remote_branch, list_merged_remote_branches,
+    list_pending_branches, merge_in_progress, remaining_conflicts, resolve_conflict, start_merge,
+    Resolution,
 };
 use git_companion::git::merge::{parse_pending_output, pending_probe_script};
 use git_companion::git::push;
@@ -185,8 +186,6 @@ fn merged_but_unpushed_branch_is_flagged_not_relisted() {
 /// 브랜치는 거부된다 (팀원의 커밋이 지워지면 안 된다).
 #[test]
 fn merged_remote_branches_are_listed_and_deletable() {
-    use git_companion::git::merge::{delete_remote_branch, list_merged_remote_branches};
-
     let (bare, work) = make_bare_origin();
     add_origin_clone(work.path(), bare.path());
     seed_commit(work.path(), "app.txt", "v1\n", "init");
@@ -228,6 +227,145 @@ fn merged_remote_branches_are_listed_and_deletable() {
     );
     let merged = list_merged_remote_branches(&target, "origin", "main").unwrap();
     assert!(merged.iter().all(|b| b.short_name != "feature/done"));
+    // 같은 이름의 로컬 브랜치도 함께 정리됐어야 한다 — "지웠는데 git branch
+    // 에 그대로 보인다"가 없어야 한다.
+    let local = git_run(
+        work.path(),
+        &["show-ref", "--verify", "-q", "refs/heads/feature/done"],
+    );
+    assert!(!local.status.success(), "로컬 브랜치도 정리돼야 한다");
+}
+
+/// 원격 브랜치 삭제 후 로컬 사본 정리 규칙:
+/// - 같은 이름의 로컬 브랜치 커밋이 전부 base 에 들어갔으면 함께 지운다
+///   (누가 `git branch` 를 쳐도 안 보인다).
+/// - 로컬에 아직 base 에 없는 커밋이 남아 있으면 **지우지 않고** 유지하며
+///   (커밋 유실 방지), 결과에 사유를 실어 UI 가 안내하게 한다.
+#[test]
+fn delete_remote_branch_cleans_local_copy_when_safe() {
+    let (bare, work) = make_bare_origin();
+    add_origin_clone(work.path(), bare.path());
+    seed_commit(work.path(), "app.txt", "v1\n", "init");
+    git_run(work.path(), &["push", "-q", "origin", "main"]);
+
+    // feature/merged: 병합·push 완료 → 로컬 브랜치도 base 의 조상 → 정리 대상.
+    git_run(work.path(), &["checkout", "-q", "-b", "feature/merged"]);
+    seed_commit(work.path(), "m.txt", "m\n", "feat merged");
+    git_run(work.path(), &["push", "-q", "origin", "feature/merged"]);
+    git_run(work.path(), &["checkout", "-q", "main"]);
+    git_run(work.path(), &["merge", "--no-ff", "-q", "feature/merged"]);
+    git_run(work.path(), &["push", "-q", "origin", "main"]);
+
+    // feature/ahead: 원격 tip 은 병합됐지만 **로컬에만** 커밋이 하나 더 있다.
+    git_run(work.path(), &["checkout", "-q", "-b", "feature/ahead"]);
+    seed_commit(work.path(), "a.txt", "a\n", "feat ahead");
+    git_run(work.path(), &["push", "-q", "origin", "feature/ahead"]);
+    git_run(work.path(), &["checkout", "-q", "main"]);
+    git_run(work.path(), &["merge", "--no-ff", "-q", "feature/ahead"]);
+    git_run(work.path(), &["push", "-q", "origin", "main"]);
+    git_run(work.path(), &["checkout", "-q", "feature/ahead"]);
+    seed_commit(work.path(), "a2.txt", "a2\n", "local only");
+    git_run(work.path(), &["checkout", "-q", "main"]);
+    git_run(work.path(), &["fetch", "-q", "origin"]);
+
+    let target = Target::Local(work.path().into());
+
+    // 1) 병합 끝난 브랜치 삭제 → 원격·트래킹·로컬 브랜치 모두 정리.
+    let out = delete_remote_branch(&target, "origin", "main", "feature/merged", None).unwrap();
+    assert!(out.ok, "{}", out.message);
+    assert!(
+        out.cleaned_locally.iter().any(|s| s.contains("feature/merged")),
+        "로컬 브랜치 정리 사실을 알려야 한다: {:?}",
+        out.cleaned_locally
+    );
+    let ls = git_run(work.path(), &["ls-remote", "--heads", "origin", "feature/merged"]);
+    assert!(
+        String::from_utf8_lossy(&ls.stdout).trim().is_empty(),
+        "원격에서 지워져야 한다"
+    );
+    let local = git_run(
+        work.path(),
+        &["show-ref", "--verify", "-q", "refs/heads/feature/merged"],
+    );
+    assert!(!local.status.success(), "로컬 브랜치도 지워져야 한다");
+    let tracking = git_run(
+        work.path(),
+        &["show-ref", "--verify", "-q", "refs/remotes/origin/feature/merged"],
+    );
+    assert!(!tracking.status.success(), "트래킹 ref 도 지워져야 한다");
+    let branch = git_run(work.path(), &["branch"]);
+    assert!(
+        !String::from_utf8_lossy(&branch.stdout).contains("feature/merged"),
+        "git branch 에 안 보여야 한다"
+    );
+
+    // 2) 로컬에만 커밋이 남은 브랜치 → 원격은 삭제되지만 로컬은 유지된다.
+    let out2 = delete_remote_branch(&target, "origin", "main", "feature/ahead", None).unwrap();
+    assert!(out2.ok, "{}", out2.message);
+    assert!(
+        out2.kept_locally.iter().any(|s| s.contains("feature/ahead")),
+        "유지 사유를 알려야 한다: {:?}",
+        out2.kept_locally
+    );
+    let local2 = git_run(
+        work.path(),
+        &["show-ref", "--verify", "-q", "refs/heads/feature/ahead"],
+    );
+    assert!(local2.status.success(), "커밋이 남은 로컬 브랜치는 유지");
+    let log = git_run(work.path(), &["log", "--oneline", "feature/ahead"]);
+    assert!(
+        String::from_utf8_lossy(&log.stdout).contains("local only"),
+        "커밋이 유실되면 안 된다"
+    );
+}
+
+/// "본인이 만든 브랜치만 삭제" 판정 규칙 — 이름 또는 이메일이 현재 사용자와
+/// 일치하면 내 브랜치다.
+#[test]
+fn identity_matches_own_branch_rules() {
+    use git_companion::git::merge::identity_matches;
+    // 이름이 같으면 내 브랜치 (이메일은 달라도).
+    assert!(identity_matches("홍길동", "old@x.kr", Some("홍길동"), Some("new@x.kr")));
+    // 이름은 달라도 이메일이 같으면 내 브랜치 — 팀원 동명이인 등.
+    assert!(identity_matches("hong", "hong@team.kr", Some("홍길동"), Some("hong@team.kr")));
+    // 공백·대소문자는 무시.
+    assert!(identity_matches("  Hong ", "HONG@team.kr", Some("hong"), Some("hong@team.kr")));
+    // 둘 다 다르면 남의 브랜치.
+    assert!(!identity_matches("kim", "kim@team.kr", Some("hong"), Some("hong@team.kr")));
+    // 신원을 모르면 어떤 브랜치도 내 것이 아니다 — 삭제를 허락하지 않는다.
+    assert!(!identity_matches("hong", "hong@team.kr", None, None));
+    // 작성자 정보가 비어 있으면 내 브랜치가 아니다.
+    assert!(!identity_matches("", "", Some("hong"), Some("hong@team.kr")));
+}
+
+/// 현재 사용자 신원 — 로컬 저장소 git 설정 우선, 없으면 로그인 계정 대체.
+#[test]
+fn current_git_identity_prefers_repo_config_then_session() {
+    use git_companion::git::merge::current_git_identity;
+
+    // 1) git 설정이 있으면 그것을 쓴다 (세션은 무시).
+    let td = TempDir::new().unwrap();
+    init_repo(td.path()); // user.name=tester, user.email=test@x
+    let target = Target::Local(td.path().into());
+    let (n, e) = current_git_identity(&target, Some(("세션홍길동", "session@x.kr")));
+    assert_eq!(n.as_deref(), Some("tester"));
+    assert_eq!(e.as_deref(), Some("test@x"));
+
+    // 2) git 설정이 없으면(로컬·글로벌 모두 비어 있음) 로그인 계정으로 대체.
+    //    (머신에 글로벌 git 신원이 있어도 로컬 빈 값이 우선한다 — 빈 값으로
+    //    덮으면 조회가 글로벌로 내려가지 않는다.)
+    let td2 = TempDir::new().unwrap();
+    git_run(td2.path(), &["init", "-q"]);
+    git_run(td2.path(), &["config", "user.name", ""]);
+    git_run(td2.path(), &["config", "user.email", ""]);
+    let target2 = Target::Local(td2.path().into());
+    let (n2, e2) = current_git_identity(&target2, Some(("홍길동", "hong@team.kr")));
+    assert_eq!(n2.as_deref(), Some("홍길동"));
+    assert_eq!(e2.as_deref(), Some("hong@team.kr"));
+
+    // 3) 둘 다 없으면 None — 아무 브랜치도 내 것이 아니다.
+    let (n3, e3) = current_git_identity(&target2, None);
+    assert!(n3.is_none() && e3.is_none());
 }
 
 /// modify/delete 충돌 — 한쪽이 파일을 지우고 다른 쪽이 수정했다. 충돌 표시가

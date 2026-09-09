@@ -219,6 +219,11 @@ pub async fn branch_file_diff(
 }
 
 /// 병합이 끝나 base에 완전히 포함된 원격 브랜치 목록 — 정리(삭제) 후보.
+///
+/// `mine`(본인 작성 브랜치)을 채워 UI 가 삭제 버튼을 그 브랜치에만
+/// 활성화하게 한다 — **본인이 만든 브랜치만 삭제할 수 있다.** 신원은
+/// 저장소 git 설정(user.name/user.email)을 우선하고, 없으면 로그인 계정을
+/// 쓴다 (git 이 기록한 author 와 같은 출처끼리 비교해야 오탐이 없다).
 #[tauri::command]
 pub async fn list_merged_remote_branches(
     repo_id: Uuid,
@@ -230,10 +235,36 @@ pub async fn list_merged_remote_branches(
     // 정리 후보가 아니다 — 팀의 합류 지점이지 작업 브랜치가 아니다.
     let targets = merge_target_branches(&target, &base);
     merged.retain(|b| !targets.contains(&b.short_name));
+    let (name, email) = current_user_identity(&target);
+    for b in &mut merged {
+        b.mine = git::merge::identity_matches(
+            &b.author,
+            &b.author_email,
+            name.as_deref(),
+            email.as_deref(),
+        );
+    }
     Ok(merged)
 }
 
+/// 현재 사용자의 (이름, 이메일) — 저장소 git 설정 우선, 없으면 로그인 계정.
+/// 둘 다 없으면 (None, None) — 그 경우 어떤 브랜치도 "내 것"이 아니다.
+fn current_user_identity(target: &git::Target) -> (Option<String>, Option<String>) {
+    let session = config_store::load()
+        .ok()
+        .and_then(|c| c.session)
+        .map(|s| (s.user.name, s.user.email));
+    git::merge::current_git_identity(
+        target,
+        session.as_ref().map(|(n, e)| (n.as_str(), e.as_str())),
+    )
+}
+
 /// 병합이 끝난 원격 브랜치를 origin에서 삭제한다.
+///
+/// **본인이 만든 브랜치만 삭제할 수 있다** — 작성자가 현재 사용자(저장소
+/// git 설정 user.name/user.email 또는 로그인 계정)와 일치하지 않으면 거부하고,
+/// 신원을 확인할 수 없어도 거부한다(모르면 삭제를 허락하지 않는다).
 ///
 /// `credentials` 는 HTTPS 원격(Git 호스트) 삭제에 쓸 로그인 정보다 — 없으면
 /// 결과의 `auth_required` 가 true 로 돌아와 UI 가 아이디/비밀번호 모달을
@@ -254,6 +285,41 @@ pub async fn delete_remote_branch(
             "{branch}은(는) 병합 대상 브랜치라 삭제할 수 없습니다."
         )));
     }
+    // ── 본인 브랜치만 삭제 가능 ──
+    let (name, email) = current_user_identity(&target);
+    if name.is_none() && email.is_none() {
+        return Err(AppError::Git(
+            "본인 브랜치인지 확인할 수 없습니다 — 저장소의 git 사용자 설정(user.name)을 확인하거나 로그인 상태를 유지하세요."
+                .into(),
+        ));
+    }
+    let author_out = git::run_at_target(
+        &target,
+        [
+            "for-each-ref",
+            &format!("refs/remotes/{MERGE_REMOTE}/{branch}"),
+            "--format=%(authorname)%09%(authoremail)",
+        ],
+    )?;
+    if !author_out.ok() || author_out.stdout.trim().is_empty() {
+        return Err(AppError::Git(format!(
+            "{branch} 브랜치를 찾을 수 없습니다 — 목록을 새로고침하세요."
+        )));
+    }
+    let mut parts = author_out.stdout.trim().splitn(2, '\t');
+    let author = parts.next().unwrap_or("").to_string();
+    let author_email = parts.next().unwrap_or("").to_string();
+    if !git::merge::identity_matches(&author, &author_email, name.as_deref(), email.as_deref()) {
+        let who = if author.trim().is_empty() {
+            "다른 팀원".to_string()
+        } else {
+            format!("{author}님")
+        };
+        return Err(AppError::Git(format!(
+            "{branch} 브랜치는 {who}이(가) 만든 브랜치라 삭제할 수 없습니다 — 본인이 만든 브랜치만 삭제할 수 있습니다."
+        )));
+    }
+
     let outcome = git::merge::delete_remote_branch(
         &target,
         MERGE_REMOTE,

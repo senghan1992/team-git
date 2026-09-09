@@ -538,18 +538,33 @@ pub struct DeleteBranchOutcome {
     /// HTTPS 원격 + 자격증명 부재/거부 → 로그인 모달이 필요하다.
     #[serde(default)]
     pub auth_required: bool,
+    /// 원격 삭제 후 이 저장소에서 함께 정리한 로컬 상태
+    /// (예: `["로컬 브랜치 feature/login"]`).
+    #[serde(default)]
+    pub cleaned_locally: Vec<String>,
+    /// 커밋 유실 위험 등으로 지우지 않고 남긴 로컬 상태 — UI 가 사용자에게
+    /// 직접 정리하도록 안내한다.
+    #[serde(default)]
+    pub kept_locally: Vec<String>,
 }
 
 /// 병합이 끝나 base에 완전히 포함된 원격 브랜치 — origin에 쌓인 죽은
-/// feature 브랜치를 정리할 후보 목록이다.
+/// feature 브랜치를 정리할 후보 목록이다. `mine` 은 이 저장소 사용자가
+/// 만든(작성자) 브랜치인가 — UI 는 이 플래그를 보고 삭제 버튼을 활성화한다.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergedRemoteBranch {
     /// 원격 트래킹 이름 (예: "origin/feature/login").
     pub name: String,
     /// 브랜치 이름 (예: "feature/login") — 삭제 시 이 이름을 쓴다.
     pub short_name: String,
+    /// 작성자 이름 — 브랜치 tip 커밋의 author (예: "홍길동").
     pub author: String,
+    /// 작성자 이메일 — 브랜치 tip 커밋의 author email.
+    pub author_email: String,
     pub unix_time: i64,
+    /// 현재 사용자가 만든 브랜치인가 — 본인 브랜치만 삭제할 수 있다.
+    #[serde(default)]
+    pub mine: bool,
 }
 
 /// `<remote>/<base>`의 조상이 된(=병합이 끝난) 원격 브랜치를 나열한다.
@@ -562,7 +577,7 @@ pub fn list_merged_remote_branches(
     base: &str,
 ) -> AppResult<Vec<MergedRemoteBranch>> {
     let base_ref = format!("{remote}/{base}");
-    let fmt = "%(refname:short)%09%(objectname)%09%(authorname)%09%(committerdate:unix)";
+    let fmt = "%(refname:short)%09%(objectname)%09%(authorname)%09%(committerdate:unix)%09%(authoremail)";
     let list = run_at_target(
         target,
         [
@@ -583,11 +598,12 @@ pub fn list_merged_remote_branches(
         if line.is_empty() {
             continue;
         }
-        let mut parts = line.splitn(4, '\t');
+        let mut parts = line.splitn(5, '\t');
         let name = parts.next().unwrap_or("").to_string();
         let sha = parts.next().unwrap_or("");
         let author = parts.next().unwrap_or("").to_string();
         let unix_time = parts.next().unwrap_or("0").parse::<i64>().unwrap_or(0);
+        let author_email = parts.next().unwrap_or("").trim().to_string();
         if name.is_empty() || sha.is_empty() || name == base_ref {
             continue;
         }
@@ -606,12 +622,84 @@ pub fn list_merged_remote_branches(
             name,
             short_name,
             author,
+            author_email,
             unix_time,
+            mine: false,
         });
     }
     // 오래된 것부터 — 제일 먼저 정리해도 되는 것.
     out.sort_by(|a, b| a.unix_time.cmp(&b.unix_time));
     Ok(out)
+}
+
+/// 브랜치 작성자가 현재 사용자(내 브랜치)인가.
+///
+/// 작성자 이름이 git 신원(user.name)과 같으면 내 브랜치, 아니면 이메일
+/// (user.email)이 같아도 내 브랜치다 — 이름은 팀원끼리 겹칠 수 있지만
+/// 이메일은 팀 단위로 유일하기 때문(gpconfig 가 팀원을 이메일로 매칭하는
+/// 이유와 같다). 공백·대소문자는 무시한다. 신원 자체를 모르면(None) 어떤
+/// 브랜치도 "내 것"이 아니다 — 삭제를 허락하는 것보다 거부하는 쪽이 안전하다.
+pub fn identity_matches(
+    author_name: &str,
+    author_email: &str,
+    identity_name: Option<&str>,
+    identity_email: Option<&str>,
+) -> bool {
+    let an = author_name.trim();
+    let ae = author_email.trim().to_lowercase();
+    if !an.is_empty()
+        && identity_name
+            .map(|n| n.trim().eq_ignore_ascii_case(an))
+            .unwrap_or(false)
+    {
+        return true;
+    }
+    if !ae.is_empty()
+        && identity_email
+            .map(|e| e.trim().to_lowercase() == ae)
+            .unwrap_or(false)
+    {
+        return true;
+    }
+    false
+}
+
+/// 현재 사용자의 git 신원 (user.name, user.email).
+///
+/// - 로컬 대상: 이 컴퓨터의 저장소 git 설정을 읽는다 — 브랜치 author 도 git
+///   이 기록한 값이라 **같은 출처**끼리 비교해 오탐이 없다. 설정이 비어 있으면
+///   로그인 계정(name/email)으로 대체한다.
+/// - SSH 대상: 원격 저장소의 git config 는 서버 주인을 말해 주지 않으므로
+///   로그인 계정을 우선 쓴다.
+pub fn current_git_identity(
+    target: &Target,
+    session: Option<(&str, &str)>,
+) -> (Option<String>, Option<String>) {
+    if matches!(target, Target::Ssh { .. }) {
+        return session
+            .map(|(n, e)| (Some(n.to_string()), Some(e.to_string())))
+            .unwrap_or((None, None));
+    }
+    let query = |key: &str| {
+        run_at_target(target, ["config", key])
+            .ok()
+            .filter(|o| o.ok())
+            .map(|o| o.stdout.trim().to_string())
+            .filter(|s| !s.is_empty())
+    };
+    let name = query("user.name");
+    let email = query("user.email");
+    if name.is_none() && email.is_none() {
+        return session
+            .map(|(n, e)| (Some(n.to_string()), Some(e.to_string())))
+            .unwrap_or((None, None));
+    }
+    // 한쪽만 설정된 경우 빈 쪽을 세션 값으로 채운다.
+    let (sn, se) = session.unwrap_or(("", ""));
+    (
+        name.or_else(|| (!sn.is_empty()).then(|| sn.to_string())),
+        email.or_else(|| (!se.is_empty()).then(|| se.to_string())),
+    )
 }
 
 /// 병합이 끝난 원격 브랜치를 origin에서 삭제한다 (`push <remote> --delete`).
@@ -665,6 +753,8 @@ pub fn delete_remote_branch(
             message: "Git 호스트 로그인이 필요합니다. 삭제할 때 아이디/비밀번호를 입력하세요."
                 .to_string(),
             auth_required: true,
+            cleaned_locally: vec![],
+            kept_locally: vec![],
         });
     }
     // 낡은 트래킹 ref 로 검사하면 마지막 fetch **이후**에 팀원이 push한
@@ -722,6 +812,8 @@ pub fn delete_remote_branch(
             ok: false,
             message,
             auth_required,
+            cleaned_locally: vec![],
+            kept_locally: vec![],
         });
     }
     // 성공 — 로컬 트래킹 ref 정리. best-effort(오프라인이어도 삭제는 됐다).
@@ -734,11 +826,86 @@ pub fn delete_remote_branch(
     } else {
         let _ = run_at_target(target, ["fetch", "--prune", remote]);
     }
+    // 원격 브랜치는 지워졌다 — 이제 이 저장소에 남은 같은 이름의 **로컬**
+    // 브랜치를 함께 정리한다. 안 지우면 "병합 탭에서 지웠는데 터미널의
+    // git branch 에 그대로 보인다"가 된다 (원격 ref 와 로컬 ref 는 별개다).
+    // 안전 규칙: 현재 체크아웃된 브랜치는 건드리지 않고, 커밋이 전부 로컬
+    // base 에 들어간 경우에만 지운다. 팀원의 다른 작업 폴더에 있는 로컬
+    // 브랜치는 우리가 지울 수 없으므로, 그쪽은 각자 fetch --prune 후
+    // 정리하도록 안내만 한다.
+    let (cleaned_locally, kept_locally) = cleanup_local_branch(target, base, branch);
     Ok(DeleteBranchOutcome {
         ok: true,
         message: format!("{remote}/{branch} 브랜치를 삭제했습니다."),
         auth_required: false,
+        cleaned_locally,
+        kept_locally,
     })
+}
+
+/// [`delete_remote_branch`] 성공 후, 같은 이름의 로컬 브랜치를 안전하게
+/// 정리한다. 반환값은 (지운 것들, 유지한 것들) — 각 항목은 한국어 설명
+/// 문자열이라 UI 토스트에 그대로 붙일 수 있다.
+///
+/// 판단 순서:
+/// 1. 로컬 브랜치가 없으면 할 일이 없다.
+/// 2. 현재 체크아웃된 브랜치면 지울 수 없다 — 유지 안내.
+/// 3. 로컬 브랜치 tip 이 로컬 base 의 조상이면(=커밋이 전부 base 에
+///    들어갔다) 확실히 안전하므로 `-D` 로 지운다.
+/// 4. 아니면 `git branch -d` 의 자체 판단(HEAD/업스트림 병합 검사)에
+///    맡기고, 그것도 거부되면(아직 base 에 없는 커밋이 남음) 유지한다.
+fn cleanup_local_branch(target: &Target, base: &str, branch: &str) -> (Vec<String>, Vec<String>) {
+    let local_ref = format!("refs/heads/{branch}");
+    let exists = run_at_target(target, ["rev-parse", "-q", "--verify", &local_ref])
+        .map(|o| o.ok())
+        .unwrap_or(false);
+    if !exists {
+        return (vec![], vec![]);
+    }
+
+    let current = run_at_target(target, ["symbolic-ref", "-q", "--short", "HEAD"])
+        .map(|o| o.stdout.trim().to_string())
+        .unwrap_or_default();
+    if current == branch {
+        return (vec![], vec![format!("로컬 브랜치 {branch} — 지금 작업 중인 브랜치라 남겼습니다")]);
+    }
+
+    // 커밋이 전부 로컬 base 에 들어갔는가 — 맞으면 강제로 지워도 잃을 게 없다.
+    let all_in_base = {
+        let base_ref = format!("refs/heads/{base}");
+        run_at_target(target, ["merge-base", "--is-ancestor", &local_ref, &base_ref])
+            .map(|o| o.ok())
+            .unwrap_or(false)
+    };
+    let out = if all_in_base {
+        run_at_target(target, ["branch", "-D", branch])
+    } else {
+        run_at_target(target, ["branch", "-d", branch])
+    };
+    let ok = out.as_ref().map(|o| o.ok()).unwrap_or(false);
+    if ok {
+        (vec![format!("로컬 브랜치 {branch}")], vec![])
+    } else if all_in_base {
+        // base 에 다 들어갔는데도 실패 — 일반적이지 않지만(ref 잠금 등)
+        // 실패 사유를 남겨 사용자가 직접 지울 수 있게 한다.
+        let detail = out
+            .map(|o| o.stderr)
+            .unwrap_or_else(|e| e.to_string());
+        (
+            vec![],
+            vec![format!(
+                "로컬 브랜치 {branch} 정리 실패: {}",
+                crate::git::ops::friendly_git_error(&detail)
+            )],
+        )
+    } else {
+        (
+            vec![],
+            vec![format!(
+                "로컬 브랜치 {branch} — 아직 base 에 들어가지 않은 커밋이 있어 남겼습니다 (확인 후 직접 지우세요: git branch -D {branch})"
+            )],
+        )
+    }
 }
 
 /// How many commits the *local* base carries that `<remote>/<base>` doesn't —

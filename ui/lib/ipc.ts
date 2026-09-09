@@ -81,6 +81,10 @@ export interface DeleteBranchOutcome {
   message: string;
   /** HTTPS 원격 + 자격증명 부재/거부 → UI가 아이디/비밀번호 모달을 띄워야 한다. */
   auth_required?: boolean;
+  /** 원격 삭제 후 이 저장소에서 함께 정리한 로컬 상태 (예: "로컬 브랜치 feature/x"). */
+  cleaned_locally?: string[];
+  /** 커밋 유실 위험 등으로 지우지 않고 남긴 로컬 상태 — 사용자에게 안내한다. */
+  kept_locally?: string[];
 }
 
 export interface PullOutcome {
@@ -121,8 +125,13 @@ export interface PendingBranch {
 export interface MergedRemoteBranch {
   name: string;
   short_name: string;
+  /** 작성자 이름 — 브랜치 tip 커밋의 author. */
   author: string;
+  /** 작성자 이메일 — 브랜치 tip 커밋의 author email. */
+  author_email: string;
   unix_time: number;
+  /** 현재 사용자가 만든(작성자) 브랜치인가 — 본인 브랜치만 삭제할 수 있다. */
+  mine?: boolean;
 }
 
 // ─── 병합 요청 (푸시와 승인을 분리하는 대기열) ───────────────────

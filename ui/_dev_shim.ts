@@ -301,7 +301,24 @@ const mockData: Record<string, any> = {
   ],
   merge_state: { in_progress: false, conflicted_files: [] },
   base_unpushed_count: 0,
-  list_merged_remote_branches: [],
+  list_merged_remote_branches: [
+    {
+      name: "origin/feature/정리됨",
+      short_name: "feature/정리됨",
+      author: "tester",
+      author_email: "test@x",
+      unix_time: Math.floor(Date.now() / 1000) - 86400,
+      mine: true,
+    },
+    {
+      name: "origin/feature/남의-브랜치",
+      short_name: "feature/남의-브랜치",
+      author: "김민지",
+      author_email: "minji@team.kr",
+      unix_time: Math.floor(Date.now() / 1000) - 172800,
+      mine: false,
+    },
+  ],
   // dev 모드 — 실제 삭제 대신 목록에서 제거하고 성공 응답을 돌려준다.
   delete_remote_branch: (args: { branch: string }) => {
     const list = mockData.list_merged_remote_branches as {

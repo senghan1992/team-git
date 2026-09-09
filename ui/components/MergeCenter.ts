@@ -10,6 +10,7 @@ import {
   type AutoResolveReport,
   type BackupEntry,
   type ConflictDetail,
+  type DeleteBranchOutcome,
   type MergedRemoteBranch,
   type MergeOutcome,
   type MergeState,
@@ -1477,10 +1478,10 @@ export async function renderMergeCenter(
    *   1) 저장된/이번 세션의 자격증명으로 시도 (없으면 null 로 시도)
    *   2) 결과가 auth_required 면 로그인 모달 → 입력값으로 재시도
    * SSH 원격은 자격증명 없이 그대로 성공한다.
-   * @returns "deleted" | "failed" | "cancelled" */
+   * @returns 성공 시 outcome(로컬 정리 정보 포함) | "failed" | "cancelled" */
   async function deleteMergedRemoteBranch(
     branch: string,
-  ): Promise<"deleted" | "failed" | "cancelled"> {
+  ): Promise<DeleteBranchOutcome | "failed" | "cancelled"> {
     if (!deleteCredsLoaded) {
       deleteCredsLoaded = true;
       const saved = await ipc
@@ -1492,14 +1493,14 @@ export async function renderMergeCenter(
       ipc.deleteRemoteBranch(repo.id, base, branch, creds, save);
 
     // 1) 아는 자격증명(저장값·이번 세션 입력값)으로 시도한다.
-    let res: { ok: boolean; message: string; auth_required?: boolean };
+    let res: DeleteBranchOutcome;
     try {
       res = await attempt(deleteCreds, false);
     } catch (e) {
       toast(`삭제 실패: ${(e as Error).message ?? e}`, "error");
       return "failed";
     }
-    if (res.ok) return "deleted";
+    if (res.ok) return res;
     if (!res.auth_required) {
       toast(`삭제 실패: ${res.message || "알 수 없는 오류"}`, "error");
       return "failed";
@@ -1508,6 +1509,7 @@ export async function renderMergeCenter(
     // 2) HTTPS + 인증 필요 → 로그인 모달. 성공한 값은 이번 세션의 나머지
     //    삭제에 재사용하고, 저장 체크 시 설정에도 보관한다.
     const hadCreds = deleteCreds !== null;
+    let lastOutcome: DeleteBranchOutcome | null = null;
     const ok = await openGitLoginModal({
       title: "Git 호스트 로그인",
       description: hadCreds
@@ -1516,7 +1518,7 @@ export async function renderMergeCenter(
       submitLabel: "삭제",
       prefill: deleteCreds ?? null,
       attempt: async (creds, save) => {
-        let r: { ok: boolean; message: string; auth_required?: boolean };
+        let r: DeleteBranchOutcome;
         try {
           r = await attempt(creds, save);
         } catch (e) {
@@ -1524,6 +1526,7 @@ export async function renderMergeCenter(
         }
         if (r.ok) {
           deleteCreds = creds; // "모두 삭제"의 나머지 브랜치에 재사용.
+          lastOutcome = r; // 성공 outcome 을 모달 밖 호출자에게 전달.
           if (save) {
             toast("자격증명을 설정에 저장했습니다. 다음부터 자동 입력됩니다.", "info");
           }
@@ -1532,8 +1535,20 @@ export async function renderMergeCenter(
         return { ok: false, message: r.message || (r.auth_required ? "로그인 실패" : "삭제 실패") };
       },
     });
-    if (!ok) return "cancelled";
-    return "deleted";
+    if (!ok || !lastOutcome) return "cancelled";
+    return lastOutcome;
+  }
+
+  /// 원격 삭제 성공 토스트 — 백엔드가 함께 정리한 로컬 상태(같은 이름의
+  /// 로컬 브랜치 등)를 붙여 보여 준다.
+  function deleteSuccessToast(short: string, outcome: DeleteBranchOutcome) {
+    const cleaned = (outcome.cleaned_locally ?? []).join(", ");
+    const kept = (outcome.kept_locally ?? []).join(" · ");
+    const note = [cleaned && `${cleaned} 정리`, kept && kept].filter(Boolean).join(" · ");
+    toast(
+      `origin/${short} 브랜치를 삭제했습니다${note ? ` — ${note}` : ""}.`,
+      kept ? "info" : "success",
+    );
   }
 
   async function renderCleanupCard() {
@@ -1550,9 +1565,10 @@ export async function renderMergeCenter(
     iw.className = "text-[color:var(--color-ink-muted)]";
     iw.appendChild(icon("branch", 16));
     head.appendChild(iw);
+    const mineCount = mergedRemote.filter((b) => b.mine).length;
     const title = document.createElement("div");
     title.className = "font-medium flex-1";
-    title.textContent = `병합이 끝난 원격 브랜치 ${mergedRemote.length}개`;
+    title.textContent = `병합이 끝난 원격 브랜치 ${mergedRemote.length}개${mineCount < mergedRemote.length ? ` (내 브랜치 ${mineCount}개)` : ""}`;
     head.appendChild(title);
     const toggle = document.createElement("button");
     toggle.className = "gc-button-secondary text-display-sm";
@@ -1566,7 +1582,10 @@ export async function renderMergeCenter(
 
     const desc = document.createElement("div");
     desc.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-    desc.textContent = `이 브랜치들의 커밋은 모두 ${base}에 들어 있어 지워도 잃는 것이 없습니다. 정리하면 모두의 브랜치 목록이 깔끔해집니다.`;
+    desc.textContent =
+      mineCount === 0
+        ? `이 브랜치들의 커밋은 모두 ${base}에 들어 있어 지워도 잃는 것이 없지만, 본인이 만든 브랜치만 삭제할 수 있습니다.`
+        : `이 브랜치들의 커밋은 모두 ${base}에 들어 있어 지워도 잃는 것이 없습니다. 본인이 만든 브랜치만 삭제할 수 있고, 원격·로컬 브랜치가 함께 삭제됩니다.`;
     cleanupCard.appendChild(desc);
 
     if (!cleanupExpanded) return;
@@ -1583,43 +1602,56 @@ export async function renderMergeCenter(
       meta.className = "text-display-sm text-[color:var(--color-ink-muted)] shrink-0";
       meta.textContent = `${b.author} · ${await relativeTime(b.unix_time)}`;
       row.appendChild(meta);
+      // 본인이 만든 브랜치만 삭제할 수 있다 — 작성자 표시와 함께 비활성 버튼으로
+      // 이유를 알려 준다 (목록에서 숨기지 않는 이유: 누가 뭘 만들었는지 보여야
+      // 삭제가 왜 안 되는지 알 수 있다).
       const delBtn = document.createElement("button");
-      delBtn.className = "gc-button-secondary text-display-sm text-[color:var(--color-danger)]";
-      delBtn.textContent = "삭제";
-      delBtn.addEventListener("click", async () => {
-        const ok = await confirmDialog({
-          title: "원격 브랜치 삭제",
-          message: `origin/${b.short_name} 브랜치를 삭제합니다.\n커밋은 모두 ${base}에 병합되어 있어 잃는 것이 없습니다. ${b.author}님이 이 이름으로 계속 작업 중이어도 다시 push하면 브랜치가 새로 생깁니다.`,
-          confirmLabel: "삭제",
-          destructive: true,
-        });
-        if (!ok) return;
-        setBusy(delBtn, true, "삭제 중…");
-        try {
-          const r = await deleteMergedRemoteBranch(b.short_name);
-          if (r === "deleted") {
-            toast(`origin/${b.short_name} 브랜치를 삭제했습니다.`, "success");
-            mergedRemote = mergedRemote.filter((x) => x.short_name !== b.short_name);
-            await renderCleanupCard();
+      if (!b.mine) {
+        delBtn.className =
+          "gc-button-secondary text-display-sm opacity-40 cursor-not-allowed";
+        delBtn.disabled = true;
+        delBtn.textContent = "작성자만 삭제";
+        delBtn.title = `${b.author}님이 만든 브랜치입니다. 본인이 만든 브랜치만 삭제할 수 있습니다.`;
+      } else {
+        delBtn.className = "gc-button-secondary text-display-sm text-[color:var(--color-danger)]";
+        delBtn.textContent = "삭제";
+        delBtn.addEventListener("click", async () => {
+          const ok = await confirmDialog({
+            title: "원격 브랜치 삭제",
+            message: `origin/${b.short_name} 브랜치를 삭제합니다.\n이 폴더의 같은 이름 로컬 브랜치와 원격 브랜치가 함께 삭제됩니다.\n커밋은 모두 ${base}에 병합되어 있어 잃는 것이 없습니다.`,
+            confirmLabel: "삭제",
+            destructive: true,
+          });
+          if (!ok) return;
+          setBusy(delBtn, true, "삭제 중…");
+          try {
+            const r = await deleteMergedRemoteBranch(b.short_name);
+            if (typeof r !== "string" && r.ok) {
+              deleteSuccessToast(b.short_name, r);
+              mergedRemote = mergedRemote.filter((x) => x.short_name !== b.short_name);
+              await renderCleanupCard();
+            }
+            // "failed"는 함수 안에서 이미 토스트로 알렸고, "cancelled"는 취소다.
+          } finally {
+            setBusy(delBtn, false);
           }
-          // "failed"는 함수 안에서 이미 토스트로 알렸고, "cancelled"는 취소다.
-        } finally {
-          setBusy(delBtn, false);
-        }
-      });
+        });
+      }
       row.appendChild(delBtn);
       cleanupCard.appendChild(row);
     }
 
-    if (mergedRemote.length > 1) {
+    // "모두 삭제"는 내 브랜치만 대상이다.
+    const myBranches = mergedRemote.filter((x) => x.mine);
+    if (myBranches.length > 1) {
       const allBtn = document.createElement("button");
       allBtn.className = "gc-button-secondary text-display-sm self-start text-[color:var(--color-danger)]";
-      allBtn.textContent = `모두 삭제 (${mergedRemote.length}개)`;
+      allBtn.textContent = `내 브랜치 모두 삭제 (${myBranches.length}개)`;
       allBtn.addEventListener("click", async () => {
-        const names = mergedRemote.map((x) => x.short_name);
+        const names = myBranches.map((x) => x.short_name);
         const ok = await confirmDialog({
-          title: "원격 브랜치 모두 삭제",
-          message: `병합이 끝난 브랜치 ${names.length}개를 origin에서 삭제합니다:\n${names.join(", ")}\n커밋은 모두 ${base}에 병합되어 있어 잃는 것이 없습니다.`,
+          title: "내 브랜치 모두 삭제",
+          message: `본인이 만든 브랜치 ${names.length}개를 origin과 이 폴더의 로컬에서 함께 삭제합니다:\n${names.join(", ")}\n커밋은 모두 ${base}에 병합되어 있어 잃는 것이 없습니다.`,
           confirmLabel: "모두 삭제",
           destructive: true,
         });
@@ -1628,11 +1660,15 @@ export async function renderMergeCenter(
         let deleted = 0;
         let failed = 0;
         let cancelled = false;
+        const keptNotes: string[] = [];
         for (const short of names) {
           const r = await deleteMergedRemoteBranch(short);
-          if (r === "deleted") {
+          if (typeof r !== "string" && r.ok) {
             deleted += 1;
             mergedRemote = mergedRemote.filter((x) => x.short_name !== short);
+            for (const n of r.kept_locally ?? []) {
+              if (!keptNotes.includes(n)) keptNotes.push(n);
+            }
           } else if (r === "cancelled") {
             cancelled = true;
             break;
@@ -1641,12 +1677,13 @@ export async function renderMergeCenter(
           }
         }
         setBusy(allBtn, false);
+        const keptNote = keptNotes.length ? ` — ${keptNotes.join(" · ")}` : "";
         if (cancelled) {
           toast(`삭제를 중단했습니다. ${deleted}개는 삭제됐습니다.`, "info");
         } else if (failed > 0) {
           toast(`${deleted}개를 삭제했습니다. ${failed}개는 실패했습니다 — 새 push가 있었을 수 있으니 목록을 다시 확인하세요.`, "error");
         } else {
-          toast(`브랜치 ${deleted}개를 삭제했습니다.`, "success");
+          toast(`브랜치 ${deleted}개를 삭제했습니다.${keptNote}`, keptNotes.length ? "info" : "success");
         }
         await renderCleanupCard();
       });
