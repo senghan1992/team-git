@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>서버 관리 — Git Companion</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232c4b8f'/%3E%3Ccircle cx='11' cy='10' r='3' fill='none' stroke='white' stroke-width='2.4'/%3E%3Ccircle cx='21' cy='22' r='3' fill='none' stroke='white' stroke-width='2.4'/%3E%3Cpath d='M11 13v4a5 5 0 0 0 5 5h2' fill='none' stroke='white' stroke-width='2.4'/%3E%3C/svg%3E">
+<!-- Pretendard 가 로딩되면 앱과 같은 활자가 되고, 사내 네트워크에서 막히면
+     시스템 한글 폰트로 조용히 대체된다 — 외부 의존이 아니라 보강이다. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
+<link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">
+      <svg width="16" height="16" viewBox="0 0 32 32" fill="none">
+        <circle cx="11" cy="10" r="3.4" stroke="#fff" stroke-width="2.6"/>
+        <circle cx="21" cy="22" r="3.4" stroke="#fff" stroke-width="2.6"/>
+        <path d="M11 13.5V18a5 5 0 0 0 5 5h2.2" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/>
+      </svg>
+    </span>
+    <span class="brand-title">Git Companion — 서버 관리</span>
+  </div>
+  <div class="topbar-right">
+    <span class="stamp" id="stamp" hidden><span class="live-dot" id="live-dot"></span><span id="stamp-text"></span></span>
+    <button class="btn btn--sm" id="btn-refresh" hidden>새로고침</button>
+    <button class="btn btn--sm" id="btn-logout" hidden>로그아웃</button>
+  </div>
+</header>
+
+<!-- ── 로그인 게이트: 데이터는 전부 관리자 API 뒤에 있으니 페이지 자체는 문패다 ── -->
+<div class="gate-wrap" id="gate">
+  <form class="gate" id="gate-form">
+    <div class="gate-head">
+      <span class="brand-mark" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 32 32" fill="none">
+          <circle cx="11" cy="10" r="3.4" stroke="#fff" stroke-width="2.6"/>
+          <circle cx="21" cy="22" r="3.4" stroke="#fff" stroke-width="2.6"/>
+          <path d="M11 13.5V18a5 5 0 0 0 5 5h2.2" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/>
+        </svg>
+      </span>
+      <div>
+        <div class="gate-title">서버 관리 대시보드</div>
+      </div>
+    </div>
+    <p class="gate-desc">팀 서버의 사용자·프로젝트·활동을 관리자 권한으로 확인합니다.</p>
+    <div class="gate-error" id="gate-error" role="alert"></div>
+    <div class="field">
+      <label for="g-id">아이디 또는 이메일</label>
+      <input id="g-id" name="username" autocomplete="username" placeholder="예) minji" required>
+    </div>
+    <div class="field">
+      <label for="g-pw">비밀번호</label>
+      <input id="g-pw" name="password" type="password" autocomplete="current-password" placeholder="비밀번호" required>
+    </div>
+    <button class="btn btn--primary" id="g-submit" type="submit">로그인</button>
+    <div class="gate-hint">
+      <strong>관리자 지정이 아직 없나요?</strong> 서버 컴퓨터에서 관리자를 임명합니다:<br>
+      <code>docker exec git-companion-team-server python adminctl.py grant 이메일</code>
+    </div>
+  </form>
+</div>
+
+<!-- ── 대시보드 ────────────────────────────────────────────────────────── -->
+<main class="shell" id="dash" hidden>
+  <div class="page-head">
+    <div class="page-title">한눈에 보기</div>
+    <div class="page-sub" id="head-sub"></div>
+  </div>
+
+  <div class="tabs" role="tablist" id="tabs">
+    <button class="tab is-active" role="tab" data-tab="overview" aria-selected="true">개요</button>
+    <button class="tab" role="tab" data-tab="users" aria-selected="false">사용자<span class="count" id="cnt-users"></span></button>
+    <button class="tab" role="tab" data-tab="projects" aria-selected="false">프로젝트<span class="count" id="cnt-projects"></span></button>
+    <button class="tab" role="tab" data-tab="events" aria-selected="false">활동<span class="count" id="cnt-events"></span></button>
+  </div>
+
+  <div id="panel" style="margin-top: 16px;"></div>
+</main>
+
+<dialog class="confirm" id="confirm">
+  <div class="confirm-body">
+    <div class="confirm-title" id="cf-title"></div>
+    <p class="confirm-msg" id="cf-msg"></p>
+  </div>
+  <div class="confirm-foot">
+    <button class="btn" id="cf-cancel">취소</button>
+    <button class="btn btn--primary" id="cf-ok">확인</button>
+  </div>
+</dialog>
+
+<div id="toast" role="status"></div>
+
+<script src="/dashboard.js" defer></script>
+</body>
+</html>

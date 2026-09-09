@@ -1,11 +1,23 @@
 """FastAPI application entry point."""
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from app.db import engine, Base
 from app.routes import admin, auth, devices, projects, members, events
+
+# 운영자 대시보드 — 앱 설치 없이 브라우저에서 ip:48111 로 서버 상태를 본다.
+# 데이터는 전부 /admin/* 가 관리자 세션을 요구하므로, 이 HTML 자체는 문패다.
+# no-cache 헤더로 두는 건 서버를 올릴 때마다 새 대시보드가 바로 반영되게 하기
+# 위해서다 (운영 화면이 낡은 채로 남는 것보다 나은 비용이다).
+_STATIC = Path(__file__).parent / "static"
+
+
+def _serve(name: str, media: str) -> FileResponse:
+    return FileResponse(_STATIC / name, media_type=media, headers={"Cache-Control": "no-cache"})
 
 
 @asynccontextmanager
@@ -59,6 +71,22 @@ app.include_router(projects.router, prefix="/projects", tags=["projects"])
 app.include_router(members.router, prefix="/projects", tags=["members"])
 app.include_router(events.router, prefix="/events", tags=["events"])
 app.include_router(admin.router, prefix="/admin", tags=["admin"])
+
+
+@app.get("/", include_in_schema=False)
+async def dashboard():
+    """관리자 웹 대시보드 — 브라우저로 서버 주소(ip:48111)를 열면 나온다."""
+    return _serve("dashboard.html", "text/html")
+
+
+@app.get("/dashboard.css", include_in_schema=False)
+async def dashboard_css():
+    return _serve("dashboard.css", "text/css")
+
+
+@app.get("/dashboard.js", include_in_schema=False)
+async def dashboard_js():
+    return _serve("dashboard.js", "text/javascript")
 
 
 @app.get("/healthz")

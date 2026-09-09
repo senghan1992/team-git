@@ -13,6 +13,7 @@
 #   docker compose down             # 내리기 — /data 의 계정·팀·알림은 그대로 남는다
 #
 # 확인: 브라우저로 http://<서버IP>:48111/healthz → {"status":"ok"}
+# (같은 주소를 열면 관리자 웹 대시보드 — 관리자 계정으로 로그인)
 # 팀원은 앱 로그인 화면의 "서버 주소"에 http://<서버IP>:48111 을 넣는다.
 #
 # 백업: 호스트의 /opt/workspace/local/bsh/data/git-companion/gc_peer.db 파일
