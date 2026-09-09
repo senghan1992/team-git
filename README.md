@@ -137,9 +137,14 @@ py -3 -m venv .venv; .\.venv\Scripts\pip install -e ".[dev]"
   서버 컴퓨터에서:
 
   ```bash
-  cd backend
-  python adminctl.py grant 운영자@example.com   # 해제: revoke
+  # Docker 로 띄운 서버 (컨테이너 안에서 실행 — 같은 DB 를 바로 고친다)
+  docker exec git-companion-team-server python adminctl.py grant 운영자@example.com
+
+  # Python 으로 직접 띄운 서버 (backend 폴더에서)
+  python adminctl.py grant 운영자@example.com
   ```
+
+  해제는 `revoke`, 임명된 사람 목록은 `list`.
 
 - **추적** — 개요 탭에서 사용자·세션·기기·프로젝트 수와 24시간/주간 활동량,
   사용자 탭에서 각 계정의 마지막 활동과 세션 수, 프로젝트 탭에서 멤버 구성과

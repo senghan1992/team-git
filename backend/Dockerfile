@@ -17,6 +17,9 @@ WORKDIR /app
 # 의존성 레이어를 먼저 만들어 소스만 바뀌었을 때 재설치를 피한다.
 COPY pyproject.toml ./
 COPY app ./app
+# 관리자 임명 CLI — 운영자가 컨테이너 안에서 직접 실행한다:
+#   docker exec git-companion-team-server python adminctl.py grant me@example.com
+COPY adminctl.py ./
 RUN pip install . && mkdir -p /data
 
 VOLUME ["/data"]
