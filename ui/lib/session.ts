@@ -13,10 +13,20 @@ export function isLoggedIn(): boolean {
   return !!current;
 }
 
-/** 세션을 백엔드에서 다시 읽고 구독자에게 알린다. */
+/** 세션을 백엔드에서 다시 읽고, **바뀐 경우에만** 구독자에게 알린다.
+ *  예전에는 무조건 이벤트를 쏘았다 — 이용 가이드 모달을 열었다 닫기만 해도
+ *  ACCOUNT_EVENT 가 발행돼 앱 전체가 다시 그려지고, 그 덕에 병합 탭이
+ *  통째로 다시 로딩됐다. 같은 계정이면 조용히 넘어간다 (사이드바 칩은
+ *  어차피 같은 값을 보여 준다). */
 export async function refreshSession(): Promise<Account | null> {
+  const prev = current;
   current = await ipc.accountCurrent().catch(() => null);
-  window.dispatchEvent(new CustomEvent(ACCOUNT_EVENT, { detail: current }));
+  const changed =
+    prev === undefined ||
+    JSON.stringify(prev ?? null) !== JSON.stringify(current ?? null);
+  if (changed) {
+    window.dispatchEvent(new CustomEvent(ACCOUNT_EVENT, { detail: current }));
+  }
   return current;
 }
 

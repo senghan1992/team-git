@@ -5,6 +5,7 @@ import { renderSidebar, type Page } from "../components/Sidebar";
 import { renderHomeView } from "../views/HomeView";
 import { renderRepoView } from "../views/RepoView";
 import { renderSettingsView } from "../views/SettingsView";
+import { disposeMergeCenterCache, pruneMergeCenterCache } from "../components/MergeCenter";
 import { renderTeamPanel, type TeamTab } from "../components/TeamPanel";
 import { renderToasts, notify, toast } from "../components/Toast";
 import { renderPageLoadingFill } from "../components/Busy";
@@ -402,6 +403,11 @@ export async function createApp(root: HTMLElement) {
   function rerender() {
     // 앱 사용은 로그인 필수 — 세션을 모르는 동안은 로딩, 미로그인은 게이트.
     const session = getSession();
+    // 병합 탭 캐시 생명주기 — 저장소 페이지를 벗어나면(다른 페이지·다른
+    // 저장소·로그아웃) 버려서 돌아올 때 다시 읽는다. 페이지 안(탭 왕복·
+    // 모달 열닫)에서는 캐시가 살아 있어 병합 탭이 즉시 뜬다.
+    if (page.kind === "repo" && session) pruneMergeCenterCache(page.repoId);
+    else disposeMergeCenterCache();
     if (session === undefined) {
       shell.innerHTML = "";
       shell.appendChild(renderPageLoadingFill());

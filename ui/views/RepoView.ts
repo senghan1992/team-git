@@ -2,7 +2,7 @@ import { ipc, type StashEntry, type WorkingTreeStatus } from "../lib/ipc";
 import { openModal, confirmDialog } from "../components/Modal";
 import { toast } from "../components/Toast";
 import { kindHint, kindLabel } from "../components/StatusTable";
-import { renderMergeCenter } from "../components/MergeCenter";
+import { getMergeCenter } from "../components/MergeCenter";
 import { renderProjectConfigPanel } from "../components/ProjectConfigPanel";
 import { closeMergeRequestWithAuth, openPushCredentialFlow, requestMergeWithAuth } from "../components/PushButton";
 import { getSession } from "../lib/session";
@@ -76,7 +76,7 @@ export async function renderRepoView(
   main.appendChild(tabs);
 
   if (tab === "merge") {
-    main.appendChild(await renderMergeCenter(repo, { onGoToWork: () => onTab?.("work") }));
+    main.appendChild(await getMergeCenter(repo, { onGoToWork: () => onTab?.("work") }));
     return main;
   }
   if (tab === "config") {
@@ -285,7 +285,8 @@ export async function renderRepoView(
   // paintNextAction이 지금 누를 버튼에만 세운다.
   function buildActionBtn(el: HTMLButtonElement, name: Parameters<typeof icon>[0], label: string) {
     el.dataset.action = label;
-    el.appendChild(icon(name, 16));
+    // 15px — 16px 라벨과 나란히 둘 때 아이콘이 살짝 가벼워야 균형이 맞다.
+    el.appendChild(icon(name, 15));
     const row = document.createElement("span");
     row.className = "gc-action-btn__row";
     const s = document.createElement("span");

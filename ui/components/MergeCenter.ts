@@ -91,6 +91,49 @@ export interface MergeCenterOpts {
   onGoToWork?: () => void;
 }
 
+// ── 병합 탭 캐시 — 같은 저장소 페이지를 머무는 동안 다시 만들지 않는다 ──
+// 병합 탭은 fetch → 설정 → 대기열 → 타임라인을 연달아 불러오느라 처음 그리는
+// 데 수 초가 걸린다. 탭을 왕복하거나 이용 가이드 모달을 닫을 때마다 이 비용을
+// 다 내는 일이 없게, 다 그려진 화면을 통째로 재사용한다. 데이터는 재사용
+// 직후 조용히 갱신한다(로딩 화면·깜빡임 없음). 저장소 페이지를 벗어나면
+// (다른 저장소·홈·로그아웃) 캐시를 버려서 돌아올 때는 다시 읽는다 —
+// 앱 새로고침(F5)에서도 당연히 새로 읽는다.
+interface CachedMergeCenter {
+  el: HTMLElement;
+  refresh: () => Promise<void>;
+  dispose: () => void;
+}
+const mergeCenterCache = new Map<string, CachedMergeCenter>();
+
+/** 병합 탭 화면 — 캐시에 있으면 즉시 돌려주고 데이터만 갱신한다. */
+export async function getMergeCenter(
+  repo: Repo,
+  opts: MergeCenterOpts = {},
+): Promise<HTMLElement> {
+  const hit = mergeCenterCache.get(repo.id);
+  if (hit) {
+    void hit.refresh();
+    return hit.el;
+  }
+  return renderMergeCenter(repo, opts);
+}
+
+/** 현재 저장소의 캐시만 남기고 나머지는 버린다 (저장소 간 이동 시). */
+export function pruneMergeCenterCache(keepRepoId: string): void {
+  for (const [id, c] of mergeCenterCache) {
+    if (id !== keepRepoId) {
+      c.dispose();
+      mergeCenterCache.delete(id);
+    }
+  }
+}
+
+/** 캐시를 모두 버린다 (저장소 페이지를 벗어날 때). */
+export function disposeMergeCenterCache(): void {
+  for (const c of mergeCenterCache.values()) c.dispose();
+  mergeCenterCache.clear();
+}
+
 export async function renderMergeCenter(
   repo: Repo,
   opts: MergeCenterOpts = {},
@@ -213,10 +256,7 @@ export async function renderMergeCenter(
   autoCheck.addEventListener("change", () => { autoRefresh = autoCheck.checked; });
   let autoTicking = false;
   const autoTimer = window.setInterval(async () => {
-    if (!root.isConnected) {
-      window.clearInterval(autoTimer);
-      return;
-    }
+    if (!root.isConnected) return; // 분리 중에는 쉰다 — 캐시로 다시 붙으면 재개된다
     if (!autoRefresh || autoTicking) return;
     // 자동 해결이 도는 중에는 절대 새로고침하지 않는다 — 해결기가 파일과
     // 인덱스를 바꾸는 중이라 화면을 다시 그리면 상태가 어긋난다.
@@ -1933,6 +1973,23 @@ export async function renderMergeCenter(
   } catch {
     // 오프라인 등 — 아는 ref 만으로 목록을 그린다.
   }
+
+  // 캐시 재진입 시 돌릴 조용한 갱신 — 진행 중 갱신과 겹치지 않게 하나만 세운다.
+  let refreshInFlight = false;
+  const refreshGuarded = async () => {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
+    try {
+      await refresh();
+    } finally {
+      refreshInFlight = false;
+    }
+  };
+  mergeCenterCache.set(repo.id, {
+    el: root,
+    refresh: refreshGuarded,
+    dispose: () => window.clearInterval(autoTimer),
+  });
 
   await refresh();
   return root;
