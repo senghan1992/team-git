@@ -84,7 +84,7 @@ export function openMyPageModal(initialTab: MyPageTab = "guide"): void {
       titleEl.textContent = guide ? "이용 가이드" : "내 정보";
       if (descEl) {
         descEl.textContent = guide
-          ? "팀의 하루는 이 한 바퀴입니다 — 처음이면 위에서 아래로 한 번만 읽으세요."
+          ? "팀의 하루는 이 한 바퀴 — 다섯 걸음 도판으로 한눈에 훑어 보세요."
           : "";
       }
       host.innerHTML = "";
@@ -137,13 +137,15 @@ export function openMyPageModal(initialTab: MyPageTab = "guide"): void {
 
 // ─── 이용 가이드 탭 ──────────────────────────────────────────────────────────
 //
-// README "팀 6명이 시작하는 법"의 축약판이다. 앱 안에서 바로 보이는 게
-// 목적이므로 문서보다 짧게, 화면 위치(어디서)를 함께 알려 준다.
+// 글로 읽는 설명서가 아니라 훑는 도판(圖板) — 사람들은 설명 문단을 읽지 않는다.
+// 다섯 걸음 파이프라인(아이콘 메달리온 + 짧은 제목 + "어디서" 배지)이 주 역할을
+// 하고, 문장은 걸음마다 한 줄짜리 보조말로만 남긴다. 코발트 메달리온 = 관리자가
+// 누르는 단계 — 색이 역할을 말한다 (One Cobalt Rule).
 
-/** 한 바퀴의 단계 — 순서와 화면 위치, 누가 하는지. */
+/** 한 걸음 — 아이콘 + 짧은 제목 + 어디서 배지 + 한 줄 보조말 (문단 금지). */
 interface GuideStep {
   title: string;
-  desc: string;
+  sub: string;
   where: string;
   who: "팀원" | "관리자" | "전체";
   icon: Parameters<typeof icon>[0];
@@ -152,35 +154,35 @@ interface GuideStep {
 const GUIDE_STEPS: GuideStep[] = [
   {
     title: "저장소 등록",
-    desc: "각자 clone한 폴더를 + 저장소 추가로 등록합니다. 처음 한 사람은 설정 탭에서 구성원·병합 관리자를 지정하고, 규칙(.gpconfig)은 저장소에 커밋돼 팀원 모두에게 같게 보입니다.",
+    sub: "폴더를 등록하면 팀 규칙도 같이 보입니다",
     where: "홈 · 설정 탭",
     who: "전체",
     icon: "folder",
   },
   {
-    title: "내 브랜치에서 작업",
-    desc: "새 브랜치를 만들고 평소처럼 코딩한 뒤 커밋·푸시합니다. main에서 직접 작업하지 마세요 — main은 병합 관리자만 만집니다.",
+    title: "브랜치에서 작업",
+    sub: "main은 관리자만 — 내 브랜치에서 코딩",
     where: "작업 탭",
     who: "팀원",
     icon: "edit",
   },
   {
-    title: "병합 요청 보내기",
-    desc: "push만으로는 관리자 승인 대기열에 오르지 않습니다. 작업을 마쳤으면 병합 요청 보내기를 누르세요 — 요청 시점의 커밋이 그대로 검토·병합됩니다.",
+    title: "병합 요청",
+    sub: "push 후 요청 보내기 한 번이면 끝",
     where: "작업 탭",
     who: "팀원",
-    icon: "pull",
+    icon: "inbox",
   },
   {
     title: "검토하고 승인",
-    desc: "요청이 오면 알림이 가고 홈 카드에 “N건 병합 승인”이 쌓입니다. 병합 탭의 승인 대기열에서 변경 파일·커밋을 확인하고 병합하기를 누르면 병합→push→팀원 알림까지 한 번에 진행됩니다.",
+    sub: "파일·커밋을 보고 병합하기",
     where: "병합 탭",
     who: "관리자",
     icon: "merge",
   },
   {
-    title: "최신 코드 동기화",
-    desc: "병합이 push되면 팀원 전원에게 알림이 옵니다. 내 브랜치에 동기화 버튼 한 번으로 최신 main을 내 브랜치에 반영하고 작업을 계속합니다.",
+    title: "동기화",
+    sub: "알림의 버튼 한 번으로 최신 코드 반영",
     where: "알림",
     who: "전체",
     icon: "refresh",
@@ -250,62 +252,104 @@ function guideCard(title: string, ico: Parameters<typeof icon>[0]): {
   return { root, body };
 }
 
-/** 한 줄 항목 — 작은 점 + 본문(굵은 앞머리 지원). */
-function guideRow(strong: string | null, rest: string): HTMLElement {
+/** 아이콘 한 줄 — 도판의 최소 단위. 문장은 한 줄(최대 두 줄)까지만. */
+function guideIconRow(ico: Parameters<typeof icon>[0], text: string): HTMLElement {
   const row = document.createElement("div");
   row.className = "flex items-start gap-2 text-display-sm";
-  const dot = document.createElement("span");
-  dot.className =
-    "mt-[7px] w-1 h-1 rounded-full bg-[color:var(--color-ink-muted)] shrink-0";
-  row.appendChild(dot);
-  const text = document.createElement("span");
-  text.className = "text-[color:var(--color-ink-muted)]";
-  if (strong) {
-    const b = document.createElement("span");
-    b.className = "text-[color:var(--color-ink)] font-medium";
-    b.textContent = strong;
-    text.appendChild(b);
-    text.appendChild(document.createTextNode(rest));
-  } else {
-    text.textContent = rest;
-  }
-  row.appendChild(text);
+  const ic = document.createElement("span");
+  ic.className = "text-[color:var(--color-ink-muted)] inline-flex shrink-0 mt-[1px]";
+  ic.appendChild(icon(ico, 14));
+  row.appendChild(ic);
+  const s = document.createElement("span");
+  s.className = "text-[color:var(--color-ink-muted)]";
+  s.textContent = text;
+  row.appendChild(s);
+  return row;
+}
+
+/** 화살표 도식 행 — [아이콘+주어] → [받는 사람 배지]. 누가 무엇을 받는지를
+ *  문장 대신 형태로 말한다. */
+function guideFlowRow(
+  fromIcon: Parameters<typeof icon>[0],
+  fromText: string,
+  toIcon: Parameters<typeof icon>[0],
+  toText: string,
+): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "flex items-center gap-2 text-display-sm flex-wrap";
+  const from = document.createElement("span");
+  from.className = "inline-flex items-center gap-1.5 text-[color:var(--color-ink)] font-medium";
+  const fi = document.createElement("span");
+  fi.className = "text-[color:var(--color-ink-muted)] inline-flex";
+  fi.appendChild(icon(fromIcon, 14));
+  from.appendChild(fi);
+  from.appendChild(document.createTextNode(fromText));
+  row.appendChild(from);
+  const arrow = document.createElement("span");
+  arrow.className = "gc-guide-flow-arrow";
+  arrow.textContent = "→";
+  row.appendChild(arrow);
+  const to = document.createElement("span");
+  to.className = "gc-badge gc-badge--neutral inline-flex items-center gap-1";
+  const ti = document.createElement("span");
+  ti.className = "inline-flex";
+  ti.appendChild(icon(toIcon, 12));
+  to.appendChild(ti);
+  to.appendChild(document.createTextNode(toText));
+  row.appendChild(to);
   return row;
 }
 
 async function renderGuideTab(root: HTMLElement, me: Account): Promise<void> {
   root.innerHTML = "";
 
-  // ── 1) 한 바퀴 — 5단계 흐름 ─────────────────────────────────────────────
+  // ── 1) 팀의 하루 — 다섯 걸음 파이프라인 (도판의 주역) ────────────────────
+  // 메달리온(아이콘) + 짧은 제목 + "어디서" 배지 + 한 줄 보조말. 연결선이
+  // 위→아래 흐름을 그려서 글을 읽지 않고도 한 바퀴가 보인다.
   const flow = document.createElement("div");
-  flow.className = "gc-card flex flex-col gap-3";
+  flow.className = "gc-card flex flex-col";
   const flowHead = document.createElement("div");
+  flowHead.className = "flex items-baseline justify-between gap-2 flex-wrap mb-1";
   const flowTitle = document.createElement("div");
   flowTitle.className = "font-medium";
-  flowTitle.textContent = "팀의 하루 — 이 한 바퀴가 전부입니다";
+  flowTitle.textContent = "팀의 하루 — 다섯 걸음이면 끝납니다";
   flowHead.appendChild(flowTitle);
-  const flowSub = document.createElement("div");
-  flowSub.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-  flowSub.textContent = "브랜치로 작업하고, 요청하고, 승인하고, 모두가 최신 코드를 받습니다.";
-  flowHead.appendChild(flowSub);
+  // 범례 — 코발트 메달리온의 뜻을 색 옆에 한 번만 적는다.
+  const legend = document.createElement("div");
+  legend.className = "inline-flex items-center gap-1.5 text-display-xs text-[color:var(--color-ink-muted)]";
+  const legendDot = document.createElement("span");
+  legendDot.className = "gc-guide-legend-dot";
+  legend.appendChild(legendDot);
+  legend.appendChild(document.createTextNode("관리자 차례"));
+  flowHead.appendChild(legend);
   flow.appendChild(flowHead);
 
-  const whoBadge: Record<GuideStep["who"], string> = {
-    팀원: "gc-badge gc-badge--info",
-    관리자: "gc-badge gc-badge--warning",
-    전체: "gc-badge gc-badge--muted",
-  };
   GUIDE_STEPS.forEach((s, i) => {
     const row = document.createElement("div");
-    row.className = "flex items-start gap-3";
+    row.className = "flex gap-3";
+    // 좌열 — 메달리온 + 연결선. 코발트는 관리자 순간에만 (One Cobalt Rule).
+    const nodeCol = document.createElement("div");
+    nodeCol.className = "flex flex-col items-center shrink-0";
+    const medallionWrap = document.createElement("span");
+    medallionWrap.className = "relative inline-flex";
+    const med = document.createElement("span");
+    med.className = "gc-guide-medallion" + (s.who === "관리자" ? " gc-guide-medallion--cobalt" : "");
+    med.appendChild(icon(s.icon, 18));
+    medallionWrap.appendChild(med);
     const num = document.createElement("span");
-    num.className =
-      "inline-flex items-center justify-center w-6 h-6 rounded-full shrink-0 text-display-xs font-semibold text-white";
-    num.style.background = "var(--color-primary)";
+    num.className = "gc-guide-num";
     num.textContent = String(i + 1);
-    row.appendChild(num);
-    const mid = document.createElement("div");
-    mid.className = "flex-1 min-w-0 flex flex-col gap-0.5";
+    medallionWrap.appendChild(num);
+    nodeCol.appendChild(medallionWrap);
+    if (i < GUIDE_STEPS.length - 1) {
+      const rail = document.createElement("span");
+      rail.className = "gc-guide-rail";
+      nodeCol.appendChild(rail);
+    }
+    row.appendChild(nodeCol);
+    // 우열 — 제목 + 어디서 배지 + 한 줄 보조말 (문단 없음).
+    const body = document.createElement("div");
+    body.className = "flex-1 min-w-0 flex flex-col gap-0.5 pb-4";
     const titleRow = document.createElement("div");
     titleRow.className = "flex items-center gap-2 flex-wrap";
     const t = document.createElement("span");
@@ -316,30 +360,13 @@ async function renderGuideTab(root: HTMLElement, me: Account): Promise<void> {
     where.className = "gc-badge gc-badge--neutral font-mono";
     where.textContent = s.where;
     titleRow.appendChild(where);
-    const who = document.createElement("span");
-    who.className = whoBadge[s.who];
-    who.textContent = s.who;
-    titleRow.appendChild(who);
-    mid.appendChild(titleRow);
-    const d = document.createElement("div");
-    d.className = "text-display-sm text-[color:var(--color-ink-muted)]";
-    d.textContent = s.desc;
-    mid.appendChild(d);
-    row.appendChild(mid);
+    body.appendChild(titleRow);
+    const sub = document.createElement("div");
+    sub.className = "text-display-sm text-[color:var(--color-ink-muted)]";
+    sub.textContent = s.sub;
+    body.appendChild(sub);
+    row.appendChild(body);
     flow.appendChild(row);
-    // 마지막 단계가 아니면 연결선 — 흐름이 위→아래로 읽히게.
-    if (i < GUIDE_STEPS.length - 1) {
-      const link = document.createElement("div");
-      link.className = "flex";
-      const rail = document.createElement("div");
-      rail.className = "w-6 flex justify-center";
-      const line = document.createElement("div");
-      line.style.cssText =
-        "width:2px; flex:1; min-height:10px; background:var(--color-hairline); margin:2px 0;";
-      rail.appendChild(line);
-      link.appendChild(rail);
-      flow.appendChild(link);
-    }
   });
   root.appendChild(flow);
 
@@ -360,7 +387,7 @@ async function renderGuideTab(root: HTMLElement, me: Account): Promise<void> {
       kind: "manager" | "member",
       title: string,
       sub: string,
-      rows: [string, string][],
+      rows: [Parameters<typeof icon>[0], string][],
     ): HTMLElement => {
       const card = document.createElement("div");
       const mine = myRole === kind;
@@ -371,7 +398,9 @@ async function renderGuideTab(root: HTMLElement, me: Account): Promise<void> {
       const head = document.createElement("div");
       head.className = "flex items-center gap-2 flex-wrap";
       const ic = document.createElement("span");
-      ic.className = "text-[color:var(--color-ink-muted)]";
+      ic.className =
+        "inline-flex " +
+        (mine ? "text-[color:var(--color-primary)]" : "text-[color:var(--color-ink-muted)]");
       ic.appendChild(icon(kind === "manager" ? "merge" : "edit", 15));
       head.appendChild(ic);
       const t = document.createElement("span");
@@ -396,22 +425,22 @@ async function renderGuideTab(root: HTMLElement, me: Account): Promise<void> {
         of.title = of.textContent;
         card.appendChild(of);
       }
-      for (const [strong, rest] of rows) card.appendChild(guideRow(strong, rest));
+      for (const [ico, text] of rows) card.appendChild(guideIconRow(ico, text));
       return card;
     };
 
     wrap.appendChild(
       mk("manager", "병합 관리자", "팀원의 브랜치를 main으로 모은다", [
-        ["승인 대기열 — ", "병합 탭에서 요청을 파일·커밋 단위로 검토"],
-        ["변경 지도 — ", "겹친 파일이 위로, 충돌이 덜 나는 병합 순서 제안"],
-        ["병합 후 push — ", "팀원 전원에게 동기화 알림이 간다"],
+        ["inbox", "대기열 검토 · 승인"],
+        ["search", "변경 지도로 겹친 파일 확인"],
+        ["push", "승인 후 push까지 한 번에"],
       ]),
     );
     wrap.appendChild(
       mk("member", "일반 팀원", "내 브랜치에서 작업하고 승인을 받는다", [
-        ["작업 탭 — ", "브랜치 → 커밋 → 푸시, 홈 카드가 다음 할 일을 알려 준다"],
-        ["병합 요청 — ", "작업이 끝나면 요청 보내기로 승인을 받는다"],
-        ["동기화 — ", "병합 완료 알림의 버튼 한 번으로 최신 코드 반영"],
+        ["edit", "브랜치에서 작업"],
+        ["inbox", "병합 요청 보내기"],
+        ["refresh", "동기화 버튼으로 최신 유지"],
       ]),
     );
     rolesHost.appendChild(wrap);
@@ -431,29 +460,25 @@ async function renderGuideTab(root: HTMLElement, me: Account): Promise<void> {
     paintRoles(role, managerOf);
   });
 
-  // ── 3) 알림 규칙 — 누가 무엇을 받는지 ────────────────────────────────────
-  const notif = guideCard("알림 규칙", "bell");
+  // ── 3) 알림 흐름 — 누가 무엇을 받는지를 화살표 도식으로 ──────────────────
+  const notif = guideCard("알림 흐름", "bell");
+  notif.body.appendChild(guideFlowRow("edit", "팀원의 push · 병합 요청", "user", "관리자에게만"));
+  notif.body.appendChild(guideFlowRow("check", "병합 완료 · push", "users", "팀원 전원"));
   notif.body.appendChild(
-    guideRow("팀원의 push·병합 요청 → ", "그 브랜치의 병합 관리자에게만 갑니다. 남의 일은 내 수신함에 쌓이지 않습니다."),
-  );
-  notif.body.appendChild(
-    guideRow("병합 완료 → ", "팀원 전원에게 “내 브랜치에 동기화” 알림이 갑니다."),
-  );
-  notif.body.appendChild(
-    guideRow("도착 위치 — ", "우측 하단 알림(바로 실행 가능)과 사이드바 알림 배지. 알림 탭에서 읽음·모두 읽음으로 정리합니다."),
+    guideIconRow("bell", "도착 위치 — 우측 하단 알림(바로 실행) · 좌측 상단 배지"),
   );
   root.appendChild(notif.root);
 
-  // ── 4) 충돌과 안전장치 ────────────────────────────────────────────────────
-  const safety = guideCard("충돌이 나면 · 안전장치", "check");
+  // ── 4) 안전장치 — 무서워하지 않아도 되는 이유 세 가지 ────────────────────
+  const safety = guideCard("안전장치 — 작업은 사라지지 않습니다", "lock");
   safety.body.appendChild(
-    guideRow("블록 단위 해결 — ", "충돌 파일 전체가 아니라 겹친 블록마다 내 것 / 가져온 것 / 직접 편집을 고릅니다. 미결정 블록은 저장 전에 확인됩니다."),
+    guideIconRow("lock", "커밋하지 않은 변경이 있으면 동기화·병합이 먼저 막힙니다"),
   );
   safety.body.appendChild(
-    guideRow("AI 자동 병합 — ", "설정 탭에서 켜 두면 저장된 지침대로 충돌을 고치고 병합 커밋까지 만듭니다. 원본은 항상 백업되고, 결과는 관리자가 확인한 뒤에 push됩니다."),
+    guideIconRow("check", "충돌은 블록마다 내 것 / 가져온 것을 고르고, 미결정은 저장 전 확인"),
   );
   safety.body.appendChild(
-    guideRow("작업은 사라지지 않습니다 — ", "커밋하지 않은 변경이 있으면 동기화·병합·브랜치 전환이 먼저 거부되고 무엇을 해야 하는지 알려 줍니다."),
+    guideIconRow("sparkles", "AI 자동 병합은 설정 탭에서 켭니다 — 원본은 항상 백업"),
   );
   root.appendChild(safety.root);
 

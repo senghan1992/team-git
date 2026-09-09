@@ -1,4 +1,4 @@
-import { ipc, type StashEntry, type WorkingTreeStatus } from "../lib/ipc";
+import { ipc, type ProjectConfigResult, type StashEntry, type WorkingTreeStatus } from "../lib/ipc";
 import { openModal, confirmDialog } from "../components/Modal";
 import { toast } from "../components/Toast";
 import { kindHint, kindLabel } from "../components/StatusTable";
@@ -27,6 +27,12 @@ export async function renderRepoView(
     main.appendChild(e);
     return main;
   }
+
+  // projectCfg는 원래 아래(설정 탭 섹션)에서 await로 채워졌다. 그런데
+  // syncBaseName() 같은 조기 호출자가 이 값을 읽는데, default_branch가
+  // 없는 저장소(등록 직후·리모트 미탐지)에서는 단락 평가가 풀려 TDZ 오류로
+  // 화면 전체가 깨졌다. 선언만 맨 앞으로 올려 두고, 값은 원래 자리에서 채운다.
+  let projectCfg: ProjectConfigResult | null = null;
 
   // ── Header ────────────────────────────────────────────────────────────────
   const headRow = document.createElement("div");
@@ -225,9 +231,14 @@ export async function renderRepoView(
           }
           await ipc.updateRepository(repoId, { working_branch: name });
           toast(`브랜치 '${name}' 생성 완료${pushAfter ? " — 원격에 푸시됨" : ""}`, "success");
+          // 순서가 중요하다 — 상태(현재 브랜치)를 먼저 반영한 뒤 목록을 다시
+          // 그려야 선택 상자가 새 브랜치를 가리킨다. 반대로 하면 select가
+          // 이전 브랜치를 고른 채 남고, 관리자 배지가 이전 브랜치 기준으로
+          // 푸시를 잠가 버린다 (main 잠금 때문에 팀원의 푸시가 막히는 식으로
+          // 실제로 깨진 적이 있다).
+          applyStatus(await ipc.status(repoId).catch(() => null));
           await loadBranches();
           close();
-          applyStatus(await ipc.status(repoId).catch(() => null));
           projectCfg = await ipc.projectConfigGet(repoId).catch(() => null);
           refreshManagerBadge();
           refreshSyncLabel();
@@ -929,7 +940,7 @@ export async function renderRepoView(
     void trigger;
   }
 
-  let projectCfg = await ipc.projectConfigGet(repoId).catch(() => null);
+  projectCfg = await ipc.projectConfigGet(repoId).catch(() => null);
   refreshSyncLabel();
   const pushBtnRef = () => commitCard.querySelector<HTMLButtonElement>("#btn-push")!;
   /** 원격이 없으면 푸시·풀·동기화는 무엇을 해도 실패한다 — 아래 두 곳이 함께 본다. */

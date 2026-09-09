@@ -1290,3 +1290,62 @@ textarea.gc-input {
     animation-timing-function: linear;
   }
 }
+/* ── 이용 가이드 — 읽는 설명서가 아니라 훑는 도판(圖板) ──────────────────────
+ * 사람들은 문단을 읽지 않는다. 다섯 걸음 파이프라인이 주 역할을 하고:
+ * 메달리온(아이콘) + 짧은 제목 + "어디서" 배지 + 한 줄 보조말. 코발트
+ * 메달리온만 채색한다 — 관리자가 누르는 단계라는 신호 (One Cobalt Rule). */
+.gc-guide-medallion {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  color: var(--color-ink-muted);
+  box-shadow: 0 1px 2px rgba(37, 39, 44, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.85);
+}
+.gc-guide-medallion--cobalt {
+  background: var(--color-primary-soft);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+.gc-guide-num {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  background: var(--color-plaque);
+  border: 1px solid var(--color-hairline);
+  color: var(--color-ink-muted);
+  font-size: var(--text-display-xs);
+  font-weight: 600;
+  line-height: 1;
+}
+.gc-guide-rail {
+  width: 2px;
+  flex: 1;
+  min-height: 14px;
+  background: var(--color-hairline);
+  margin: 4px 0;
+}
+.gc-guide-legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-soft);
+  border: 1px solid var(--color-primary);
+}
+/* 알림 흐름의 화살표 행 — "누가 무엇을 받는지"를 문장 대신 도식으로. */
+.gc-guide-flow-arrow {
+  color: var(--color-ink-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-display-sm);
+}
