@@ -165,3 +165,121 @@ export function bindPushButton(
     }
   });
 }
+
+// ── 병합 요청(원격 ref 공유) 자격증명 흐름 ───────────────────────────────
+//
+// 병합 요청은 `refs/gc-mr/*` 를 원격에 push 하는 것이라 HTTPS 원격(Git
+// 호스트)이면 브랜치 푸시와 같은 로그인이 필요하다. 푸시와 똑같은 규칙을
+// 쓴다: 저장된 자격증명 자동 사용 → 없으면/거부되면 로그인 모달 → 재시도.
+
+/** 저장된 푸시 자격증명 (이 저장소 것). */
+async function savedCredentials(repo: Repo): Promise<PushCredential | null> {
+  const saved = await ipc
+    .pushCredentialsList()
+    .catch(() => ({} as Record<string, PushCredential>));
+  return saved[repo.id] ?? null;
+}
+
+export type MergeRequestFlowResult =
+  | { status: "ok" }
+  | { status: "cancelled" }
+  | { status: "failed"; message: string };
+
+/** 병합 요청을 보낸다(또는 갱신한다) — HTTPS 원격이면 로그인 흐름을 탄다. */
+export async function requestMergeWithAuth(
+  repo: Repo,
+  base: string,
+  branch: string,
+  title: string | null,
+): Promise<MergeRequestFlowResult> {
+  const creds = await savedCredentials(repo);
+  const attempt = (c: PushCredential | null, save: boolean) =>
+    ipc.requestMerge(repo.id, base, branch, title, c, save);
+
+  // 1) 저장된 자격증명(또는 null)으로 시도 — SSH 원격은 이대로 성공한다.
+  let res;
+  try {
+    res = await attempt(creds, false);
+  } catch (e) {
+    return { status: "failed", message: (e as Error).message ?? String(e) };
+  }
+  if (res.request) return { status: "ok" };
+  if (!res.auth_required) {
+    return { status: "failed", message: "요청을 원격에 공유하지 못했습니다." };
+  }
+
+  // 2) HTTPS + 인증 필요 → 로그인 모달 (저장된 값이 거부된 경우 prefill).
+  const ok = await openGitLoginModal({
+    title: "Git 호스트 로그인",
+    description: creds
+      ? `${repo.display_name} — 이 자격증명으로는 병합 요청을 원격에 올릴 수 없습니다. 다시 입력하세요.`
+      : `${repo.display_name} — 병합 요청을 ${base} 관리자에게 보내려면 Git 호스트 아이디/비밀번호가 필요합니다.`,
+    submitLabel: "요청 보내기",
+    prefill: creds ?? null,
+    attempt: async (c, save) => {
+      let r;
+      try {
+        r = await attempt(c, save);
+      } catch (e) {
+        return { ok: false, message: (e as Error).message ?? String(e) };
+      }
+      if (r.request) {
+        if (save) {
+          toast("자격증명을 설정에 저장했습니다. 다음부터 자동 입력됩니다.", "info");
+        }
+        return { ok: true, message: "" };
+      }
+      return {
+        ok: false,
+        message: r.auth_required ? "로그인 실패" : "요청을 원격에 공유하지 못했습니다.",
+      };
+    },
+  });
+  return ok ? { status: "ok" } : { status: "cancelled" };
+}
+
+/** 열린 병합 요청을 닫는다(취소/거절/병합 완료) — HTTPS 원격이면 로그인 흐름. */
+export async function closeMergeRequestWithAuth(
+  repo: Repo,
+  base: string,
+  branch: string,
+  reason: string | null,
+): Promise<MergeRequestFlowResult> {
+  const creds = await savedCredentials(repo);
+  const attempt = (c: PushCredential | null) =>
+    ipc.closeMergeRequest(repo.id, base, branch, reason, c);
+
+  let firstError: string | null = null;
+  try {
+    await attempt(creds);
+    return { status: "ok" };
+  } catch (e) {
+    const msg = (e as Error).message ?? String(e);
+    // 인증 문제(HTTPS + 자격증명 없음/거부)만 모달로 이어간다.
+    if (!/[Ll]ogin|credential|Username|password|인증|로그인|authorization/i.test(msg)) {
+      return { status: "failed", message: msg };
+    }
+    firstError = msg;
+  }
+
+  const ok = await openGitLoginModal({
+    title: "Git 호스트 로그인",
+    description: `${repo.display_name} — 병합 요청을 대기열에서 내리려면 Git 호스트 아이디/비밀번호가 필요합니다.`,
+    submitLabel: "닫기",
+    prefill: creds ?? null,
+    attempt: async (c, save) => {
+      try {
+        await attempt(c);
+        if (save) {
+          await ipc.pushCredentialSet(repo.id, c).catch(() => undefined);
+          toast("자격증명을 설정에 저장했습니다. 다음부터 자동 입력됩니다.", "info");
+        }
+        return { ok: true, message: "" };
+      } catch (e) {
+        return { ok: false, message: (e as Error).message ?? String(e) };
+      }
+    },
+  });
+  if (ok) return { status: "ok" };
+  return { status: "failed", message: firstError ?? "요청 정리를 취소했습니다." };
+}

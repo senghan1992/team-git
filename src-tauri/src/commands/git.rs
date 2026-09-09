@@ -162,6 +162,14 @@ pub const MERGE_REMOTE: &str = "origin";
 #[tauri::command]
 pub async fn fetch_repo(repo_id: Uuid) -> AppResult<String> {
     let (target, _) = resolve_target(repo_id)?;
+    // HTTPS 원격은 읽기까지 로그인을 요구하는 호스트가 있다 (Basic 인증이
+    // 리포 전체를 잠그는 Git 호스트). 저장된 푸시 자격증명이 있으면 fetch에도
+    // 재사용한다 — 없으면 익명 시도 (대부분의 호스트는 읽기는 열려 있다).
+    if crate::git::ops::remote_is_https(&target, MERGE_REMOTE) {
+        if let Ok(Some(cred)) = config_store::get_push_credential(&repo_id) {
+            return git::fetch::fetch_target_with_credentials(&target, MERGE_REMOTE, &cred);
+        }
+    }
     git::fetch::fetch_target(&target, MERGE_REMOTE)
 }
 

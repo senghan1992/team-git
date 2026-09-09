@@ -748,12 +748,18 @@ export async function renderMergeCenter(
         if (!ok) return;
         setBusy(rejectBtn, true, "정리 중…");
         try {
-          await ipc.closeMergeRequest(repo.id, base, b.short_name, "rejected");
+          await ipc.closeMergeRequest(
+            repo.id,
+            base,
+            b.short_name,
+            "rejected",
+            await savedCreds(repo.id),
+          );
           toast(`${b.short_name} 병합 요청을 거절했습니다.`, "success");
           await refresh();
           notifyRepoChanged();
         } catch (e) {
-          toast(`거절 실패: ${(e as Error).message ?? e}`, "error");
+          toast(`거절 실패: ${(e as Error).message ?? e} — 원격 요청이 남아 있으면 다시 시도하세요.`, "error");
         } finally {
           setBusy(rejectBtn, false);
         }
@@ -813,7 +819,14 @@ export async function renderMergeCenter(
    *  (요청 tip이 base의 조상이 되면 목록에서 치운다). */
   async function finalizeMergedBranch(branch: string) {
     try {
-      await ipc.closeMergeRequest(repo.id, base, branch, "merged");
+      // 원격 ref 삭제도 쓰기라 HTTPS 원격이면 저장된 푸시 자격증명을 재사용한다.
+      await ipc.closeMergeRequest(
+        repo.id,
+        base,
+        branch,
+        "merged",
+        await savedCreds(repo.id),
+      );
     } catch {
       // 대기열 정리는 부가 기능 — 병합 자체는 이미 끝났다.
     }
@@ -1470,6 +1483,15 @@ export async function renderMergeCenter(
   // 모달 없이 그대로 쓴다. (저장된 값이 거부되면 prefill 로만 남긴다.)
   let deleteCreds: PushCredential | null = null;
   let deleteCredsLoaded = false;
+
+  /** 저장된 푸시 자격증명을 이 저장소 것만 꺼낸다 — 대기열 정리(요청 ref
+   *  삭제)는 HTTPS 원격이면 쓰기 동작이라 같은 자격증명이 필요하다. */
+  async function savedCreds(repoId: string): Promise<PushCredential | null> {
+    const saved = await ipc
+      .pushCredentialsList()
+      .catch(() => ({} as Record<string, PushCredential>));
+    return saved[repoId] ?? null;
+  }
 
   /** 병합이 끝난 원격 브랜치 하나를 삭제한다.
    *

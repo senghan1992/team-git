@@ -251,6 +251,19 @@ pub fn is_https_url(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
 }
 
+/// 해당 원격이 HTTPS(Git 호스트)인가 — 자격증명이 필요한 쓰기 동작(푸시·
+/// 브랜치 삭제·병합 요청 공유)을 판정할 때 쓴다. URL 에 이미
+/// `http://user:pass@host/…` 처럼 자격증명이 박혀 있으면 git 이 그걸 쓰므로
+/// (프롬프트 없음) 평범한 push 로 충분하다 — 그 경우 HTTPS 여부와 무관하게
+/// 자격증명 요구를 건너뛴다.
+pub fn remote_is_https(target: &Target, remote: &str) -> bool {
+    let url = run_at_target(target, ["remote", "get-url", remote])
+        .ok()
+        .map(|o| o.stdout.trim().to_string())
+        .unwrap_or_default();
+    is_https_url(&url) && !url.contains('@')
+}
+
 pub fn is_auth_failure(stderr: &str) -> bool {
     let e = stderr.to_lowercase();
     [

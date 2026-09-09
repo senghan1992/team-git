@@ -4,7 +4,7 @@ import { toast } from "../components/Toast";
 import { kindHint, kindLabel } from "../components/StatusTable";
 import { renderMergeCenter } from "../components/MergeCenter";
 import { renderProjectConfigPanel } from "../components/ProjectConfigPanel";
-import { openPushCredentialFlow } from "../components/PushButton";
+import { closeMergeRequestWithAuth, openPushCredentialFlow, requestMergeWithAuth } from "../components/PushButton";
 import { getSession } from "../lib/session";
 import { icon } from "../components/Icon";
 import { setBusy } from "../components/Busy";
@@ -775,10 +775,18 @@ export async function renderRepoView(
         if (!ok) return;
         setBusy(cancelBtn, true, "정리 중…");
         try {
-          await ipc.closeMergeRequest(repoId, base, branch, "withdrawn");
-          toast("병합 요청을 취소했습니다.", "success");
-          mrSig = "";
-          await refreshRequestCard(true);
+          const r = await closeMergeRequestWithAuth(repo, base, branch, "withdrawn");
+          if (r.status === "ok") {
+            toast("병합 요청을 취소했습니다.", "success");
+            mrSig = "";
+            await refreshRequestCard(true);
+          } else if (r.status === "failed") {
+            toast(
+              `취소 실패: ${r.message} — 원격 요청이 남아 있으면 관리자 대기열에 계속 보입니다. 다시 시도하세요.`,
+              "error",
+            );
+          }
+          // "cancelled" — 로그인을 닫은 경우. 아무 일도 하지 않는다.
         } catch (e) {
           toast(`취소 실패: ${(e as Error).message ?? e}`, "error");
         } finally {
@@ -794,6 +802,9 @@ export async function renderRepoView(
 
   /** 병합 요청 보내기/갱신 — 제목을 받는 모달. 갱신이면 확인 문구가 다르다. */
   function openMergeRequestModal(branch: string, base: string, trigger: HTMLButtonElement, renew = false) {
+    // renderRepoView 상단 가드에서 이미 존재가 확인된 저장소다 (const + hoisted
+    // 함수라 타입 추론이 좁히지 못하므로 명시적으로 단언).
+    const r = repo!;
     const m = openModal({
       title: renew ? "병합 요청 갱신" : "병합 요청 보내기",
       description: renew
@@ -805,16 +816,23 @@ export async function renderRepoView(
         m.setSubmitting(true);
         m.setError(null);
         try {
-          await ipc.requestMerge(repoId, base, branch, title || null);
-          toast(
-            renew
-              ? "병합 요청을 최신 커밋으로 갱신했습니다."
-              : `병합 요청을 보냈습니다 — ${base} 관리자의 승인을 기다립니다.`,
-            "success",
-          );
-          mrSig = "";
-          void refreshRequestCard(true);
-          close();
+          const r2 = await requestMergeWithAuth(r, base, branch, title || null);
+          if (r2.status === "ok") {
+            toast(
+              renew
+                ? "병합 요청을 최신 커밋으로 갱신했습니다."
+                : `병합 요청을 보냈습니다 — ${base} 관리자의 승인을 기다립니다.`,
+              "success",
+            );
+            mrSig = "";
+            void refreshRequestCard(true);
+            close();
+          } else if (r2.status === "cancelled") {
+            m.setSubmitting(false);
+          } else {
+            m.setError(`요청 실패: ${r2.message}`);
+            m.setSubmitting(false);
+          }
         } catch (e) {
           m.setError(`요청 실패: ${(e as Error).message ?? e}`);
           m.setSubmitting(false);

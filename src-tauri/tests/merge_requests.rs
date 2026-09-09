@@ -64,12 +64,12 @@ fn request_roundtrip_list_and_merge_closes_it() {
 
     // 요청 전: 푸시해야 한다 — 요청은 푸시된 커밋만 받는다.
     let target = Target::Local(work.path().into());
-    let err = request_merge(&target, "origin", "main", "feature/x", None, "민지", "m@x")
+    let err = request_merge(&target, "origin", "main", "feature/x", None, "민지", "m@x", None)
         .expect_err("푸시 없이 요청하면 거부된다");
     assert!(format!("{err}").contains("푸시"));
 
     git_run(work.path(), &["push", "-q", "origin", "feature/x"]);
-    let req = request_merge(&target, "origin", "main", "feature/x", None, "민지", "m@x")
+    let req = request_merge(&target, "origin", "main", "feature/x", None, "민지", "m@x", None)
         .expect("push 후 요청 성공");
     assert_eq!(req.branch, "feature/x");
     assert_eq!(req.base, "main");
@@ -78,15 +78,17 @@ fn request_roundtrip_list_and_merge_closes_it() {
     assert_eq!(req.title, "feat x");
 
     // 같은 브랜치에 다시 요청하면 갱신이다 (중복 ref가 생기지 않는다).
-    let req2 = request_merge(&target, "origin", "main", "feature/x", Some("로그인 수정"), "민지", "m@x")
-        .unwrap();
+    let req2 = request_merge(
+        &target, "origin", "main", "feature/x", Some("로그인 수정"), "민지", "m@x", None,
+    )
+    .unwrap();
     assert_eq!(req2.sha, req.sha, "새 push 없이 재요청하면 tip은 그대로");
     assert_eq!(req2.title, "로그인 수정", "제목은 갱신된다");
 
     // push 후 다시 요청하면 tip이 갱신된다 — 관리자는 항상 요청된 tip을 본다.
     seed_commit(work.path(), "y.txt", "y\n", "feat x more");
     git_run(work.path(), &["push", "-q", "origin", "feature/x"]);
-    let req3 = request_merge(&target, "origin", "main", "feature/x", None, "민지", "m@x").unwrap();
+    let req3 = request_merge(&target, "origin", "main", "feature/x", None, "민지", "m@x", None).unwrap();
     assert_ne!(req3.sha, req2.sha, "새 push 반영된 tip으로 갱신");
 
     let queue = list_requested_merges(&target, "origin", "main").unwrap();
@@ -104,7 +106,7 @@ fn request_roundtrip_list_and_merge_closes_it() {
     git_run(work.path(), &["fetch", "-q", "origin"]);
 
     // 승인 후 요청을 닫는다 — 대기열과 원격에서 모두 사라진다.
-    close_request(&target, "origin", "main", "feature/x").unwrap();
+    close_request(&target, "origin", "main", "feature/x", None).unwrap();
     assert!(list_requests(&target, "origin", "main").unwrap().is_empty());
     let check = git_run(bare.path(), &["rev-parse", "-q", "--verify", "refs/gc-mr/main/feature/x"]);
     assert!(!check.status.success(), "원격에서도 요청 ref가 지워진다");
@@ -122,7 +124,7 @@ fn request_rejects_merged_and_no_change_branches() {
     git_run(work.path(), &["checkout", "-q", "-b", "nochange"]);
     git_run(work.path(), &["push", "-q", "origin", "nochange"]);
     let target = Target::Local(work.path().into());
-    let err = request_merge(&target, "origin", "main", "nochange", None, "민지", "m@x")
+    let err = request_merge(&target, "origin", "main", "nochange", None, "민지", "m@x", None)
         .expect_err("새 커밋이 없으면 거부");
     assert!(format!("{err}").contains("이미"));
 
@@ -135,14 +137,14 @@ fn request_rejects_merged_and_no_change_branches() {
     git_run(work.path(), &["merge", "-q", "--no-ff", "merged"]);
     git_run(work.path(), &["push", "-q", "origin", "main"]);
     git_run(work.path(), &["fetch", "-q", "origin"]);
-    let err = request_merge(&target, "origin", "main", "merged", None, "민지", "m@x")
+    let err = request_merge(&target, "origin", "main", "merged", None, "민지", "m@x", None)
         .expect_err("이미 병합된 브랜치는 거부");
     assert!(format!("{err}").contains("이미"));
 
     // 푸시하지 않은 커밋이 있으면 거부 — 승인 대상이 모호해지기 때문.
     git_run(work.path(), &["checkout", "-q", "-b", "dirty"]);
     seed_commit(work.path(), "d.txt", "d\n", "unpushed work");
-    let err = request_merge(&target, "origin", "main", "dirty", None, "민지", "m@x")
+    let err = request_merge(&target, "origin", "main", "dirty", None, "민지", "m@x", None)
         .expect_err("origin 브랜치가 없으면 거부");
     assert!(format!("{err}").contains("푸시"));
 }
@@ -157,7 +159,7 @@ fn list_auto_closes_requests_merged_outside_the_app() {
     seed_commit(work.path(), "t.txt", "t\n", "t work");
     git_run(work.path(), &["push", "-q", "origin", "feature/t"]);
     let target = Target::Local(work.path().into());
-    request_merge(&target, "origin", "main", "feature/t", None, "민지", "m@x").unwrap();
+    request_merge(&target, "origin", "main", "feature/t", None, "민지", "m@x", None).unwrap();
     assert_eq!(list_requests(&target, "origin", "main").unwrap().len(), 1);
 
     // 앱 밖에서 병합됐다 (터미널).
@@ -199,7 +201,7 @@ fn push_notification_fires_on_branch_push_but_ref_is_separate() {
     assert!(pending.iter().any(|b| b.short_name == "feature/silent"));
 
     // 요청해야 대기열에 오른다.
-    request_merge(&target, "origin", "main", "feature/silent", None, "민지", "m@x").unwrap();
+    request_merge(&target, "origin", "main", "feature/silent", None, "민지", "m@x", None).unwrap();
     let queue = list_requested_merges(&target, "origin", "main").unwrap();
     assert_eq!(queue.len(), 1);
     // push()로 base를 밀 때처럼 푸시가 겹쳐도 요청 ref는 별도다.

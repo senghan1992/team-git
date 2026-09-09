@@ -168,6 +168,14 @@ export interface RequestedMerge {
   branch_exists: boolean;
 }
 
+/** 병합 요청 전송 결과 — 푸시와 같은 자격증명 계약. */
+export interface MergeRequestOutcome {
+  /** 성공 시 만들어진(또는 갱신된) 요청. auth_required면 null. */
+  request: MergeRequest | null;
+  /** HTTPS 원격 + 자격증명 부재/거부 → UI가 로그인 모달을 띄워야 한다. */
+  auth_required?: boolean;
+}
+
 /** 타임라인에 실리는 커밋 한 줄 — `date` 는 RFC3339 작성일. */
 export interface TimelineCommit {
   sha: string;
@@ -489,22 +497,41 @@ export const ipc = {
   listPendingBranches: (repoId: Uuid, base: string) =>
     invoke<PendingBranch[]>("list_pending_branches", { repoId, base }),
   // 병합 요청 — 푸시(작업 공유)와 승인(병합) 사이의 명시적 단계.
-  requestMerge: (repoId: Uuid, base: string, branch: string, title?: string | null) =>
-    invoke<MergeRequest>("request_merge", {
+  // `credentials`가 없으면 저장된 자격증명만 사용하고, HTTPS 원격이라면
+  // 결과의 auth_required가 true로 돌아온다 → UI가 로그인 모달을 띄운다.
+  requestMerge: (
+    repoId: Uuid,
+    base: string,
+    branch: string,
+    title?: string | null,
+    credentials?: PushCredential | null,
+    saveCredential?: boolean,
+  ) =>
+    invoke<MergeRequestOutcome>("request_merge", {
       repoId,
       base,
       branch,
       title: title ?? null,
+      credentials: credentials ?? null,
+      saveCredential: saveCredential ?? false,
     }),
   listRequestedMerges: (repoId: Uuid, base: string) =>
     invoke<RequestedMerge[]>("list_requested_merges", { repoId, base }),
-  /** 승인(병합 완료) 또는 거절로 요청을 닫는다 — 대기열과 원격에서 사라진다. */
-  closeMergeRequest: (repoId: Uuid, base: string, branch: string, reason?: string | null) =>
+  /** 승인(병합 완료) 또는 거절로 요청을 닫는다 — 대기열과 원격에서 사라진다.
+   *  원격 ref 삭제도 쓰기라 HTTPS 원격이면 자격증명을 넘긴다. */
+  closeMergeRequest: (
+    repoId: Uuid,
+    base: string,
+    branch: string,
+    reason?: string | null,
+    credentials?: PushCredential | null,
+  ) =>
     invoke<void>("close_merge_request", {
       repoId,
       base,
       branch,
       reason: reason ?? null,
+      credentials: credentials ?? null,
     }),
   startMerge: (repoId: Uuid, branchRef: string, base: string, expectedSha?: string | null) =>
     invoke<MergeOutcome>("start_merge", {

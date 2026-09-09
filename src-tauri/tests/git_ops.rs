@@ -1348,6 +1348,83 @@ fn push_https_with_credentials_succeeds_end_to_end() {
         "fetch --prune 후 트래킹 ref 도 정리돼야 한다"
     );
 
+    // 6) 병합 요청(refs/gc-mr/*) 푸시도 같은 자격증명 경로를 타야 한다 —
+    //    GitHub 식 흐름의 핵심이다. push만으로는 대기열에 오르지 않고,
+    //    명시적으로 요청을 보내야 관리자 대기열에 보인다.
+    git_run(&work, &["checkout", "-q", "-b", "feature/mr"]);
+    touch(&format!("{}/mr.txt", work.display()));
+    git_run(&work, &["add", "-A"]);
+    git_run(&work, &["commit", "-q", "-m", "mr work"]);
+    let push_mr = git_companion::git::push(&target, Some("feature/mr"), Some(&cred)).unwrap();
+    assert!(push_mr.ok, "branch push failed: {}", push_mr.message);
+
+    // 6-1) 자격증명 없이 요청 → 시도조차 안 하고 local_only (프롬프트 금지).
+    let req_anon = git_companion::git::mr::request_merge(
+        &target, "origin", "main", "feature/mr", Some("MR 테스트"), "민지", "m@x", None,
+    )
+    .unwrap();
+    assert!(req_anon.local_only, "자격증명 없는 HTTPS 요청은 원격 공유 불가");
+    let remote_refs = git_run(&origin, &["for-each-ref", "refs/gc-mr"]);
+    assert!(
+        String::from_utf8_lossy(&remote_refs.stdout).trim().is_empty(),
+        "자격증명 없는 요청이 원격에 없어야 한다"
+    );
+
+    // 6-2) 틀린 자격증명 → 역시 원격 공유 실패.
+    let req_bad = git_companion::git::mr::request_merge(
+        &target, "origin", "main", "feature/mr", Some("MR 테스트"), "민지", "m@x", Some(&bad),
+    )
+    .unwrap();
+    assert!(req_bad.local_only, "틀린 자격증명 요청도 local_only");
+
+    // 6-3) 올바른 자격증명 → 원격에 실제로 올라간다.
+    let req_ok = git_companion::git::mr::request_merge(
+        &target, "origin", "main", "feature/mr", Some("MR 테스트"), "민지", "m@x", Some(&cred),
+    )
+    .unwrap();
+    assert!(!req_ok.local_only, "올바른 자격증명 요청은 원격에 공유된다");
+
+    // 6-4) 관리자(다른 폴더)가 clone + fetch --prune 하면 요청이 대기열에
+    //      보인다 — 읽기까지 잠근 호스트 테스트를 위해 자격증명 fetch 를 쓴다.
+    let manager = td.path().join("manager");
+    let extra = format!(
+        "AUTHORIZATION: Basic {}",
+        git_companion::git::ops::base64_encode(format!("{username}:{password}").as_bytes())
+    );
+    let mut clone = std::process::Command::new("git");
+    clone
+        .args(["-c", &format!("http.extraheader={extra}")])
+        .args(["clone", "-q", &url, manager.to_str().unwrap()])
+        .current_dir(td.path())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let status = clone.status().unwrap();
+    assert!(status.success(), "자격증명 clone 이 성공해야 한다");
+    let mgr_target = git_companion::git::Target::Local(manager.clone());
+    git_companion::git::fetch::fetch_target_with_credentials(&mgr_target, "origin", &cred)
+        .unwrap();
+    let list = git_companion::git::mr::list_requests(&mgr_target, "origin", "main").unwrap();
+    assert_eq!(list.len(), 1, "관리자 대기열에 요청이 보여야 한다");
+    assert_eq!(list[0].branch, "feature/mr");
+    assert_eq!(list[0].title, "MR 테스트");
+    assert!(!list[0].local_only);
+
+    // 6-5) 요청 닫기(거절·병합 완료)도 자격증명으로 원격 ref 를 지운다.
+    git_companion::git::mr::close_request(&target, "origin", "main", "feature/mr", Some(&cred))
+        .unwrap();
+    let after = git_run(&origin, &["for-each-ref", "refs/gc-mr"]);
+    assert!(
+        String::from_utf8_lossy(&after.stdout).trim().is_empty(),
+        "닫은 요청은 원격에서도 사라져야 한다"
+    );
+    // 관리자 쪽은 다음 fetch --prune 에서 대기열에서 빠진다 (앱의 자동 갱신과
+    // 같은 동작).
+    git_companion::git::fetch::fetch_target_with_credentials(&mgr_target, "origin", &cred)
+        .unwrap();
+    let after_list = git_companion::git::mr::list_requests(&mgr_target, "origin", "main").unwrap();
+    assert!(after_list.is_empty(), "관리자 대기열도 비워져야 한다");
+
     let _ = server.kill();
 }
 

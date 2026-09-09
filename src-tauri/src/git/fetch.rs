@@ -20,6 +20,11 @@ pub fn fetch_origin(repo_path: &std::path::Path) -> AppResult<String> {
 /// 병합 요청 ref(refs/gc-mr/*)도 함께 받아온다 — 일반 fetch는 refs/heads만
 /// 가져오므로 요청 대기열이 갱신되려면 별도 refspec이 필요하다. 요청 fetch는
 /// best-effort: 오래된 git이나 refspec을 거부하는 호스트에서도 본 fetch는 살린다.
+/// `git fetch --prune <remote>` — used by the merge-center when the user hits
+/// "가져오기". Returns the stderr stream for the UI to surface on failure.
+/// 병합 요청 ref(refs/gc-mr/*)도 함께 받아온다 — 일반 fetch는 refs/heads만
+/// 가져오므로 요청 대기열이 갱신되려면 별도 refspec이 필요하다. 요청 fetch는
+/// best-effort: 오래된 git이나 refspec을 거부하는 호스트에서도 본 fetch는 살린다.
 pub fn fetch_target(target: &crate::git::Target, remote: &str) -> AppResult<String> {
     let out = crate::git::run_at_target(target, ["fetch", "--prune", remote])?;
     let _ = crate::git::run_at_target(
@@ -31,5 +36,32 @@ pub fn fetch_target(target: &crate::git::Target, remote: &str) -> AppResult<Stri
             crate::git::ops::friendly_git_error(&out.stderr),
         ));
     }
+    Ok(out.stderr)
+}
+
+/// 자격증명을 실어 보내는 fetch — HTTPS 호스트가 읽기까지 잠근 경우
+/// (모든 요청에 Basic 인증을 거는 Git 호스트). 저장된 푸시 자격증명을
+/// 그대로 재사용한다. 본 fetch가 실패하면 오류를 올리고, 병합 요청
+/// refspec은 best-effort다 (위와 같은 이유).
+pub fn fetch_target_with_credentials(
+    target: &crate::git::Target,
+    remote: &str,
+    cred: &crate::config_store::PushCredential,
+) -> AppResult<String> {
+    let out = crate::git::ops::run_http_with_credentials(
+        target,
+        cred,
+        &["fetch", "--prune", remote],
+    )?;
+    if !out.ok() {
+        return Err(crate::error::AppError::Git(
+            crate::git::ops::friendly_git_error(&out.stderr),
+        ));
+    }
+    let _ = crate::git::ops::run_http_with_credentials(
+        target,
+        cred,
+        &["fetch", "--prune", remote, "+refs/gc-mr/*:refs/gc-mr/*"],
+    );
     Ok(out.stderr)
 }

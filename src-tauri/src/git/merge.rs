@@ -742,9 +742,7 @@ pub fn delete_remote_branch(
     // HTTPS 원격인가 — 자격증명이 필요한지 결정한다. URL 에 이미
     // `http://user:pass@host/…` 처럼 자격증명이 박혀 있으면 git 이 그걸
     // 쓰므로(프롬프트 없음) 평범한 push 로 충분하다.
-    let remote_url = run_at_target(target, ["remote", "get-url", remote]).ok();
-    let url = remote_url.as_ref().map(|o| o.stdout.trim()).unwrap_or("");
-    let https = crate::git::ops::is_https_url(url) && !url.contains('@');
+    let https = crate::git::ops::remote_is_https(target, remote);
     if https && credentials.is_none() {
         // 푸시와 같은 정책: 자격증명 없이 HTTPS push 는 아예 시도하지 않는다
         // — 터미널 프롬프트를 쓸 수 없는 이 앱에서는 반드시 실패한다.

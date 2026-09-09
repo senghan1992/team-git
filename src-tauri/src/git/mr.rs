@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use crate::error::{AppError, AppResult};
 use crate::git::merge::ChangedPath;
 use crate::git::{run_at_target, Target};
-
 /// 병합 요청 ref의 이름공간.
 pub const MR_REF_PREFIX: &str = "refs/gc-mr";
 
@@ -105,6 +104,7 @@ pub fn request_merge(
     title: Option<&str>,
     author: &str,
     email: &str,
+    credentials: Option<&crate::config_store::PushCredential>,
 ) -> AppResult<MergeRequest> {
     let base_ref = format!("{remote}/{base}");
     let branch_ref = format!("{remote}/{branch}");
@@ -178,7 +178,7 @@ pub fn request_merge(
     };
 
     write_request_ref(target, &req)?;
-    req.local_only = !push_request_ref(target, remote, &req.ref_path);
+    req.local_only = !push_request_ref(target, remote, &req.ref_path, credentials);
     Ok(req)
 }
 
@@ -249,9 +249,29 @@ fn write_request_ref(target: &Target, req: &MergeRequest) -> AppResult<()> {
 
 /// 요청 ref를 원격에 올린다(또는 갱신한다). 실패해도 요청은 로컬에 남고
 /// 호출부가 `local_only`로 표시한다 — 오프라인에서 흐름이 막히지 않게.
-fn push_request_ref(target: &Target, remote: &str, ref_path: &str) -> bool {
+///
+/// HTTPS 원격(Git 호스트)은 ref 푸시도 로그인이 필요하다 — 푸시·브랜치
+/// 삭제와 같은 자격증명을 받아 Basic 인증 헤더를 실어 보낸다. 쓰기 동작은
+/// branch push 와 같은 권한이라 저장된 자격증명을 그대로 재사용하면 된다.
+fn push_request_ref(
+    target: &Target,
+    remote: &str,
+    ref_path: &str,
+    credentials: Option<&crate::config_store::PushCredential>,
+) -> bool {
+    // HTTPS + 자격증명 없음 → 터미널 프롬프트에 매달리 게 하지 않는다
+    // (옛 버그: "could not read Username … No such device or address").
+    // 명령 계층이 auth_required 를 돌려주고 UI 가 로그인 모달로 이어준다.
+    let https = crate::git::ops::remote_is_https(target, remote);
+    if https && credentials.is_none() {
+        return false;
+    }
     let spec = format!("+{ref_path}:{ref_path}");
-    let out = run_at_target(target, ["push", remote, &spec]);
+    let out = if https {
+        crate::git::ops::run_http_with_credentials(target, credentials.unwrap(), &["push", remote, &spec])
+    } else {
+        run_at_target(target, ["push", remote, &spec])
+    };
     out.map(|o| o.ok()).unwrap_or(false)
 }
 
@@ -264,12 +284,29 @@ pub fn close_request(
     remote: &str,
     base: &str,
     branch: &str,
+    credentials: Option<&crate::config_store::PushCredential>,
 ) -> AppResult<()> {
     let ref_path = mr_ref_path(base, branch);
     let _ = run_at_target(target, ["update-ref", "-d", &ref_path]);
     // `:<ref>` 형태가 임의 경로의 ref 삭제에 가장 확실하다.
     let spec = format!(":{ref_path}");
-    let out = run_at_target(target, ["push", remote, &spec]);
+    // HTTPS + 자격증명 없음 → 프롬프트 금지. 로컬 대기열 정리는 이미 했으니
+    // 호출부(UI)가 "원격 요청이 남아 있음"을 안내할 수 있다.
+    let https = crate::git::ops::remote_is_https(target, remote);
+    if https && credentials.is_none() {
+        return Err(AppError::Git(
+            "원격 병합 요청 정리를 위해 Git 호스트 로그인이 필요합니다. 저장된 자격증명으로 다시 시도하세요.".into(),
+        ));
+    }
+    let out = if https {
+        crate::git::ops::run_http_with_credentials(
+            target,
+            credentials.unwrap(),
+            &["push", remote, &spec],
+        )
+    } else {
+        run_at_target(target, ["push", remote, &spec])
+    };
     match out {
         Ok(o) if o.ok() => Ok(()),
         Ok(o) => {
@@ -356,7 +393,7 @@ pub fn list_requests(target: &Target, remote: &str, base: &str) -> AppResult<Vec
             .map(|tip| run_at_target(target, ["merge-base", "--is-ancestor", &tip, &base_ref]).map(|o| o.ok()).unwrap_or(false))
             .unwrap_or(false);
         if merged || tip_merged {
-            let _ = close_request(target, remote, base, &req.branch);
+            let _ = close_request(target, remote, base, &req.branch, None);
             continue;
         }
         out.push(req);
