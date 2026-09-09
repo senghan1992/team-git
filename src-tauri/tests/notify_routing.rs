@@ -47,6 +47,7 @@ fn account(name: &str, email: &str) -> Account {
         email: email.into(),
         username: name.into(),
         created_at: "2026-09-02T00:00:00Z".into(),
+        is_admin: false,
     }
 }
 

@@ -171,6 +171,7 @@ pub fn run() {
             commands::account::account_change_password,
             commands::account::account_delete_self,
             commands::account::account_search,
+            commands::admin::admin_request,
             commands::account::auth_config,
             commands::project::project_config_get,
             commands::project::project_config_set,

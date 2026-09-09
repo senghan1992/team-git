@@ -13,6 +13,8 @@ class UserPublic(BaseModel):
     email: str
     name: str
     created_at: datetime
+    # 관리 화면 내비게이션을 이 계정에 보여줄지 — 클라이언트 판단용.
+    is_admin: bool = False
 
 
 class RegisterRequest(BaseModel):

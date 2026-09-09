@@ -40,6 +40,8 @@ struct UserPublic {
     email: String,
     name: String,
     created_at: String,
+    #[serde(default)]
+    is_admin: bool,
 }
 
 impl UserPublic {
@@ -50,6 +52,7 @@ impl UserPublic {
             email: self.email,
             username: self.username,
             created_at: self.created_at,
+            is_admin: self.is_admin,
         }
     }
 }

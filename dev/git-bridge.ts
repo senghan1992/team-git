@@ -1927,6 +1927,19 @@ export async function dispatch(invoke: InvokeArgs): Promise<unknown> {
         const token = requireSessionToken(s);
         return authProxy("GET", `/auth/users?q=${encodeURIComponent(q)}`, undefined, token);
       }
+      case "admin_request": {
+        // 서버 운영자용 /admin/* 호출 — 관리 화면(AdminView)의 유일한 통로.
+        // 세션 토큰을 붙여 전달하고, 서버의 detail 문구를 그대로 에러로 올린다
+        // ("관리자 계정이 아닙니다" 같은 판정 문구가 화면에 읽혀야 한다).
+        const s = loadSettings();
+        const token = requireSessionToken(s);
+        const method = String(args.method ?? "GET").toUpperCase();
+        const relPath = String(args.path ?? "").replace(/^\/+/, "");
+        if (!relPath.startsWith("admin/") || relPath.includes("..")) {
+          throw new Error("허용되지 않은 경로입니다.");
+        }
+        return authProxy(method as "GET", `/${relPath}`, args.body, token);
+      }
       case "auth_config": {
         // 간편(simple) | 구글(google) 로그인 방식 — 실제 서버의 /auth/config.
         // 서버가 꺼져 있으면 simple 로 흘려보낸다 (버튼 숨김이 안전).

@@ -62,6 +62,8 @@ def _public(user: User) -> UserPublic:
         email=user.email,
         name=user.name,
         created_at=user.created_at,
+        # 관리자 화면 내비게이션 표시 여부를 클라이언트가 스스로 판단하게 한다.
+        is_admin=bool(user.is_admin),
     )
 
 
@@ -99,6 +101,7 @@ def register(body: RegisterRequest, db: Session = Depends(get_db)):
         email=email,
         name=body.name.strip(),
         password_hash=hash_password(body.password),
+        last_login_at=datetime.utcnow(),
     )
     db.add(user)
     db.commit()
@@ -123,6 +126,16 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
         user.password_hash, body.password
     ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, _BAD_CREDENTIALS)
+    if user.disabled:
+        # 정지 계정은 자격증명이 맞아도 문을 열지 않는다 — 존재 자체를
+        # 부인하면 본인도, 운영자도 왜 막혔는지 알 수 없게 된다.
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "이 계정은 서버 관리자에 의해 정지되었습니다. 서버 운영자에게 문의하세요.",
+        )
+    user.last_login_at = datetime.utcnow()
+    db.add(user)
+    db.commit()
     return AuthResponse(user=_public(user), token=_issue_token(db, user))
 
 

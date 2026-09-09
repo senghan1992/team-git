@@ -9,7 +9,8 @@ export type Page =
   | { kind: "home" }
   | { kind: "repo"; repoId: string; tab?: RepoTab }
   | { kind: "team" }
-  | { kind: "settings" };
+  | { kind: "settings" }
+  | { kind: "admin" };
 
 export function renderSidebar(
   current: Page,
@@ -30,6 +31,7 @@ export function renderSidebar(
         <span id="team-badge" class="text-xs font-semibold rounded-full px-2 py-0.5 bg-[color:var(--color-primary)] text-white" style="display:none"></span>
       </button>
       <button data-nav="settings" class="gc-nav-btn"><span class="gc-nav-ico"></span><span>설정</span></button>
+      <button data-nav="admin" class="gc-nav-btn"><span class="gc-nav-ico"></span><span>관리자</span></button>
     </nav>
     <div class="gc-hairline px-5 pt-4 pb-2.5 text-[11px] font-semibold text-[color:var(--color-ink-muted)]">등록된 저장소</div>
     <div class="flex-1 overflow-y-auto px-2 pb-4" id="repo-list"></div>
@@ -47,6 +49,8 @@ export function renderSidebar(
     // 이 화면은 사람 관리가 아니라 "팀원 소식 받기"다 — 종 아이콘이 맞다.
     team: icon("bell", 16),
     settings: icon("settings", 16),
+    // 운영자의 잠긴 방 — 자물쇠가 "남의 영역"임을 말한다.
+    admin: icon("lock", 16),
   };
   const navBtns0 = aside.querySelectorAll<HTMLButtonElement>("[data-nav]");
   navBtns0.forEach((b) => {
@@ -74,12 +78,20 @@ export function renderSidebar(
     if (
       (nav === "home" && current.kind === "home") ||
       (nav === "team" && current.kind === "team") ||
-      (nav === "settings" && current.kind === "settings")
+      (nav === "settings" && current.kind === "settings") ||
+      (nav === "admin" && current.kind === "admin")
     ) {
       b.classList.add("is-active");
     }
-    b.addEventListener("click", () => onNav({ kind: nav as "home" | "team" | "settings" }));
+    b.addEventListener("click", () => onNav({ kind: nav as "home" | "team" | "settings" | "admin" }));
   });
+  // 관리자 화면 — 서버가 is_admin 을 말해 줄 때만 문을 연다. 일반 사용자에게는
+  // 존재 자체가 보이지 않는다 (접근은 서버가 403 으로 막는다).
+  const adminBtn = aside.querySelector<HTMLButtonElement>("[data-nav='admin']");
+  if (adminBtn) {
+    const isAdmin = getSession()?.is_admin === true;
+    adminBtn.style.display = isAdmin ? "" : "none";
+  }
   const chip = aside.querySelector<HTMLButtonElement>("#account-chip")!;
   const chipIco = chip.querySelector<HTMLElement>("#account-ico")!;
   chipIco.appendChild(icon("user", 16));

@@ -316,6 +316,8 @@ export interface Account {
   username: string;
   /** 서버가 준 ISO-8601 문자열. */
   created_at: string;
+  /** 서버 운영자 표식 — 이 값이 참이면 사이드바에 "관리자" 화면이 보인다. */
+  is_admin?: boolean;
 }
 
 /** 서버가 정한 로그인 방식 — simple 이면 Google 버튼을 숨긴다. */
@@ -732,6 +734,66 @@ export interface RepoLinkSummary {
   path: string;
 }
 
+// ─── 서버 관리 (운영자) ─────────────────────────────────────────────────────
+
+export interface AdminOverview {
+  users: number;
+  disabled_users: number;
+  sessions: number;
+  devices: number;
+  projects: number;
+  events_24h: number;
+  events_7d: number;
+  last_event_at: string | null;
+  generated_at: string;
+}
+
+export interface AdminUser {
+  id: string;
+  username: string;
+  email: string;
+  name: string;
+  is_admin: boolean;
+  disabled: boolean;
+  created_at: string | null;
+  last_login_at: string | null;
+  last_seen: string | null;
+  sessions: number;
+  devices: number;
+  projects: number;
+}
+
+export interface AdminProjectMember {
+  device_id: string;
+  device_name: string;
+  role: string;
+  user_name: string | null;
+  email: string | null;
+  last_seen: string | null;
+}
+
+export interface AdminProject {
+  id: string;
+  display_name: string;
+  created_at: string | null;
+  members: AdminProjectMember[];
+  member_count: number;
+  events_total: number;
+  events_24h: number;
+  last_event_at: string | null;
+}
+
+export interface AdminEventRow {
+  id: string;
+  kind: string;
+  repo_name: string;
+  created_at: string | null;
+  author: string;
+  message: string;
+  sender_device: string;
+  sender_user: string | null;
+}
+
 export const ipc_peer = {
   getConfig: () => invoke<PeerConfig>("peer_get_config"),
   setBackendUrl: (url: string) => invoke<void>("peer_set_backend_url", { url }),
@@ -758,6 +820,33 @@ export const ipc_peer = {
   listTeamEvents: (limit: number, unreadOnly: boolean) =>
     invoke<TeamEventRow[]>("peer_list_team_events", { limit, unreadOnly }),
   markTeamRead: (id: string) => invoke<void>("peer_mark_team_read", { id }),
+
+  // ── 서버 관리 (운영자) ──────────────────────────────────────────
+  // 모든 호출은 admin_request 통로 하나로 흐른다 — 권한 판정은 서버가
+  // 하고, 일반 계정의 호출은 403 으로 돌아온다.
+  adminOverview: () => invoke<AdminOverview>("admin_request", { method: "GET", path: "admin/overview" }),
+  adminUsers: () => invoke<AdminUser[]>("admin_request", { method: "GET", path: "admin/users" }),
+  adminSetUserStatus: (userId: string, disabled: boolean) =>
+    invoke<{ ok: boolean; disabled: boolean; sessions_revoked: number }>("admin_request", {
+      method: "POST",
+      path: `admin/users/${userId}/status`,
+      body: { disabled },
+    }),
+  adminForceLogout: (userId: string) =>
+    invoke<{ ok: boolean; sessions_revoked: number }>("admin_request", {
+      method: "POST",
+      path: `admin/users/${userId}/logout`,
+    }),
+  adminProjects: () => invoke<AdminProject[]>("admin_request", { method: "GET", path: "admin/projects" }),
+  adminRemoveMember: (projectId: string, deviceId: string) =>
+    invoke<{ ok: boolean }>("admin_request", {
+      method: "DELETE",
+      path: `admin/projects/${projectId}/members/${deviceId}`,
+    }),
+  adminDeleteProject: (projectId: string) =>
+    invoke<{ ok: boolean }>("admin_request", { method: "DELETE", path: `admin/projects/${projectId}` }),
+  adminEvents: (limit = 60) =>
+    invoke<AdminEventRow[]>("admin_request", { method: "GET", path: `admin/events?limit=${limit}` }),
   markAllTeamRead: () => invoke<number>("peer_mark_all_team_read"),
   /** 병합 완료 후 그 브랜치의 남은 "병합 요청" 알림을 읽음 처리한다. */
   markBranchPushRead: (repoId: Uuid, branch: string) =>

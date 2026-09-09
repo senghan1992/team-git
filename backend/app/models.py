@@ -36,6 +36,14 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(String(256), nullable=False)
     created_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    # 서버 운영자 표식 — 관리 화면(/admin/*) 접근 자격. adminctl 로 지정한다:
+    # 가입 순서나 프로젝트 소유와 무관하게 서버 주인이 직접 임명한다.
+    is_admin: Mapped[bool] = mapped_column(default=False)
+    # 운영자가 이 계정을 정지시켰는가. 정지되면 로그인·세션·기기 폴링이 전부
+    # 403 으로 막힌다 (기존 세션도 즉시 삭제된다).
+    disabled: Mapped[bool] = mapped_column(default=False)
+    # 마지막 로그인 시각 — 관리 화면의 "마지막 활동" 추적용.
+    last_login_at: Mapped[datetime | None] = mapped_column(nullable=True)
 
 
 class OAuthFlow(Base):

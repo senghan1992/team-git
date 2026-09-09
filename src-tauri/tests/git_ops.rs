@@ -1577,6 +1577,7 @@ fn config_store_session_and_push_credentials_roundtrip() {
             email: "hong@example.com".into(),
             username: "hong".into(),
             created_at: "2026-01-01T00:00:00Z".into(),
+            is_admin: false,
         },
         token: "tok-abc".into(),
     });

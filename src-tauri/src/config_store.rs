@@ -209,6 +209,10 @@ pub struct Account {
     pub username: String,
     /// ISO-8601 timestamp from the server.
     pub created_at: String,
+    /// 서버 운영자 표식 — 관리 화면 내비게이션 표시 여부. 구버전 세션 캐시에는
+    /// 필드 자체가 없으므로 serde(default) 로 false 를 채운다.
+    #[serde(default)]
+    pub is_admin: bool,
 }
 
 /// A signed-in session: who, plus the bearer token for `/auth/*` calls.

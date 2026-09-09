@@ -47,6 +47,7 @@ fn sample() -> Account {
         email: "hong@example.com".into(),
         username: "hong".into(),
         created_at: "2026-09-02T00:00:00Z".into(),
+        is_admin: false,
     }
 }
 
@@ -85,6 +86,7 @@ fn save_session_replaces_the_previous_one() {
         email: "minji@example.com".into(),
         username: "minji".into(),
         created_at: "2026-09-02T01:00:00Z".into(),
+        is_admin: false,
     };
     save_session(&other, "tok-2").unwrap();
 

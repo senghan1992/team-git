@@ -5,6 +5,7 @@ import { renderSidebar, type Page } from "../components/Sidebar";
 import { renderHomeView } from "../views/HomeView";
 import { renderRepoView } from "../views/RepoView";
 import { renderSettingsView } from "../views/SettingsView";
+import { renderAdminView } from "../views/AdminView";
 import { disposeMergeCenterCache, pruneMergeCenterCache } from "../components/MergeCenter";
 import { renderTeamPanel, type TeamTab } from "../components/TeamPanel";
 import { renderToasts, notify, toast } from "../components/Toast";
@@ -41,6 +42,10 @@ export async function createApp(root: HTMLElement) {
   // 알림이 있다고 하니 앱을 처음 켠 사람에게는 앞뒤가 맞지 않는다.
   void refreshSession().then(() => {
     if (getSession()) void reloadTeamUnread().then(updateTeamBadge);
+    // 캐시된 계정은 is_admin 같은 최신 서버 상태가 없을 수 있다(관리자 임명은
+    // 운영자가 서버에서 하므로, 앱을 켠 뒤에야 반영된다). 기동 시 한 번 서버에서
+    // 최신 계정을 읽어 둔다 — 실패해도 캐시 세션으로 조용히 계속한다.
+    void ipc.accountRefresh().then(() => refreshSession()).catch(() => undefined);
   });
 
   async function reloadRepos() {
@@ -464,6 +469,15 @@ export async function createApp(root: HTMLElement) {
       shell.appendChild(loading);
       renderSettingsView().then((m) => {
         if (page.kind !== "settings") return;
+        loading.replaceWith(m);
+      });
+    } else if (page.kind === "admin") {
+      // 서버 운영자 화면 — 사이드바의 자물쇠로만 들어온다. 일반 계정은
+      // 내비게이션 자체가 숨겨져 있고, 서버도 403 으로 이중으로 막는다.
+      const loading = renderPageLoadingFill();
+      shell.appendChild(loading);
+      renderAdminView().then((m) => {
+        if (page.kind !== "admin") return;
         loading.replaceWith(m);
       });
     }

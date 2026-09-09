@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, HTTPException
 
 from app.auth import hash_token, AuthError
 from app.db import Session
@@ -81,6 +81,13 @@ def get_user(
         db.delete(session)
         db.commit()
         raise AuthError("계정을 찾을 수 없습니다. 다시 로그인하세요.")
+    if user.disabled:
+        # 정지된 계정의 세션은 관리자가 이미 지웠지만, 삭제 직전에 복사해 둔
+        # 토큰 등 예외적으로 남은 경우에도 모든 인가된 호출을 막는다.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="이 계정은 서버 관리자에 의해 정지되었습니다. 서버 운영자에게 문의하세요.",
+        )
     session.last_seen = datetime.utcnow()
     db.add(session)
     db.commit()
